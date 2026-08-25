@@ -1,0 +1,37 @@
+package com.ubaid.jobdash.web.dto;
+
+import java.util.List;
+
+/**
+ * Body of {@code POST /api/runs}.
+ *
+ * @param keywords   plain search keywords; required.
+ * @param hours      recency window in hours; defaults to 24 when null.
+ * @param location   single search location, used when {@code useShards} is false.
+ * @param testMode   caps the run at the configured test-mode page budget; null/absent means false.
+ * @param pageCap    explicit per-run page cap. Takes precedence over the configured test-mode
+ *                   default; applies whether or not {@code testMode} is on. Null means uncapped
+ *                   (or the test-mode default when {@code testMode} is true).
+ * @param useShards  when true, runs the configured/default shard list instead of one location;
+ *                   null/absent means false.
+ * @param shards     optional explicit shard list overriding the configured default; only
+ *                   consulted when {@code useShards} is true.
+ */
+public record CreateRunRequest(
+        String keywords,
+        Integer hours,
+        String location,
+        Boolean testMode,
+        Integer pageCap,
+        Boolean useShards,
+        List<String> shards
+) {
+
+    public boolean testModeOrDefault() {
+        return Boolean.TRUE.equals(testMode);
+    }
+
+    public boolean useShardsOrDefault() {
+        return Boolean.TRUE.equals(useShards);
+    }
+}

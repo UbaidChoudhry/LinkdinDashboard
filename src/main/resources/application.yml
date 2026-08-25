@@ -1,0 +1,33 @@
+spring:
+  application:
+    name: jobdash
+  datasource:
+    url: jdbc:sqlite:./data/jobdash.db?journal_mode=WAL
+    driver-class-name: org.sqlite.JDBC
+  sql:
+    init:
+      mode: never
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+# SQLite pragmas (WAL mode) are applied on connection via the datasource init below.
+
+sweep:
+  pacing:
+    min-delay: 6s
+    max-delay: 12s
+  budget:
+    per-run: 150
+    per-rolling-day: 300
+    test-mode-page-cap: 3
+  breaker:
+    open-duration: 30m
+    max-open-duration: 60m
+    soft-failure-threshold: 2
+  shards:
+    - "New York City Metropolitan Area"
+    - "Los Angeles Metropolitan Area"
+    - "Seattle, Washington, United States"
+    - "Austin, Texas Metropolitan Area"

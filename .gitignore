@@ -1,0 +1,21 @@
+# Java / Maven
+target/
+!.mvn/wrapper/maven-wrapper.jar
+
+# Node / frontend
+node_modules/
+dist/
+
+# Runtime data / SQLite
+data/*
+!data/.gitkeep
+*.db
+*.db-wal
+*.db-shm
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+logs/
+.pids/
