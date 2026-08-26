@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError, listJobs } from "../api/client";
 import type { JobResponse, JobTab, RunResponse } from "../types/api";
-import { sortJobs } from "../utils/sort";
+import { DEFAULT_SORT, nextSortState, sortJobsBy, type SortState } from "../utils/sort";
 import { JobRow } from "./JobRow";
+import { PlainHeader, SortableHeader } from "./SortableHeader";
 
 interface JobsPanelProps {
   /** Bumped whenever the caller wants JobsPanel to refetch (e.g. a run just finished). */
@@ -23,6 +24,7 @@ export function JobsPanel({ refreshToken, latestRun }: JobsPanelProps) {
   const [jobs, setJobs] = useState<JobResponse[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
 
   const load = useCallback(async () => {
     setError(null);
@@ -30,7 +32,7 @@ export function JobsPanel({ refreshToken, latestRun }: JobsPanelProps) {
     try {
       const includePrev = activeTab === "search" ? includePreviousRuns : true;
       const data = await listJobs(activeTab, includePrev);
-      setJobs(sortJobs(data));
+      setJobs(data);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to load jobs.");
       setJobs([]);
@@ -40,6 +42,17 @@ export function JobsPanel({ refreshToken, latestRun }: JobsPanelProps) {
   useEffect(() => {
     load();
   }, [load, refreshToken]);
+
+  // Switching tabs resets to the default (salary-bucket) view rather than carrying a sort
+  // choice from one list over to an unrelated one.
+  useEffect(() => {
+    setSort(DEFAULT_SORT);
+  }, [activeTab]);
+
+  const sortedJobs = useMemo(() => (jobs ? sortJobsBy(jobs, sort) : jobs), [jobs, sort]);
+  const handleSort = useCallback((column: Parameters<typeof nextSortState>[1]) => {
+    setSort((current) => nextSortState(current, column));
+  }, []);
 
   function handleChanged(updated: JobResponse) {
     setJobs((prev) => {
@@ -120,23 +133,31 @@ export function JobsPanel({ refreshToken, latestRun }: JobsPanelProps) {
 
       {jobs !== null && jobs.length === 0 && !error && <p className="hint">{emptyReason()}</p>}
 
-      {jobs !== null && jobs.length > 0 && (
-        <table className="job-table">
-          <thead>
-            <tr>
-              <th>Title</th>
-              <th>Company</th>
-              <th>Location</th>
-              <th>Posted</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {jobs.map((job) => (
-              <JobRow key={job.jobId} job={job} tab={activeTab} onChanged={handleChanged} onError={setActionError} />
-            ))}
-          </tbody>
-        </table>
+      {sortedJobs !== null && sortedJobs.length > 0 && (
+        <>
+          <p className="hint sort-hint">
+            {sort.column === "default"
+              ? "Sorted by salary, then most recent. Click a column to sort by it instead."
+              : "Click a column to change sort, or click it again to reverse."}
+          </p>
+          <table className="job-table">
+            <thead>
+              <tr>
+                <SortableHeader column="title" label="Title" sort={sort} onSort={handleSort} />
+                <SortableHeader column="company" label="Company" sort={sort} onSort={handleSort} />
+                <SortableHeader column="location" label="Location" sort={sort} onSort={handleSort} />
+                <SortableHeader column="postedAt" label="Posted" sort={sort} onSort={handleSort} />
+                <SortableHeader column="salary" label="Salary" sort={sort} onSort={handleSort} />
+                <PlainHeader label="Actions" />
+              </tr>
+            </thead>
+            <tbody>
+              {sortedJobs.map((job) => (
+                <JobRow key={job.jobId} job={job} tab={activeTab} onChanged={handleChanged} onError={setActionError} />
+              ))}
+            </tbody>
+          </table>
+        </>
       )}
     </section>
   );

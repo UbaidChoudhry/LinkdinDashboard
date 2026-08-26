@@ -3,6 +3,14 @@ import { ApiError, setJobStatus } from "../api/client";
 import type { JobResponse, JobTab } from "../types/api";
 import { relativeTime, absoluteTime } from "../utils/format";
 
+/** Part 1 never populates salary, so this reliably renders "-" today; kept correct for part 2. */
+function formatSalary(min: number | null, max: number | null): string {
+  if (min == null && max == null) return "–";
+  const fmt = (n: number) => `$${Math.round(n).toLocaleString()}`;
+  if (min != null && max != null && min !== max) return `${fmt(min)}–${fmt(max)}`;
+  return fmt((max ?? min) as number);
+}
+
 interface JobRowProps {
   job: JobResponse;
   tab: JobTab;
@@ -35,6 +43,7 @@ export function JobRow({ job, tab, onChanged, onError }: JobRowProps) {
       <td>{job.company}</td>
       <td>{job.location}</td>
       <td title={absoluteTime(job.postedAt)}>{relativeTime(job.postedAt)}</td>
+      <td className="col-salary">{formatSalary(job.salaryMin, job.salaryMax)}</td>
       <td className="col-actions">
         {tab === "search" && (
           <>

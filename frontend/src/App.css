@@ -272,6 +272,53 @@ td {
   gap: 8px;
 }
 
+.col-salary {
+  font-variant-numeric: tabular-nums;
+}
+
+.sort-hint {
+  margin-top: 12px;
+  margin-bottom: 6px;
+}
+
+th.sortable {
+  padding: 0;
+}
+
+.sort-button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 8px 10px;
+  background: none;
+  border: none;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text-h);
+  cursor: pointer;
+  text-align: left;
+}
+
+.sort-button:hover {
+  color: var(--accent);
+}
+
+.sort-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+th.sortable.active .sort-button {
+  color: var(--accent);
+}
+
+.sort-indicator {
+  font-size: 10px;
+  min-width: 10px;
+  display: inline-block;
+}
+
 .filters-columns {
   display: flex;
   flex-wrap: wrap;
