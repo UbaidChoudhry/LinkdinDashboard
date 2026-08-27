@@ -6,6 +6,7 @@ import { RunProgress } from "./components/RunProgress";
 import { JobsPanel } from "./components/JobsPanel";
 import { FiltersPanel } from "./components/FiltersPanel";
 import { CompanyVolumeReport } from "./components/CompanyVolumeReport";
+import { DataPanel } from "./components/DataPanel";
 import { useRunStream } from "./hooks/useRunStream";
 import type { RunResponse } from "./types/api";
 
@@ -57,6 +58,15 @@ function App() {
     // status once the run actually stops, which will trigger the refresh via the effect above.
   }
 
+  function handleDataCleared() {
+    // Clearing deletes every sweep_run row too, so any run we were tracking no longer exists -
+    // drop it rather than let the UI describe a run that's now gone.
+    setCurrentRunId(null);
+    setLastKnownRun(null);
+    prevStatusRef.current = null;
+    setRefreshToken((t) => t + 1);
+  }
+
   const displayRun = streamedRun ?? (currentRunId != null ? lastKnownRun : null);
   const runInFlight = displayRun?.status === "running";
 
@@ -83,6 +93,8 @@ function App() {
         <FiltersPanel />
 
         <CompanyVolumeReport />
+
+        <DataPanel refreshToken={refreshToken} onCleared={handleDataCleared} />
       </main>
     </div>
   );

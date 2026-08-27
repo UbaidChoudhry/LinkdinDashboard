@@ -88,3 +88,27 @@ export interface ErrorResponse {
 }
 
 export type JobTab = "search" | "applied" | "not_interested";
+
+export interface DataStatsResponse {
+  databaseSizeBytes: number;
+  totalJobs: number;
+  jobsPassed: number;
+  jobsRejected: number;
+  jobsUnevaluated: number;
+  jobsApplied: number;
+  jobsNotInterested: number;
+  jobsUntriaged: number;
+  totalRuns: number;
+  requestLogEntries: number;
+  requestsLast24h: number;
+  excludeWordCount: number;
+  blockedCompanyCount: number;
+  oldestFirstSeenAt: string | null;
+  newestLastSeenAt: string | null;
+}
+
+export interface ClearJobDataResponse {
+  jobsCleared: number;
+  runsCleared: number;
+  databaseSizeBytesAfter: number;
+}

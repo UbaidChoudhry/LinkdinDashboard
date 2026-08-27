@@ -1,7 +1,9 @@
 import type {
+  ClearJobDataResponse,
   CompanyBlocklistResponse,
   CompanyVolumeResponse,
   CreateRunRequest,
+  DataStatsResponse,
   ErrorResponse,
   JobResponse,
   JobTab,
@@ -127,4 +129,12 @@ export function deleteBlockedCompany(company: string): Promise<CompanyBlocklistR
 export function companyVolumeReport(days: number, threshold: number): Promise<CompanyVolumeResponse[]> {
   const params = new URLSearchParams({ days: String(days), threshold: String(threshold) });
   return request<CompanyVolumeResponse[]>(`/api/reports/company-volume?${params.toString()}`);
+}
+
+export function getDataStats(): Promise<DataStatsResponse> {
+  return request<DataStatsResponse>("/api/data/stats");
+}
+
+export function clearJobData(): Promise<ClearJobDataResponse> {
+  return request<ClearJobDataResponse>("/api/data/clear", { method: "POST" });
 }
