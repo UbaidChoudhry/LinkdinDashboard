@@ -11,6 +11,7 @@ import com.ubaid.jobdash.http.support.InMemoryCircuitStateStore;
 import com.ubaid.jobdash.http.support.InMemoryRequestBudgetStore;
 import com.ubaid.jobdash.http.support.StubHttpResponse;
 import com.ubaid.jobdash.filter.FilterEngine;
+import com.ubaid.jobdash.salary.SalaryEnrichmentService;
 import com.ubaid.jobdash.source.linkedin.CardParser;
 import com.ubaid.jobdash.store.JobCardInsert;
 import com.ubaid.jobdash.store.JobListingRepository;
@@ -67,7 +68,26 @@ class SweepServiceTest {
     @Mock
     private FilterEngine filterEngine;
 
-    private record Fixture(SweepService service, DynamicHttpClient http, FakeClock clock) {
+    private record Fixture(SweepService service, DynamicHttpClient http, FakeClock clock,
+                           RecordingEnrichment enrichment) {
+    }
+
+    /** A no-op {@link SalaryEnrichmentService} that just counts calls; keeps the sweep tests offline. */
+    private static final class RecordingEnrichment extends SalaryEnrichmentService {
+        private final java.util.List<Long> runIds = new java.util.ArrayList<>();
+
+        RecordingEnrichment() {
+            super(List.of(), null, null, null, null);
+        }
+
+        @Override
+        public void enrichRun(long runId, String location, java.util.function.BooleanSupplier cancelled) {
+            runIds.add(runId);
+        }
+
+        int calls() {
+            return runIds.size();
+        }
     }
 
     private Fixture newFixture(BiFunction<Integer, HttpRequest, HttpResponse<String>> responder,
@@ -98,9 +118,10 @@ class SweepServiceTest {
                 new SweepProperties.Budget(150, 300, testModePageCap),
                 new SweepProperties.Breaker(Duration.ofMinutes(30), Duration.ofMinutes(60), 2));
 
+        RecordingEnrichment enrichment = new RecordingEnrichment();
         SweepService service = new SweepService(pacedHttpClient, new CardParser(), filterEngine,
-                jobListingRepository, sweepRunRepository, shardsProperties, sweepProperties, clock);
-        return new Fixture(service, http, clock);
+                jobListingRepository, sweepRunRepository, shardsProperties, sweepProperties, enrichment, clock);
+        return new Fixture(service, http, clock, enrichment);
     }
 
     @Test
@@ -129,6 +150,15 @@ class SweepServiceTest {
         f.service.run(RUN_ID, new SweepRunRequest("software engineer", "New York City Metropolitan Area",
                 24, false, false, null, null));
         verify(filterEngine, atLeastOnce()).evaluateNewRows();
+    }
+
+    @Test
+    void sweepRunsSalaryEnrichmentAfterAnOkPage() {
+        // Enrichment is wired inline after filtering: an OK page that stores rows must trigger it.
+        Fixture f = newFixture((start, req) -> start < 20 ? ok(start, 10) : ok(start, 0), 10);
+        f.service.run(RUN_ID, new SweepRunRequest("software engineer", "New York City Metropolitan Area",
+                24, false, false, null, null));
+        assertThat(f.enrichment.calls()).isGreaterThanOrEqualTo(1);
     }
 
     // --- test doubles -------------------------------------------------------------------

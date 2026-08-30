@@ -31,3 +31,20 @@ sweep:
     - "Los Angeles Metropolitan Area"
     - "Seattle, Washington, United States"
     - "Austin, Texas Metropolitan Area"
+
+salary:
+  enabled: true
+  cache-ttl: 90d
+  max-data-age: 1095d
+  pacing:
+    min-delay: 1s
+  daily-cap:
+    adzuna: 200
+    h1bapi: 100
+  adzuna:
+    app-id: ${ADZUNA_APP_ID:}
+    app-key: ${ADZUNA_APP_KEY:}
+  h1b-api:
+    api-key: ${H1BAPI_KEY:}
+  lca:
+    import-file: ${LCA_IMPORT_FILE:}

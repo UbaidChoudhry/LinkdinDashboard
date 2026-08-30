@@ -21,13 +21,15 @@ class SchemaAndSeedTest extends AbstractStoreTest {
         List<String> tables = namesOfType("table");
         assertThat(tables).contains(
                 "job_listing", "sweep_run", "exclude_word", "company_blocklist",
-                "filter_state", "request_log", "circuit_state");
+                "filter_state", "request_log", "circuit_state",
+                "salary_estimate", "lca_wage", "external_request_log");
     }
 
     @Test
     void bothPartialAndPlainIndexesExist() throws Exception {
         List<String> indexes = namesOfType("index");
-        assertThat(indexes).contains("job_detail_queue", "job_browse", "request_log_time");
+        assertThat(indexes).contains("job_detail_queue", "job_browse", "request_log_time",
+                "lca_wage_lookup", "external_request_log_time");
     }
 
     @Test

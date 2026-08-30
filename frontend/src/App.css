@@ -249,6 +249,18 @@ table {
   overflow-x: auto;
 }
 
+.job-table {
+  max-height: 600px;
+  overflow-y: auto;
+}
+
+.job-table thead tr {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  z-index: 1;
+}
+
 th,
 td {
   text-align: left;
@@ -274,6 +286,15 @@ td {
 
 .col-salary {
   font-variant-numeric: tabular-nums;
+}
+
+.salary-source {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.min-salary-row {
+  max-width: 220px;
 }
 
 .sort-hint {

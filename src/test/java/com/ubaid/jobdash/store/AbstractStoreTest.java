@@ -15,21 +15,24 @@ import java.nio.file.Path;
  * SQLite file under a JUnit-managed {@code @TempDir}, with Flyway migrations genuinely applied
  * against it — no shared state, no mocking of the database.
  */
-abstract class AbstractStoreTest {
+public abstract class AbstractStoreTest {
 
     @TempDir
-    Path tempDir;
+    protected Path tempDir;
 
-    DataSource dataSource;
-    JdbcClient client;
+    protected DataSource dataSource;
+    protected JdbcClient client;
 
-    JobListingRepository jobListingRepository;
-    SweepRunRepository sweepRunRepository;
-    ExcludeWordRepository excludeWordRepository;
-    CompanyBlocklistRepository companyBlocklistRepository;
-    FilterStateRepository filterStateRepository;
-    RequestLogRepository requestLogRepository;
-    CircuitStateRepository circuitStateRepository;
+    protected JobListingRepository jobListingRepository;
+    protected SweepRunRepository sweepRunRepository;
+    protected ExcludeWordRepository excludeWordRepository;
+    protected CompanyBlocklistRepository companyBlocklistRepository;
+    protected FilterStateRepository filterStateRepository;
+    protected RequestLogRepository requestLogRepository;
+    protected CircuitStateRepository circuitStateRepository;
+    protected SalaryEstimateRepository salaryEstimateRepository;
+    protected LcaWageRepository lcaWageRepository;
+    protected ExternalRequestLogRepository externalRequestLogRepository;
 
     @BeforeEach
     void migrateFreshDatabase() {
@@ -53,5 +56,8 @@ abstract class AbstractStoreTest {
         this.filterStateRepository = new FilterStateRepository(client);
         this.requestLogRepository = new RequestLogRepository(client);
         this.circuitStateRepository = new CircuitStateRepository(client);
+        this.salaryEstimateRepository = new SalaryEstimateRepository(client);
+        this.lcaWageRepository = new LcaWageRepository(client);
+        this.externalRequestLogRepository = new ExternalRequestLogRepository(client);
     }
 }

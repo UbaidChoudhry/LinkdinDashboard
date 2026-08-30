@@ -66,6 +66,7 @@ Other options:
 ```bash
 ./run.sh --backend-only     # API only, no dev server
 ./run.sh --frontend-only    # UI only, expects a backend already running
+./import-lca.sh <file.xlsx> # one-shot: load a DOL LCA disclosure file for salary data
 ```
 
 ### Running the pieces by hand
@@ -78,7 +79,7 @@ cd frontend && npm install && npm run dev   # front end (first run needs the ins
 ## Tests
 
 ```bash
-./mvnw test                         # 119 tests, no network access
+./mvnw test                         # 188 tests, no network access
 cd frontend && npm run build        # tsc -b && vite build - type errors fail the build
 cd frontend && npm run lint
 ```
@@ -116,6 +117,13 @@ Click any column header to sort by it; click again to reverse.
 `Senior, Sr, Staff, Principal, Lead, Manager, Director, Intern`. Blocked companies match the
 full company name exactly. Editing either list **re-evaluates every job already stored**, not
 just future ones — so removing a word brings previously-rejected jobs back.
+
+**Salary.** During a run, each passing job is enriched with a salary range from public data —
+US DOL H-1B LCA disclosure files (company-specific, imported locally), with the Adzuna and
+h1bapi.com APIs as fallbacks. Results are cached per company+title for 90 days; data older
+than 3 years is ignored. Jobs sort highest-salary-first, unknown salary last, and the
+**Min salary** box hides jobs whose known salary is below a threshold (never hides
+unknown-salary jobs). See [SALARY_SETUP.md](SALARY_SETUP.md) for API keys and the LCA import.
 
 **Data tab.** Database size on disk, row counts by verdict and status, and a
 **Clear job data** button (two-step confirm, runs `VACUUM` so the file actually shrinks).
@@ -170,15 +178,16 @@ All four shard strings are empirically verified to return relevant results. Shar
 per run and multiplies request cost — a US-wide search saturates LinkedIn's 1000-result cap, so
 sharding is how you see past it, but four shards is up to four times the requests.
 
+The same file has a `salary:` block (cache TTL, 3-year staleness cutoff, per-source pacing and
+daily caps, API keys). API keys come from the environment (`.env`, sourced by `run.sh`) — see
+[SALARY_SETUP.md](SALARY_SETUP.md).
+
 ---
 
 ## What's not built yet
 
 Deliberately out of scope for this version, with the seams left in place:
 
-- **Salary** — the columns, the two-bucket sort, and the UI column all exist and are tested, but
-  nothing populates salary. LinkedIn's search cards carry none, and it appears only as prose in
-  the detail fragment. Planned to come from other sources.
 - **Detail fetching** — no descriptions are fetched. The schema columns and the partial-index
   queue are in place for it.
 - **ATS adapters** (Greenhouse, Lever, Ashby, Workday) — the `JobSource` seam exists.

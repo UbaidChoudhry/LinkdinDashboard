@@ -140,7 +140,29 @@ see HANDOFF.md §3 for why `\b` silently fails on words like `C++`.
 `SweepService` is the orchestrator described in Flow A above. `SweepQueryBuilder` builds the
 LinkedIn search URL (and is the one place that would need to change if LinkedIn's query
 parameters ever change). `SweepRunRequest` / `SweepProgress` are the input/output shapes.
-`SweepShardsProperties` holds the configured metro shard list.
+`SweepShardsProperties` holds the configured metro shard list. After each page's filter pass it
+calls `salary.SalaryEnrichmentService.enrichRun(...)` inline (see below).
+
+### `salary/` — attaching a pay range to each job
+Runs inside the sweep, right after filtering. `SalaryEnrichmentService` walks the run's passing,
+salary-less rows; for each it checks the `salary_estimate` cache (key: normalized
+`CompanyKey` + `TitleKey`, 90-day TTL) and on a miss runs a source cascade, writing
+`job_listing.salary_min/max/source`.
+
+| File | Job |
+|---|---|
+| `SalarySource` | the seam: `Optional<SalaryResult> lookup(SalaryLookup)`. Three impls, tried in this order: |
+| `LcaSalarySource` | local `lca_wage` table (US DOL H-1B LCA disclosure data). Company-specific. Uses `SocMapper` (title → SOC code) and `UsState` (location → state); lookup falls back state → national |
+| `AdzunaSalarySource` | Adzuna API — title+location estimate. Skipped if no key |
+| `H1bApiSalarySource` | h1bapi.com — company-specific H-1B wages. Skipped if no key. **Request shape unverified against a live key — see its `NOTE:`** |
+| `SalaryRateLimiter` | **singleton** (pacing gate is an instance field, like `http/RateLimiter`). Shared 1s pacing gate + per-source rolling-24h cap counted from `external_request_log`. Separate from the LinkedIn budget |
+| `XlsxStreamReader` | dependency-free streaming `.xlsx` reader (StAX + `java.util.zip`, no POI). The DOL file's sheet is ~500 MB uncompressed |
+| `LcaImportService` / `LcaImportRunner` | parse → filter to `Certified` → annualize wage → drop >3yr-old rows → aggregate percentiles into `lca_wage`. The runner is a one-shot triggered by `./import-lca.sh <file>` (property `salary.lca.import-file`) |
+| `SalaryProperties` / `SalaryConfiguration` | the `salary:` config block; beans `salaryRateLimiter`, `salaryHttpClient` |
+| `CompanyKey` / `TitleKey` / `SocMapper` / `UsState` | pure normalization helpers |
+
+`SalaryEnrichmentService` **never throws** — a salary failure must not abort a sweep. Keys come
+from `.env` (sourced by `run.sh`); see `SALARY_SETUP.md`.
 
 ### `store/` — all SQL lives here
 One `@Repository` per table, all built on Spring's `JdbcClient` (hand-written SQL, no JPA — see
@@ -157,6 +179,9 @@ scattered elsewhere.
 | `CircuitStateRepository` | `circuit_state` — persisted breaker state |
 | `DataRepository` | aggregate stats + the scoped `clearJobResults()` |
 | `DatabaseFileLocator` | resolves the SQLite file path from `spring.datasource.url`, reports its size on disk (main + `-wal` + `-shm`) |
+| `SalaryEstimateRepository` | `salary_estimate` — the per-(company,title) salary cache (90-day TTL; a `source='none'` row means "looked, found nothing") |
+| `LcaWageRepository` | `lca_wage` — aggregated DOL LCA wage percentiles, keyed `(employer_key, soc_code, state)` (`state=''` is the national roll-up) |
+| `ExternalRequestLogRepository` | `external_request_log` — backs `SalaryRateLimiter`'s per-source daily cap; **not** the LinkedIn budget |
 
 `store/adapter/` — `JdbcRequestBudgetStore` and `JdbcCircuitStateStore` bridge the `http`
 package's storage-agnostic interfaces (`RequestBudgetStore`, `CircuitStateStore`) onto the real
@@ -191,14 +216,14 @@ hooks/useRunStream.ts        the SSE subscription for live run progress
 components/
   RunControls.tsx            the "start a run" form
   RunProgress.tsx            live counters + saturation warning + cancel button
-  JobsPanel.tsx               the 3-tab job table, owns which tab/sort is active
-  JobRow.tsx                  one row: title link, company, location, posted, salary, actions
+  JobsPanel.tsx               the 3-tab job table, owns which tab/sort is active + the Min salary filter
+  JobRow.tsx                  one row: title link, company, location, posted, salary (+ source label), actions
   SortableHeader.tsx          clickable <th>, shared by the job table
   FiltersPanel.tsx            exclude words + blocked companies, list/add/delete
   CompanyVolumeReport.tsx     the relay-detection volume report
   DataPanel.tsx                DB size/stats + the two-step-confirm clear action
 utils/
-  sort.ts                     sortJobsBy() — mirrors JobSortOrder.java, plus per-column sort
+  sort.ts                     sortJobsBy() — mirrors JobSortOrder.java, plus per-column sort + filterByMinSalary()
   format.ts                   relative/absolute time, byte-size formatting
   runStatus.ts                human copy for each terminal run status
 ```
@@ -213,8 +238,8 @@ trigger a refetch) and passes them down as props.
 
 One SQLite file, `data/jobdash.db`, WAL mode. Schema lives in
 `src/main/resources/db/migration/` (Flyway — `V1__init.sql` creates everything,
-`V2__seed.sql` inserts the 8 default exclude words). **Never hand-edit a shipped migration** —
-add a new `V3__...sql` instead.
+`V2__seed.sql` inserts the 8 default exclude words, `V3__salary.sql` adds the salary tables).
+**Never hand-edit a shipped migration** — add a new `V4__...sql` instead.
 
 ```
 job_listing        the results. See JobListingRepository above for the upsert rule.
@@ -224,6 +249,9 @@ company_blocklist    user's company-exclusion list
 filter_state         single row, the version counter that drives re-evaluation
 request_log          every LinkedIn request ever made — audit trail + rate-limiter budget source
 circuit_state         single row, persisted breaker state
+salary_estimate      per-(company,title) salary cache, 90-day TTL           (V3)
+lca_wage             aggregated DOL LCA wage percentiles by employer/SOC/state (V3)
+external_request_log  audit + daily-cap source for the salary APIs (NOT the LinkedIn budget) (V3)
 ```
 
 Two indexes worth knowing about:
@@ -252,7 +280,9 @@ Test packages mirror `main/java` exactly — if you're looking for tests of
   file names for what each fixture represents (the two 26-byte files are the real end-of-results
   sentinel, not corrupt captures).
 
-Current count: **119 tests** across 17 suites. Run `./mvnw test`.
+Current count: **188 tests**. Run `./mvnw test`. Salary tests follow the same rules — the
+Adzuna / h1bapi sources are driven through `StubHttpClient`, `SalaryRateLimiter` through
+`FakeClock`/`FakeSleeper`, and `LcaImportServiceTest` generates a tiny `.xlsx` in memory.
 
 ---
 
@@ -265,7 +295,10 @@ Current count: **119 tests** across 17 suites. Run `./mvnw test`.
 | Understand why a run stopped early | `sweep/SweepService.java`, the `switch` on `ResponseOutcome` in `runShard()` — cross-reference with `sweep_run.status` in the DB |
 | Add a new REST endpoint | a method on the matching `web/*Controller.java`, backed by a repository method in `store/` |
 | Change LinkedIn query parameters | `sweep/SweepQueryBuilder.java` only |
+| Work on salary data / add a salary source | `salary/` package, `SalaryEnrichmentService` is the orchestrator; `SALARY_SETUP.md` + HANDOFF.md §8 |
+| Import DOL LCA wage data | `./import-lca.sh <xlsx>` → `salary/LcaImportService.java` |
 | Understand the rate limiter's math | `http/RateLimiter.java`, tests in `http/RateLimiterTest.java` use `FakeClock` to assert timing without waiting |
 | Add a new metro shard | `application.yml`'s `sweep.shards` list — **verify the string against live LinkedIn first** (a wrong string returns the firehose, not an error) |
 | Find what LinkedIn's HTML actually looks like | `src/test/resources/fixtures/*.html` — these are real saved responses |
 | See what was deliberately left out | README's "What's not built yet" and HANDOFF.md §5 |
+| Set up salary API keys | `SALARY_SETUP.md` — copy `.env.example` → `.env` |

@@ -195,6 +195,22 @@ public class JobListingRepository {
                 .list();
     }
 
+    /**
+     * Rows for salary enrichment: everything seen in {@code runId} that passed the filter and
+     * has no salary yet ({@code salary_source is null}). The verdict predicate is the literal
+     * lowercase {@code 'pass'} the partial index uses (see HANDOFF.md §3).
+     */
+    public List<JobListing> findPassingWithoutSalaryByRun(long runId) {
+        return client.sql("""
+                        select * from job_listing
+                        where last_seen_run_id = :runId and filter_verdict = 'pass' and salary_source is null
+                        order by posted_at desc
+                        """)
+                .param("runId", runId)
+                .query(JobListingRepository::mapRow)
+                .list();
+    }
+
     /** Rows that have never been evaluated by the filter engine yet (freshly inserted). */
     public List<JobListing> findWithoutVerdict() {
         return client.sql("select * from job_listing where filter_verdict is null")
@@ -233,6 +249,24 @@ public class JobListingRepository {
                     .update();
         }
         return count;
+    }
+
+    /**
+     * Writes the enriched salary band and its provenance onto one job.
+     *
+     * @return 1 if the job existed and was updated, 0 otherwise
+     */
+    public int applySalary(long jobId, Double salaryMin, Double salaryMax, String source) {
+        return client.sql("""
+                        update job_listing
+                        set salary_min = :min, salary_max = :max, salary_source = :source
+                        where job_id = :id
+                        """)
+                .param("min", salaryMin)
+                .param("max", salaryMax)
+                .param("source", source)
+                .param("id", jobId)
+                .update();
     }
 
     static JobListing mapRow(ResultSet rs, int rowNum) throws SQLException {

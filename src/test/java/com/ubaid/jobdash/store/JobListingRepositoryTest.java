@@ -62,6 +62,47 @@ class JobListingRepositoryTest extends AbstractStoreTest {
     }
 
     @Test
+    void applySalaryWritesBandAndSourceOntoTheJob() {
+        long runId = sweepRunRepository.create(Instant.now(), "java", "remote", 24, false, null);
+        jobListingRepository.upsertAll(List.of(card(99, "Java Engineer")), runId, Instant.now());
+
+        int updated = jobListingRepository.applySalary(99, 150000.0, 190000.0, "lca");
+        assertThat(updated).isEqualTo(1);
+
+        JobListing job = jobListingRepository.findById(99).orElseThrow();
+        assertThat(job.salaryMin()).isEqualTo(150000.0);
+        assertThat(job.salaryMax()).isEqualTo(190000.0);
+        assertThat(job.salarySource()).isEqualTo("lca");
+
+        assertThat(jobListingRepository.applySalary(12345, 1.0, 2.0, "lca")).isEqualTo(0);
+    }
+
+    @Test
+    void findPassingWithoutSalaryByRunReturnsOnlyPassingSalarylessRowsOfThatRun() {
+        long runId = sweepRunRepository.create(Instant.now(), "java", "remote", 24, false, null);
+        jobListingRepository.upsertAll(List.of(
+                card(1, "Java Engineer"), card(2, "Backend Engineer"),
+                card(3, "Platform Engineer"), card(4, "Data Engineer")), runId, Instant.now());
+
+        jobListingRepository.applyVerdicts(List.of(
+                new JobListingRepository.VerdictUpdate(1, com.ubaid.jobdash.domain.FilterVerdict.PASS, null),
+                new JobListingRepository.VerdictUpdate(2, com.ubaid.jobdash.domain.FilterVerdict.PASS, null),
+                new JobListingRepository.VerdictUpdate(3, com.ubaid.jobdash.domain.FilterVerdict.REJECT, "title_word:x")), 1);
+        // job 4 keeps a null verdict; job 2 already has a salary
+        jobListingRepository.applySalary(2, 100000.0, 120000.0, "lca");
+
+        // a passing, salaryless row that belongs to a *different* run must not appear
+        long otherRun = sweepRunRepository.create(Instant.now(), "java", "remote", 24, false, null);
+        jobListingRepository.upsertAll(List.of(card(9, "Java Engineer 9")), otherRun, Instant.now());
+        jobListingRepository.applyVerdicts(List.of(
+                new JobListingRepository.VerdictUpdate(9, com.ubaid.jobdash.domain.FilterVerdict.PASS, null)), 1);
+
+        List<Long> ids = jobListingRepository.findPassingWithoutSalaryByRun(runId)
+                .stream().map(JobListing::jobId).toList();
+        assertThat(ids).containsExactly(1L);
+    }
+
+    @Test
     void userStatusRoundTripsThroughAppliedQuery() {
         long runId = sweepRunRepository.create(Instant.now(), "java", "remote", 24, false, null);
         jobListingRepository.upsertAll(List.of(card(7, "Java Engineer")), runId, Instant.now());

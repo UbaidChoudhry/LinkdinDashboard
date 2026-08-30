@@ -6,6 +6,15 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Load local secrets (salary-enrichment API keys) from .env if present, so the backend
+# picks them up via its ${ADZUNA_APP_ID:} etc. placeholders. .env is gitignored.
+if [ -f .env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
+fi
+
 BACKEND_PORT=8080
 FRONTEND_PORT=5173
 LOG_DIR="logs"

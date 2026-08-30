@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError, listJobs } from "../api/client";
 import type { JobResponse, JobTab, RunResponse } from "../types/api";
-import { DEFAULT_SORT, nextSortState, sortJobsBy, type SortState } from "../utils/sort";
+import { DEFAULT_SORT, filterByMinSalary, nextSortState, sortJobsBy, type SortState } from "../utils/sort";
 import { JobRow } from "./JobRow";
 import { PlainHeader, SortableHeader } from "./SortableHeader";
 
@@ -25,6 +25,8 @@ export function JobsPanel({ refreshToken, latestRun }: JobsPanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
+  // Empty input = no filter. Stored as a number once the field parses.
+  const [minSalary, setMinSalary] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -47,9 +49,13 @@ export function JobsPanel({ refreshToken, latestRun }: JobsPanelProps) {
   // choice from one list over to an unrelated one.
   useEffect(() => {
     setSort(DEFAULT_SORT);
+    setMinSalary(null);
   }, [activeTab]);
 
-  const sortedJobs = useMemo(() => (jobs ? sortJobsBy(jobs, sort) : jobs), [jobs, sort]);
+  const sortedJobs = useMemo(() => {
+    if (!jobs) return jobs;
+    return filterByMinSalary(sortJobsBy(jobs, sort), minSalary);
+  }, [jobs, sort, minSalary]);
   const handleSort = useCallback((column: Parameters<typeof nextSortState>[1]) => {
     setSort((current) => nextSortState(current, column));
   }, []);
@@ -62,6 +68,11 @@ export function JobsPanel({ refreshToken, latestRun }: JobsPanelProps) {
       // it from the current view immediately and let the row disappear.
       return prev.filter((j) => j.jobId !== updated.jobId);
     });
+  }
+
+  // Same money formatting as JobRow's formatSalary, for the "filter hid everything" hint.
+  function formatUsd(n: number): string {
+    return `$${Math.round(n).toLocaleString()}`;
   }
 
   function emptyReason(): string {
@@ -117,6 +128,23 @@ export function JobsPanel({ refreshToken, latestRun }: JobsPanelProps) {
         </div>
       )}
 
+      <div className="field-row min-salary-row">
+        <label htmlFor="jp-min-salary">Min salary</label>
+        <input
+          id="jp-min-salary"
+          type="number"
+          min="0"
+          step="10000"
+          inputMode="numeric"
+          placeholder="No minimum"
+          value={minSalary ?? ""}
+          onChange={(e) => {
+            const v = Number(e.target.value);
+            setMinSalary(e.target.value.trim() === "" || Number.isNaN(v) ? null : v);
+          }}
+        />
+      </div>
+
       {actionError && (
         <p className="form-error" role="alert">
           {actionError}
@@ -133,12 +161,24 @@ export function JobsPanel({ refreshToken, latestRun }: JobsPanelProps) {
 
       {jobs !== null && jobs.length === 0 && !error && <p className="hint">{emptyReason()}</p>}
 
+      {jobs !== null &&
+        jobs.length > 0 &&
+        sortedJobs !== null &&
+        sortedJobs.length === 0 &&
+        !error &&
+        minSalary != null && (
+          <p className="hint">
+            No jobs at or above {formatUsd(minSalary)}. Lower the minimum or clear it.
+          </p>
+        )}
+
       {sortedJobs !== null && sortedJobs.length > 0 && (
         <>
           <p className="hint sort-hint">
             {sort.column === "default"
               ? "Sorted by salary, then most recent. Click a column to sort by it instead."
-              : "Click a column to change sort, or click it again to reverse."}
+              : "Click a column to change sort, or click it again to reverse."}{" "}
+            The min-salary box never hides jobs whose salary is unknown.
           </p>
           <table className="job-table">
             <thead>

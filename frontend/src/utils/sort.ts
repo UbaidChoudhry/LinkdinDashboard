@@ -29,6 +29,17 @@ export function sortJobs(jobs: JobResponse[]): JobResponse[] {
   return [...jobs].sort(compareJobs);
 }
 
+/**
+ * Hides a job only when it has a *known* salary below `min` - i.e. drop it when
+ * `salaryMax != null && salaryMax < min`. Jobs with an unknown salary (salaryMax == null)
+ * are always kept; the comparator already sinks them to the bottom of the list. `min == null`
+ * (empty input) means no filtering. Applied after sorting so the order is preserved.
+ */
+export function filterByMinSalary(jobs: JobResponse[], min: number | null): JobResponse[] {
+  if (min == null) return jobs;
+  return jobs.filter((j) => j.salaryMax == null || j.salaryMax >= min);
+}
+
 /** Any table column the user can click to sort by. "default" is the salary-bucket view above. */
 export type SortColumn = "default" | "title" | "company" | "location" | "postedAt" | "salary";
 export type SortDirection = "asc" | "desc";

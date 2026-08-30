@@ -4,6 +4,7 @@ import com.ubaid.jobdash.http.FetchResult;
 import com.ubaid.jobdash.http.PacedHttpClient;
 import com.ubaid.jobdash.http.SweepProperties;
 import com.ubaid.jobdash.filter.FilterEngine;
+import com.ubaid.jobdash.salary.SalaryEnrichmentService;
 import com.ubaid.jobdash.source.linkedin.CardParser;
 import com.ubaid.jobdash.source.linkedin.JobCard;
 import com.ubaid.jobdash.store.JobCardInsert;
@@ -47,6 +48,7 @@ public class SweepService {
     private final SweepRunRepository sweepRunRepository;
     private final SweepShardsProperties shardsProperties;
     private final SweepProperties sweepProperties;
+    private final SalaryEnrichmentService salaryEnrichmentService;
     private final Clock clock;
 
     private final ConcurrentHashMap<Long, SweepProgress> progressRegistry = new ConcurrentHashMap<>();
@@ -55,7 +57,8 @@ public class SweepService {
 
     public SweepService(PacedHttpClient pacedHttpClient, CardParser cardParser, FilterEngine filterEngine,
                          JobListingRepository jobListingRepository, SweepRunRepository sweepRunRepository,
-                         SweepShardsProperties shardsProperties, SweepProperties sweepProperties, Clock clock) {
+                         SweepShardsProperties shardsProperties, SweepProperties sweepProperties,
+                         SalaryEnrichmentService salaryEnrichmentService, Clock clock) {
         this.pacedHttpClient = pacedHttpClient;
         this.cardParser = cardParser;
         this.filterEngine = filterEngine;
@@ -63,6 +66,7 @@ public class SweepService {
         this.sweepRunRepository = sweepRunRepository;
         this.shardsProperties = shardsProperties;
         this.sweepProperties = sweepProperties;
+        this.salaryEnrichmentService = salaryEnrichmentService;
         this.clock = clock;
     }
 
@@ -221,6 +225,11 @@ public class SweepService {
                         // reports, the detail queue's partial index) seeing triaged rows, and
                         // means results streamed mid-run are already filtered.
                         filterEngine.evaluateNewRows();
+                        // Salary enrichment is best-effort and runs inline per the product
+                        // decision. SalaryEnrichmentService guarantees it never throws, so it
+                        // can't abort this pagination loop.
+                        salaryEnrichmentService.enrichRun(runId, location,
+                                () -> cancelFlag.get() || Thread.currentThread().isInterrupted());
                     }
                     if (start == LAST_START_BEFORE_CAP && cards.size() >= PAGE_SIZE) {
                         // A full page at the last offset before LinkedIn's cap means >=1000

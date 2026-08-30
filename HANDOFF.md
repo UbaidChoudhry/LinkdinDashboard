@@ -225,7 +225,7 @@ preserves:
 
 | Cut | Why | To add |
 |---|---|---|
-| **Salary** | Cards carry none; it's prose in the detail fragment. User chose to source it elsewhere later. | Columns `salary_min/max/source` exist. `JobSortOrder` (backend) and `utils/sort.ts` (frontend) already implement the two-bucket comparator and are tested with seeded values. Populate the columns and it works. |
+| **Salary** | ~~Cards carry none.~~ **Built 2026-09-06 — see §8.** | — |
 | **Detail fetching** | Removing eager fetch was a user decision; clicks go straight to LinkedIn. | `detail_*` columns and the `job_detail_queue` partial index are in place. Build a worker draining that index newest-first. Respect the three-outcome rule: 404 → `gone`; 429/999/empty → leave `detail_fetched_at` null and open the breaker; success → populate. **Cache permanently — never re-fetch an `ok` row.** |
 | **ATS adapters** | Deferred; needs a hand-maintained company→slug map. | Put them behind a `JobSource` seam. Greenhouse `boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true`, Lever `api.lever.co/v0/postings/{slug}?mode=json`, Ashby `api.ashbyhq.com/posting-api/job-board/{slug}`. These are free, public, documented, and fresher than LinkedIn. `job_listing.source` already exists. |
 | **Relay/spam detection** | Its strongest signal is duplicate `description_hash`, which needs descriptions. Its other signal (apply-URL domain) is unavailable — the guest fragment's apply button carries **no href**. | Needs detail fetching first. Then hash `md5(lower(regexp_replace(description,'\s+',' ','g')))` **in Java**, and flag one body appearing under multiple company names. Suppress, never delete. Only the volume report works today. |
@@ -257,5 +257,51 @@ which has zero commits. First commit is yours to make.
 before the first commit** — `data/jobdash.db` may contain real scraped job data you don't want
 in version control.
 
-Test counts by suite are in [CODEMAP.md](CODEMAP.md). Run `./mvnw test` and expect **119
+Test counts by suite are in [CODEMAP.md](CODEMAP.md). Run `./mvnw test` and expect **188
 passing**.
+
+---
+
+## 8. Salary enrichment (added 2026-09-06)
+
+**What it does.** During a sweep, right after `FilterEngine.evaluateNewRows()`, `SweepService`
+calls `SalaryEnrichmentService.enrichRun(runId, location, cancelled)`. For every passing row
+with no salary yet, it consults the `salary_estimate` cache keyed on
+`(CompanyKey.of(company), TitleKey.of(title))`; on a miss it runs a source cascade and writes
+`job_listing.salary_min/max/source` plus a cache row.
+
+**The cascade** (`com.ubaid.jobdash.salary`, ordered in `SalaryEnrichmentService`, not by bean
+order):
+1. `LcaSalarySource` — local `lca_wage` table, populated by `./import-lca.sh <DOL xlsx>`.
+   Company-specific. `SocMapper` turns the LinkedIn title into SOC occupation codes;
+   `UsState.fromLocation` turns the location into a state; lookup falls back state → national.
+   Maps `wage_p25 → salaryMin`, `wage_p75 → salaryMax`.
+2. `AdzunaSalarySource` — Adzuna API, title + location estimate. Blank key ⇒ skipped.
+3. `H1bApiSalarySource` — h1bapi.com, company-specific. **Endpoint/field mapping was written
+   from public docs without a key to verify — see the `NOTE:` in that class.** Blank key ⇒ skipped.
+
+**Decisions worth knowing:**
+- **Inline, not a post-run pass** — a deliberate product call. `enrichRun` re-queries
+  `findPassingWithoutSalaryByRun` on every page; enriched rows drop out (their `salary_source`
+  is set), but rows that *missed* keep a null `salary_source` and a `source='none'` cache row,
+  so they're re-checked cheaply (cache hit, no network) once per remaining page. Acceptable —
+  all local SQLite — but if you make enrichment heavier, move it to end-of-run.
+- **`SalaryEnrichmentService` never throws.** Per-row `catch (Exception)`, per-source
+  `catch (RuntimeException)`. A salary failure must never abort a sweep. Assert this stays true.
+- **Two rate-limit layers on the external APIs** (`SalaryRateLimiter`, a singleton like
+  `RateLimiter` — the pacing gate is an instance field): a shared 1s pacing gate, and a
+  per-source rolling-24h cap counted from the `external_request_log` table (survives restart).
+  This is **separate from** the LinkedIn `request_log` / `RateLimiter` — never conflate them.
+- **3-year staleness** (`salary.max-data-age`, default 1095d): a source result whose `dataDate`
+  is older than that is dropped and the cascade continues. LCA rows older than the cutoff are
+  dropped at *import* time too.
+- **90-day cache TTL** (`salary.cache-ttl`): a fresh cache row (any source, including `'none'`)
+  short-circuits all lookups — this is the "only check where no record exists" rule.
+- **`XlsxStreamReader` is dependency-free** — hand-rolled StAX + `java.util.zip`, no Apache POI.
+  The DOL file's `sheet1.xml` is ~500 MB uncompressed; it must be streamed. Real column layout
+  notes are in that class and `LcaImportService`.
+- **Keys live in `.env`** (gitignored), sourced by `run.sh`. `application.yml` reads
+  `${ADZUNA_APP_ID:}` etc. `SALARY_SETUP.md` is the user-facing guide.
+- The two-bucket sort (`JobSortOrder`, `utils/sort.ts`) was already built and correct; only the
+  frontend **Min salary** input (`filterByMinSalary` in `utils/sort.ts`) is new. It hides rows
+  with a *known* salary below the threshold and never hides unknown-salary rows.
