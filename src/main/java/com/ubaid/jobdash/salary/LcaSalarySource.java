@@ -61,8 +61,9 @@ public class LcaSalarySource implements SalarySource {
         // "typical range" for this employer+occupation, and its top (p75) is what the job sort
         // orders on.
         LocalDate dataDate = parseDate(row.latestDataDate());
+        String matchedEntity = row.employerDisplay() != null ? row.employerDisplay() : row.employerKey();
         return Optional.of(new SalaryResult(
-                row.wageP25(), row.wageP75(), "USD", dataDate, row.sampleCount(), "lca"));
+                row.wageP25(), row.wageP75(), "USD", dataDate, row.sampleCount(), "lca", matchedEntity));
     }
 
     private LocalDate parseDate(String text) {

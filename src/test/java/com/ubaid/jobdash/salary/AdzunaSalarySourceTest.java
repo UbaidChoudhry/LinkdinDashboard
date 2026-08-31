@@ -31,7 +31,7 @@ class AdzunaSalarySourceTest extends AbstractStoreTest {
                 new SalaryProperties.MonthlyCap(0, 0),
                 new SalaryProperties.Adzuna(appId, appKey),
                 new SalaryProperties.H1bApi(""),
-                new SalaryProperties.Lca(""));
+                new SalaryProperties.Lca("", true));
     }
 
     private AdzunaSalarySource source(SalaryProperties props) {

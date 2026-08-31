@@ -104,6 +104,11 @@ class JobDashApiTest {
                 .param("v", salaryMax).param("id", jobId).update();
     }
 
+    private void setSalary(long jobId, Double salaryMax, String source, String sourceDetail) {
+        client.sql("update job_listing set salary_max = :v, salary_source = :s, salary_source_detail = :d where job_id = :id")
+                .param("v", salaryMax).param("s", source).param("d", sourceDetail).param("id", jobId).update();
+    }
+
     // ---- tabs -----------------------------------------------------------------------------
 
     @Test
@@ -166,6 +171,19 @@ class JobDashApiTest {
                 .andExpect(jsonPath("$[1].jobId").value(11))
                 .andExpect(jsonPath("$[2].jobId").value(13))
                 .andExpect(jsonPath("$[3].jobId").value(14));
+    }
+
+    @Test
+    void jobsEndpointExposesSalarySourceDetail() throws Exception {
+        long run = createRunRow(Instant.parse("2026-08-27T00:00:00Z"));
+        insertJob(50, run, "Software Engineer", "Amazon", Instant.parse("2026-08-27T00:00:00Z"));
+        setVerdictPass(50);
+        setSalary(50, 190000.0, "lca", "AMAZON.COM SERVICES LLC");
+
+        mockMvc.perform(get("/api/jobs").param("tab", "search"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].jobId").value(50))
+                .andExpect(jsonPath("$[0].salarySourceDetail").value("AMAZON.COM SERVICES LLC"));
     }
 
     // ---- job status round trip ---------------------------------------------------------------

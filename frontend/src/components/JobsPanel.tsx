@@ -178,7 +178,8 @@ export function JobsPanel({ refreshToken, latestRun }: JobsPanelProps) {
             {sort.column === "default"
               ? "Sorted by salary, then most recent. Click a column to sort by it instead."
               : "Click a column to change sort, or click it again to reverse."}{" "}
-            The min-salary box never hides jobs whose salary is unknown.
+            The min-salary box never hides jobs whose salary is unknown. Salaries from LCA disclosure
+            data show the employer entity they were matched to; a leading ≈ marks an approximate match.
           </p>
           <table className="job-table">
             <thead>

@@ -171,7 +171,7 @@ public class H1bApiSalarySource implements SalarySource {
         }
         // A US federal fiscal year ends Sept 30; use that as the data point's date.
         LocalDate dataDate = latestYear == null ? null : LocalDate.of(latestYear, 9, 30);
-        return Optional.of(new SalaryResult(minVal, maxVal, "USD", dataDate, count, SOURCE));
+        return Optional.of(new SalaryResult(minVal, maxVal, "USD", dataDate, count, SOURCE, null));
     }
 
     private static Double num(JsonNode obj, String field) {

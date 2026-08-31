@@ -66,7 +66,7 @@ Other options:
 ```bash
 ./run.sh --backend-only     # API only, no dev server
 ./run.sh --frontend-only    # UI only, expects a backend already running
-./import-lca.sh <file.xlsx> # one-shot: load a DOL LCA disclosure file for salary data
+./import-lca.sh             # one-shot: load every DOL LCA .xlsx in data/lca (then deletes them)
 ```
 
 ### Running the pieces by hand
@@ -79,7 +79,7 @@ cd frontend && npm install && npm run dev   # front end (first run needs the ins
 ## Tests
 
 ```bash
-./mvnw test                         # 188 tests, no network access
+./mvnw test                         # 206 tests, no network access
 cd frontend && npm run build        # tsc -b && vite build - type errors fail the build
 cd frontend && npm run lint
 ```

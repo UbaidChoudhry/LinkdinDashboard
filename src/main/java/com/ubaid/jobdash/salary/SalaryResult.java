@@ -14,6 +14,10 @@ import java.time.LocalDate;
  *                      determine it
  * @param sampleCount  how many underlying records the band was derived from, when known
  * @param source       provenance tag: {@code "lca"}, {@code "adzuna"} or {@code "h1bapi"}
+ * @param matchedEntity the human-readable entity this band was matched against — the LCA
+ *                      {@code employer_display} (or its {@code employer_key} when no display
+ *                      name is stored); {@code null} for sources that estimate by title and
+ *                      location rather than by a specific employer (Adzuna, h1bapi)
  */
 public record SalaryResult(
         Double salaryMin,
@@ -21,6 +25,7 @@ public record SalaryResult(
         String currency,
         LocalDate dataDate,
         Integer sampleCount,
-        String source
+        String source,
+        String matchedEntity
 ) {
 }

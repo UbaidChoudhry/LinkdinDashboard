@@ -12,7 +12,7 @@ frontend/  React + TypeScript dashboard (Vite dev server, :5173)
 src/       Spring Boot backend (Java 21, :8080)
              ├─ main/java/com/ubaid/jobdash/   application code, by package (below)
              ├─ main/resources/                application.yml, Flyway migrations
-             └─ test/                          mirrors main/java/, 119 tests
+             └─ test/                          mirrors main/java/, 206 tests
 data/      the SQLite database file (gitignored, created on first boot)
 ```
 
@@ -152,12 +152,12 @@ salary-less rows; for each it checks the `salary_estimate` cache (key: normalize
 | File | Job |
 |---|---|
 | `SalarySource` | the seam: `Optional<SalaryResult> lookup(SalaryLookup)`. Three impls, tried in this order: |
-| `LcaSalarySource` | local `lca_wage` table (US DOL H-1B LCA disclosure data). Company-specific. Uses `SocMapper` (title → SOC code) and `UsState` (location → state); lookup falls back state → national |
+| `LcaSalarySource` | local `lca_wage` table (US DOL H-1B LCA disclosure data). Company-specific. Uses `SocMapper` (title → SOC code) and `UsState` (location → state). Lookup is 4-tier: exact+state, exact+national, **word-boundary prefix**+state, prefix+national — so "Amazon" reaches `amazon com services` without `meta` reaching `metabase`. Returns the matched employer so the UI can show it |
 | `AdzunaSalarySource` | Adzuna API — title+location estimate. Skipped if no key |
 | `H1bApiSalarySource` | h1bapi.com — company-specific H-1B wages. Skipped if no key. **Request shape unverified against a live key — see its `NOTE:`** |
 | `SalaryRateLimiter` | **singleton** (pacing gate is an instance field, like `http/RateLimiter`). Shared 1s pacing gate + per-source rolling-24h cap counted from `external_request_log`. Separate from the LinkedIn budget |
 | `XlsxStreamReader` | dependency-free streaming `.xlsx` reader (StAX + `java.util.zip`, no POI). The DOL file's sheet is ~500 MB uncompressed |
-| `LcaImportService` / `LcaImportRunner` | parse → filter to `Certified` → annualize wage → drop >3yr-old rows → aggregate percentiles into `lca_wage`. The runner is a one-shot triggered by `./import-lca.sh <file>` (property `salary.lca.import-file`) |
+| `LcaImportService` / `LcaImportRunner` | `importFrom` = one file: parse → keep `Certified` → annualize wage → drop >3yr-old rows → aggregate percentiles into `lca_wage`. `importAll` = a whole directory, deleting each spreadsheet that actually contributed rows. The runner is a one-shot batch job (no web server) triggered by `./import-lca.sh [dir]`, property `salary.lca.import-path` |
 | `SalaryProperties` / `SalaryConfiguration` | the `salary:` config block; beans `salaryRateLimiter`, `salaryHttpClient` |
 | `CompanyKey` / `TitleKey` / `SocMapper` / `UsState` | pure normalization helpers |
 
@@ -180,7 +180,7 @@ scattered elsewhere.
 | `DataRepository` | aggregate stats + the scoped `clearJobResults()` |
 | `DatabaseFileLocator` | resolves the SQLite file path from `spring.datasource.url`, reports its size on disk (main + `-wal` + `-shm`) |
 | `SalaryEstimateRepository` | `salary_estimate` — the per-(company,title) salary cache (90-day TTL; a `source='none'` row means "looked, found nothing") |
-| `LcaWageRepository` | `lca_wage` — aggregated DOL LCA wage percentiles, keyed `(employer_key, soc_code, state)` (`state=''` is the national roll-up) |
+| `LcaWageRepository` | `lca_wage` — aggregated DOL LCA wage percentiles, keyed `(employer_key, soc_code, state)` (`state=''` is the national roll-up), plus `employer_display` (the raw legal name, shown in the UI). **`lookup()`'s prefix predicate is word-boundary only — see HANDOFF.md §8 before touching it** |
 | `ExternalRequestLogRepository` | `external_request_log` — backs `SalaryRateLimiter`'s per-source daily cap; **not** the LinkedIn budget |
 
 `store/adapter/` — `JdbcRequestBudgetStore` and `JdbcCircuitStateStore` bridge the `http`
@@ -238,8 +238,9 @@ trigger a refetch) and passes them down as props.
 
 One SQLite file, `data/jobdash.db`, WAL mode. Schema lives in
 `src/main/resources/db/migration/` (Flyway — `V1__init.sql` creates everything,
-`V2__seed.sql` inserts the 8 default exclude words, `V3__salary.sql` adds the salary tables).
-**Never hand-edit a shipped migration** — add a new `V4__...sql` instead.
+`V2__seed.sql` inserts the 8 default exclude words, `V3__salary.sql` adds the salary tables,
+`V4__lca_employer_display.sql` adds the matched-employer columns).
+**Never hand-edit a shipped migration** — add a new `V5__...sql` instead.
 
 ```
 job_listing        the results. See JobListingRepository above for the upsert rule.
@@ -280,7 +281,7 @@ Test packages mirror `main/java` exactly — if you're looking for tests of
   file names for what each fixture represents (the two 26-byte files are the real end-of-results
   sentinel, not corrupt captures).
 
-Current count: **188 tests**. Run `./mvnw test`. Salary tests follow the same rules — the
+Current count: **206 tests**. Run `./mvnw test`. Salary tests follow the same rules — the
 Adzuna / h1bapi sources are driven through `StubHttpClient`, `SalaryRateLimiter` through
 `FakeClock`/`FakeSleeper`, and `LcaImportServiceTest` generates a tiny `.xlsx` in memory.
 

@@ -28,7 +28,7 @@ class SalaryEnrichmentServiceTest extends AbstractStoreTest {
                 new SalaryProperties.MonthlyCap(0, 0),
                 new SalaryProperties.Adzuna("", ""),
                 new SalaryProperties.H1bApi(""),
-                new SalaryProperties.Lca(""));
+                new SalaryProperties.Lca("", true));
     }
 
     /** In-test source returning a canned result (or throwing). */
@@ -76,10 +76,10 @@ class SalaryEnrichmentServiceTest extends AbstractStoreTest {
     void cacheHitFreshAppliesWithoutCallingAnySource() {
         long runId = seedPassingJob(1, "Acme Robotics", "Software Engineer");
         salaryEstimateRepository.upsert(new SalaryEstimate("acme robotics", "software engineer",
-                120000.0, 155000.0, "USD", "adzuna", "2026-01-01", 5, NOW.minus(Duration.ofDays(10))));
+                120000.0, 155000.0, "USD", "adzuna", "2026-01-01", 5, NOW.minus(Duration.ofDays(10)), null));
 
         FakeSource shouldNotRun = new FakeSource("lca",
-                new SalaryResult(1.0, 2.0, "USD", LocalDate.now(clock), 1, "lca"), false);
+                new SalaryResult(1.0, 2.0, "USD", LocalDate.now(clock), 1, "lca", null), false);
         service(true, shouldNotRun).enrichRun(runId, "Austin, Texas", NOT_CANCELLED);
 
         JobListing job = jobListingRepository.findById(1).orElseThrow();
@@ -88,10 +88,26 @@ class SalaryEnrichmentServiceTest extends AbstractStoreTest {
     }
 
     @Test
+    void cacheHitReAppliesSourceDetailOntoTheJob() {
+        long runId = seedPassingJob(7, "Acme Robotics", "Software Engineer");
+        salaryEstimateRepository.upsert(new SalaryEstimate("acme robotics", "software engineer",
+                160000.0, 205000.0, "USD", "lca", "2025-03-01", 12, NOW.minus(Duration.ofDays(10)),
+                "ACME ROBOTICS LLC"));
+
+        // No source should run on a fresh cache hit; the detail must still land on the job.
+        service(true, new FakeSource("lca", null, true)).enrichRun(runId, "Austin, Texas", NOT_CANCELLED);
+
+        JobListing job = jobListingRepository.findById(7).orElseThrow();
+        assertThat(job.salarySource()).isEqualTo("lca");
+        assertThat(job.salarySourceDetail()).isEqualTo("ACME ROBOTICS LLC");
+    }
+
+    @Test
     void cacheMissRunsCascadeAndWritesEstimateAndJob() {
         long runId = seedPassingJob(2, "Acme Robotics", "Software Engineer");
         FakeSource lca = new FakeSource("lca",
-                new SalaryResult(160000.0, 210000.0, "USD", LocalDate.of(2025, 3, 1), 12, "lca"), false);
+                new SalaryResult(160000.0, 210000.0, "USD", LocalDate.of(2025, 3, 1), 12, "lca",
+                        "ACME ROBOTICS LLC"), false);
 
         service(true, lca).enrichRun(runId, "Austin, Texas", NOT_CANCELLED);
 
@@ -99,20 +115,22 @@ class SalaryEnrichmentServiceTest extends AbstractStoreTest {
         assertThat(job.salaryMin()).isEqualTo(160000.0);
         assertThat(job.salaryMax()).isEqualTo(210000.0);
         assertThat(job.salarySource()).isEqualTo("lca");
+        assertThat(job.salarySourceDetail()).isEqualTo("ACME ROBOTICS LLC");
 
         SalaryEstimate cached = salaryEstimateRepository.find("acme robotics", "software engineer").orElseThrow();
         assertThat(cached.source()).isEqualTo("lca");
         assertThat(cached.dataDate()).isEqualTo("2025-03-01");
         assertThat(cached.fetchedAt()).isEqualTo(NOW);
+        assertThat(cached.sourceDetail()).isEqualTo("ACME ROBOTICS LLC");
     }
 
     @Test
     void resultOlderThanMaxDataAgeIsRejectedAndNextSourceTried() {
         long runId = seedPassingJob(3, "Acme Robotics", "Software Engineer");
         FakeSource stale = new FakeSource("lca",
-                new SalaryResult(90000.0, 100000.0, "USD", LocalDate.of(2021, 1, 1), 3, "lca"), false);
+                new SalaryResult(90000.0, 100000.0, "USD", LocalDate.of(2021, 1, 1), 3, "lca", null), false);
         FakeSource fresh = new FakeSource("adzuna",
-                new SalaryResult(150000.0, 175000.0, "USD", LocalDate.of(2026, 6, 1), 8, "adzuna"), false);
+                new SalaryResult(150000.0, 175000.0, "USD", LocalDate.of(2026, 6, 1), 8, "adzuna", null), false);
 
         service(true, fresh, stale).enrichRun(runId, "Austin, Texas", NOT_CANCELLED);
 
@@ -147,7 +165,7 @@ class SalaryEnrichmentServiceTest extends AbstractStoreTest {
             client.sql("update job_listing set filter_verdict = 'pass' where job_id = :id").param("id", id).update();
         }
         FakeSource lca = new FakeSource("lca",
-                new SalaryResult(1.0, 200000.0, "USD", LocalDate.of(2025, 1, 1), 1, "lca"), false);
+                new SalaryResult(1.0, 200000.0, "USD", LocalDate.of(2025, 1, 1), 1, "lca", null), false);
 
         boolean[] first = {true};
         BooleanSupplier cancelAfterFirst = () -> {
@@ -182,7 +200,7 @@ class SalaryEnrichmentServiceTest extends AbstractStoreTest {
     void disabledIsANoOp() {
         long runId = seedPassingJob(6, "Acme Robotics", "Software Engineer");
         FakeSource lca = new FakeSource("lca",
-                new SalaryResult(1.0, 2.0, "USD", LocalDate.of(2025, 1, 1), 1, "lca"), false);
+                new SalaryResult(1.0, 2.0, "USD", LocalDate.of(2025, 1, 1), 1, "lca", null), false);
 
         service(false, lca).enrichRun(runId, "Austin, Texas", NOT_CANCELLED);
 

@@ -91,7 +91,10 @@ public class SalaryEnrichmentService {
                         && salaryEstimateRepository.isFresh(cached.get(), now, properties.cacheTtl())) {
                     SalaryEstimate c = cached.get();
                     if (!"none".equals(c.source())) {
-                        jobListingRepository.applySalary(job.jobId(), c.salaryMin(), c.salaryMax(), c.source());
+                        // A cache hit must re-apply source_detail too, or the matched-entity
+                        // label is silently lost on every run after the first (HANDOFF §1).
+                        jobListingRepository.applySalary(job.jobId(), c.salaryMin(), c.salaryMax(),
+                                c.source(), c.sourceDetail());
                         cachedHits++;
                     }
                     continue;
@@ -105,12 +108,13 @@ public class SalaryEnrichmentService {
                             companyKey, titleKey, win.salaryMin(), win.salaryMax(),
                             win.currency() == null ? "USD" : win.currency(), win.source(),
                             win.dataDate() == null ? null : win.dataDate().toString(),
-                            win.sampleCount(), now));
-                    jobListingRepository.applySalary(job.jobId(), win.salaryMin(), win.salaryMax(), win.source());
+                            win.sampleCount(), now, win.matchedEntity()));
+                    jobListingRepository.applySalary(job.jobId(), win.salaryMin(), win.salaryMax(),
+                            win.source(), win.matchedEntity());
                     enriched++;
                 } else {
                     salaryEstimateRepository.upsert(new SalaryEstimate(
-                            companyKey, titleKey, null, null, "USD", "none", null, null, now));
+                            companyKey, titleKey, null, null, "USD", "none", null, null, now, null));
                     missed++;
                 }
             } catch (Exception e) {

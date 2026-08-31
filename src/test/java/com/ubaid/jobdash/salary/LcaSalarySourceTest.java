@@ -22,7 +22,8 @@ class LcaSalarySourceTest extends AbstractStoreTest {
     }
 
     private static LcaWageRow row(String employer, String soc, String state, double p50) {
-        return new LcaWageRow(employer, soc, state, p50 - 20000, p50, p50 + 25000, p50 + 60000, 12, "2025-03-15");
+        return new LcaWageRow(employer, soc, state, p50 - 20000, p50, p50 + 25000, p50 + 60000, 12,
+                "2025-03-15", employer.toUpperCase() + " LLC");
     }
 
     private static SalaryLookup lookup(String company, String title, String location) {
@@ -43,6 +44,28 @@ class LcaSalarySourceTest extends AbstractStoreTest {
         assertThat(r.source()).isEqualTo("lca");
         assertThat(r.sampleCount()).isEqualTo(12);
         assertThat(r.dataDate()).isEqualTo(LocalDate.of(2025, 3, 15));
+    }
+
+    @Test
+    void returnsMatchedEntityAsTheDisplayNameNotTheKey() {
+        lcaWageRepository.upsertAll(List.of(new LcaWageRow("amazon com services", "15-1252", "",
+                140000.0, 160000.0, 185000.0, 220000.0, 1391, "2025-03-15", "AMAZON.COM SERVICES LLC")));
+
+        SalaryResult r = source.lookup(lookup("Amazon", "Software Engineer",
+                "Austin, Texas, United States")).orElseThrow();
+
+        assertThat(r.matchedEntity()).isEqualTo("AMAZON.COM SERVICES LLC");
+    }
+
+    @Test
+    void matchedEntityFallsBackToKeyWhenDisplayIsNull() {
+        lcaWageRepository.upsertAll(List.of(new LcaWageRow("acme robotics", "15-1252", "",
+                140000.0, 160000.0, 185000.0, 220000.0, 5, "2025-03-15", null)));
+
+        SalaryResult r = source.lookup(lookup("Acme Robotics Inc", "Software Engineer",
+                "Austin, Texas, United States")).orElseThrow();
+
+        assertThat(r.matchedEntity()).isEqualTo("acme robotics");
     }
 
     @Test

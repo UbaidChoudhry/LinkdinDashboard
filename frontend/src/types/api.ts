@@ -25,6 +25,10 @@ export interface JobResponse {
   salaryMin: number | null;
   salaryMax: number | null;
   salarySource?: string | null;
+  // For `salarySource === "lca"`, the LCA employer legal entity the salary was
+  // actually matched from (e.g. "AMAZON.COM SERVICES LLC"). Null for non-LCA
+  // sources and for rows imported before this field existed.
+  salarySourceDetail?: string | null;
 }
 
 export type RunStatus =

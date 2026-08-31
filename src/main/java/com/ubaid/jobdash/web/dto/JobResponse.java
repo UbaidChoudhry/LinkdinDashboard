@@ -29,7 +29,8 @@ public record JobResponse(
         String applyDomain,
         Double salaryMin,
         Double salaryMax,
-        String salarySource
+        String salarySource,
+        String salarySourceDetail
 ) {
 
     public static JobResponse from(JobListing job) {
@@ -53,7 +54,8 @@ public record JobResponse(
                 job.applyDomain(),
                 job.salaryMin(),
                 job.salaryMax(),
-                job.salarySource()
+                job.salarySource(),
+                job.salarySourceDetail()
         );
     }
 }

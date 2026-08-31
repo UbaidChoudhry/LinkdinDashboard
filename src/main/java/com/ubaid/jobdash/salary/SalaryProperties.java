@@ -53,7 +53,12 @@ public record SalaryProperties(
     public record H1bApi(String apiKey) {
     }
 
-    /** Path to the DOL LCA disclosure spreadsheet to import; blank when unconfigured. */
-    public record Lca(String importFile) {
+    /**
+     * The DOL LCA import job. {@code importPath} is a single {@code .xlsx} <em>or</em> a
+     * directory of them, and is blank on a normal boot (the import only runs when it is set).
+     * {@code deleteAfterImport} removes each spreadsheet once it has actually contributed rows —
+     * they are ~80 MB apiece and are of no further use once aggregated into {@code lca_wage}.
+     */
+    public record Lca(String importPath, boolean deleteAfterImport) {
     }
 }

@@ -55,4 +55,10 @@ salary:
   h1b-api:
     api-key: ${H1BAPI_KEY:}
   lca:
-    import-file: ${LCA_IMPORT_FILE:}
+    # Set ONLY by ./import-lca.sh, as a command-line argument. A single .xlsx or a directory of
+    # them; blank on a normal boot. Deliberately not wired to an env var: a stray value in .env
+    # would make ./run.sh import-and-exit instead of starting the server.
+    import-path: ""
+    # Spreadsheets are ~80MB and useless once aggregated into lca_wage, so they are removed
+    # after a successful import. Only a file that actually contributed rows is ever deleted.
+    delete-after-import: ${LCA_DELETE_AFTER_IMPORT:true}

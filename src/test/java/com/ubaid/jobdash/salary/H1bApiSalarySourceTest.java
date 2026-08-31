@@ -32,7 +32,7 @@ class H1bApiSalarySourceTest extends AbstractStoreTest {
                 new SalaryProperties.MonthlyCap(0, 0),
                 new SalaryProperties.Adzuna("", ""),
                 new SalaryProperties.H1bApi(apiKey),
-                new SalaryProperties.Lca(""));
+                new SalaryProperties.Lca("", true));
     }
 
     private H1bApiSalarySource source(SalaryProperties props) {

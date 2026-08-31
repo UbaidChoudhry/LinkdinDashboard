@@ -256,15 +256,17 @@ public class JobListingRepository {
      *
      * @return 1 if the job existed and was updated, 0 otherwise
      */
-    public int applySalary(long jobId, Double salaryMin, Double salaryMax, String source) {
+    public int applySalary(long jobId, Double salaryMin, Double salaryMax, String source, String sourceDetail) {
         return client.sql("""
                         update job_listing
-                        set salary_min = :min, salary_max = :max, salary_source = :source
+                        set salary_min = :min, salary_max = :max,
+                            salary_source = :source, salary_source_detail = :sourceDetail
                         where job_id = :id
                         """)
                 .param("min", salaryMin)
                 .param("max", salaryMax)
                 .param("source", source)
+                .param("sourceDetail", sourceDetail)
                 .param("id", jobId)
                 .update();
     }
@@ -296,6 +298,7 @@ public class JobListingRepository {
                 (Double) rs.getObject("salary_min"),
                 (Double) rs.getObject("salary_max"),
                 rs.getString("salary_source"),
+                rs.getString("salary_source_detail"),
                 rs.getInt("suppressed") != 0
         );
     }

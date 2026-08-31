@@ -37,9 +37,9 @@ public class SalaryEstimateRepository {
         return client.sql("""
                         insert into salary_estimate
                             (company_key, title_key, salary_min, salary_max, currency, source,
-                             data_date, sample_count, fetched_at)
+                             data_date, sample_count, fetched_at, source_detail)
                         values
-                            (:ck, :tk, :min, :max, :currency, :source, :dataDate, :sampleCount, :fetchedAt)
+                            (:ck, :tk, :min, :max, :currency, :source, :dataDate, :sampleCount, :fetchedAt, :sourceDetail)
                         on conflict(company_key, title_key) do update set
                             salary_min = excluded.salary_min,
                             salary_max = excluded.salary_max,
@@ -47,7 +47,8 @@ public class SalaryEstimateRepository {
                             source = excluded.source,
                             data_date = excluded.data_date,
                             sample_count = excluded.sample_count,
-                            fetched_at = excluded.fetched_at
+                            fetched_at = excluded.fetched_at,
+                            source_detail = excluded.source_detail
                         """)
                 .param("ck", e.companyKey())
                 .param("tk", e.titleKey())
@@ -58,6 +59,7 @@ public class SalaryEstimateRepository {
                 .param("dataDate", e.dataDate())
                 .param("sampleCount", e.sampleCount())
                 .param("fetchedAt", Timestamps.toText(e.fetchedAt()))
+                .param("sourceDetail", e.sourceDetail())
                 .update();
     }
 
@@ -76,7 +78,8 @@ public class SalaryEstimateRepository {
                 rs.getString("source"),
                 rs.getString("data_date"),
                 (Integer) rs.getObject("sample_count"),
-                Timestamps.parse(rs.getString("fetched_at"))
+                Timestamps.parse(rs.getString("fetched_at")),
+                rs.getString("source_detail")
         );
     }
 }

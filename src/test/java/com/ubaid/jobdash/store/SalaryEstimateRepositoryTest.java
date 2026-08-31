@@ -11,7 +11,7 @@ class SalaryEstimateRepositoryTest extends AbstractStoreTest {
 
     private static SalaryEstimate estimate(String source, Double min, Double max, Instant fetchedAt) {
         return new SalaryEstimate("acme robotics", "software engineer", min, max, "USD",
-                source, "2025-06-01", 42, fetchedAt);
+                source, "2025-06-01", 42, fetchedAt, "ACME ROBOTICS LLC");
     }
 
     @Test
@@ -25,6 +25,7 @@ class SalaryEstimateRepositoryTest extends AbstractStoreTest {
         assertThat(found.source()).isEqualTo("lca");
         assertThat(found.sampleCount()).isEqualTo(42);
         assertThat(found.fetchedAt()).isEqualTo(fetchedAt);
+        assertThat(found.sourceDetail()).isEqualTo("ACME ROBOTICS LLC");
     }
 
     @Test

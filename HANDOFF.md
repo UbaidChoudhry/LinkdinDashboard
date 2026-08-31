@@ -257,7 +257,7 @@ which has zero commits. First commit is yours to make.
 before the first commit** — `data/jobdash.db` may contain real scraped job data you don't want
 in version control.
 
-Test counts by suite are in [CODEMAP.md](CODEMAP.md). Run `./mvnw test` and expect **188
+Test counts by suite are in [CODEMAP.md](CODEMAP.md). Run `./mvnw test` and expect **206
 passing**.
 
 ---
@@ -321,7 +321,47 @@ order):
   short-circuits all lookups — this is the "only check where no record exists" rule.
 - **`XlsxStreamReader` is dependency-free** — hand-rolled StAX + `java.util.zip`, no Apache POI.
   The DOL file's `sheet1.xml` is ~500 MB uncompressed; it must be streamed. Real column layout
-  notes are in that class and `LcaImportService`.
+  notes are in that class and `LcaImportService`. **Verified end-to-end against the real
+  `LCA_Disclosure_Data_FY2024_Q4.xlsx`**: 598,831 rows read → 118,121 kept → 100,372 groups in
+  ~11 seconds.
+- **`./import-lca.sh` imports a whole directory and deletes as it goes** (default `data/lca`,
+  `--keep` opts out). Deletion policy lives in `LcaImportService.importAll`, not the shell, so
+  it is testable — and it is deliberately conservative: **a file is deleted only when the import
+  both succeeded and kept ≥1 row.** A file that parses to zero rows is *kept*, because that
+  signals a changed column layout far more often than a genuinely empty quarter, and the 80 MB
+  download is the only evidence for diagnosing it. Failures never abort the batch.
+  `LcaImportServiceTest.neverDeletesAFileThatContributedNoRows` guards this.
+- **The import runs with `--spring.main.web-application-type=none`.** It is a batch job; binding
+  Tomcat was pointless and collided with a running backend. The script still refuses to run while
+  the backend is up, but now for the real reason: **both processes write the same SQLite file.**
+- **Company-name matching is exact-then-word-boundary-prefix** (`LcaWageRepository.lookup`).
+  LCA employer names are legal entities, so LinkedIn's "Amazon" (key `amazon`) has to reach
+  `amazon com services`. Four tiers, tried in order: exact+state, exact+national, prefix+state,
+  prefix+national; within a tier, highest `sample_count` wins, ties broken by `employer_key`.
+
+  **The prefix predicate is word-boundary only** — `employer_key = :key OR employer_key LIKE
+  :key || ' %'`. This is the `Meta`/`Metabase` trap from §3 again, and it is not theoretical:
+  against real FY2024Q4 data a naive `LIKE 'meta%'` also matches `metapicks`, `metanoia
+  solutions`, `metaforge it solutions` and `metagenomi`. Keys shorter than 3 chars never
+  prefix-match. `LcaWageRepositoryTest` has the guard tests; **do not loosen this predicate.**
+
+  Verified against the real file: `amazon` → Amazon.com Services LLC (1391 samples, beating AWS
+  at 485), `meta` → Meta Platforms Inc (860, beating "Meta Soft" at 5), `jpmorgan` → JPMorgan
+  Chase & Co. Exact still wins where it exists: `google` → Google LLC, not Google Public Sector;
+  `apple` → Apple Inc., not Apple Payments Services.
+
+  **Residual risk, mitigated in the UI, not the code.** "Meta Soft" and "Meta IT Systems" are
+  real, distinct companies that legitimately match the key `meta`; sample_count ranking saves the
+  common case but cannot be right in principle. So the matched entity is carried all the way to
+  the browser: `lca_wage.employer_display` (the raw `EMPLOYER_NAME`) → `SalaryResult.matchedEntity`
+  → `salary_estimate.source_detail` → `job_listing.salary_source_detail` → `JobResponse`. `JobRow`
+  shows it, prefixed with `≈` and accent-coloured when it differs from the posting's company, so a
+  wrong entity is *visible* rather than a silently wrong number.
+
+  `looselySameCompany` in `frontend/src/utils/format.ts` decides exact-vs-fuzzy and is
+  **equality-after-normalization only, deliberately not a prefix test** — a prefix comparison
+  there would classify every backend prefix match as exact and the `≈` marker would never appear
+  at all (and it would call "Meta" and "Metabase" the same company).
 - **Keys live in `.env`** (gitignored), sourced by `run.sh`. `application.yml` reads
   `${ADZUNA_APP_ID:}` etc. `SALARY_SETUP.md` is the user-facing guide.
 - The two-bucket sort (`JobSortOrder`, `utils/sort.ts`) was already built and correct; only the

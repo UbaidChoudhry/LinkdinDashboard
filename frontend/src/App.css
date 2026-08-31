@@ -293,6 +293,20 @@ td {
   font-size: 11px;
 }
 
+/* Matched LCA employer legal entity, shown under the salary figure. */
+.lca-employer {
+  display: block;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Approximate match (posting company != matched LCA entity): noticeable, not alarming. */
+.lca-employer.fuzzy {
+  color: var(--accent);
+}
+
 .min-salary-row {
   max-width: 220px;
 }

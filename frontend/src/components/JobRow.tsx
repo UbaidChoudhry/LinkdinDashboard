@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ApiError, setJobStatus } from "../api/client";
 import type { JobResponse, JobTab } from "../types/api";
-import { relativeTime, absoluteTime } from "../utils/format";
+import { relativeTime, absoluteTime, looselySameCompany } from "../utils/format";
 
 /** Part 1 never populates salary, so this reliably renders "-" today; kept correct for part 2. */
 function formatSalary(min: number | null, max: number | null): string {
@@ -36,6 +36,18 @@ export function JobRow({ job, tab, onChanged, onError }: JobRowProps) {
   const [busy, setBusy] = useState(false);
   const sourceLabel = salarySourceLabel(job.salarySource);
 
+  // For LCA salaries, show the legal entity the match landed on. Flag it when the
+  // matched entity doesn't loosely read as the same company as the posting.
+  const lcaEmployer = job.salarySource === "lca" ? job.salarySourceDetail ?? null : null;
+  const lcaIsFuzzy = lcaEmployer != null && !looselySameCompany(lcaEmployer, job.company);
+
+  let salaryCellTitle = sourceLabel ?? undefined;
+  if (lcaEmployer) {
+    salaryCellTitle = lcaIsFuzzy
+      ? `Salary matched from LCA disclosure data filed by "${lcaEmployer}" — the posting lists "${job.company}".`
+      : `Salary from LCA disclosure data filed by "${lcaEmployer}".`;
+  }
+
   async function apply(status: "applied" | "not_interested" | null) {
     setBusy(true);
     try {
@@ -58,9 +70,17 @@ export function JobRow({ job, tab, onChanged, onError }: JobRowProps) {
       <td>{job.company}</td>
       <td>{job.location}</td>
       <td title={absoluteTime(job.postedAt)}>{relativeTime(job.postedAt)}</td>
-      <td className="col-salary" title={sourceLabel ?? undefined}>
+      <td className="col-salary" title={salaryCellTitle}>
         {formatSalary(job.salaryMin, job.salaryMax)}
-        {sourceLabel && <span className="salary-source"> {sourceLabel}</span>}
+        {lcaEmployer ? (
+          <span
+            className={lcaIsFuzzy ? "salary-source lca-employer fuzzy" : "salary-source lca-employer"}
+          >
+            {lcaIsFuzzy ? "≈ " : ""}LCA · {lcaEmployer}
+          </span>
+        ) : (
+          sourceLabel && <span className="salary-source"> {sourceLabel}</span>
+        )}
       </td>
       <td className="col-actions">
         {tab === "search" && (

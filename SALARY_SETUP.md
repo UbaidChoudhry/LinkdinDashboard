@@ -69,14 +69,23 @@ for company-specific data, and it has no limits at all.
    https://www.dol.gov/agencies/eta/foreign-labor/performance — section
    **"LCA Programs (H-1B, H-1B1, E-3)"**.
 2. Only **FY2023 or newer** is useful; data older than 3 years is discarded on import.
-3. Put the files under `data/lca/` (gitignored).
-4. Import each one:
+3. Drop them all into `data/lca/` (gitignored). No need to rename anything.
+4. Stop the backend (`./stop.sh`), then import the whole folder in one go:
    ```
-   ./import-lca.sh data/lca/LCA_Disclosure_Data_FY2024_Q4.xlsx
+   ./import-lca.sh              # imports every .xlsx in data/lca
+   ./import-lca.sh some/dir     # or point it somewhere else
+   ./import-lca.sh --keep       # import but don't delete the spreadsheets
    ```
-5. Re-run quarterly to refresh as new files are published.
+5. Re-run quarterly as new files are published.
 
-Each file is about 80 MB / ~600k rows; an import takes a few minutes.
+**Spreadsheets are deleted once imported.** They are ~80 MB each and are of no further use
+once aggregated into `lca_wage`. A file is only ever deleted when the import both succeeded
+**and** kept at least one row — anything that fails, or that parses to zero rows (a changed
+column layout, or a file entirely past the staleness cutoff), is left on disk and reported so
+you can look at it. Pass `--keep` to disable deletion entirely.
+
+Each file is ~80 MB / ~600k rows and imports in roughly **10–15 seconds**. A quarter typically
+yields ~120k usable wage records across ~100k employer/occupation/state groups.
 
 ## Config knobs
 

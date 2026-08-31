@@ -33,6 +33,7 @@ public record JobListing(
         Double salaryMin,
         Double salaryMax,
         String salarySource,
+        String salarySourceDetail,
         boolean suppressed
 ) {
 }

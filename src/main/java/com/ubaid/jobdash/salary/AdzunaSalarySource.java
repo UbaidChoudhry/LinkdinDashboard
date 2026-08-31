@@ -161,7 +161,7 @@ public class AdzunaSalarySource implements SalarySource {
         }
 
         return Optional.of(new SalaryResult(minVal, maxVal, "USD",
-                LocalDate.now(clock), sampleCount, SOURCE));
+                LocalDate.now(clock), sampleCount, SOURCE, null));
     }
 
     private static Double median(List<Double> values) {

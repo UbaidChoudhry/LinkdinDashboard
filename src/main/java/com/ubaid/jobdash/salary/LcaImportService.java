@@ -40,6 +40,119 @@ public class LcaImportService {
                                String oldestKept, String newestKept) {
     }
 
+    /** What happened to one spreadsheet in a batch. */
+    public enum FileStatus {
+        /** Rows were imported and the file was deleted. */
+        IMPORTED_AND_DELETED,
+        /** Rows were imported; the file was left in place (deletion disabled, or the delete failed). */
+        IMPORTED_KEPT,
+        /**
+         * Parsed cleanly but contributed zero rows — every row was filtered out (all past the
+         * staleness cutoff, or the column layout changed). <b>Never deleted</b>: the file is the
+         * only evidence for diagnosing which of those it was.
+         */
+        NOTHING_IMPORTED,
+        /** The import threw. File left in place. */
+        FAILED
+    }
+
+    /** One spreadsheet's outcome. {@code result} is null when {@code status} is {@link FileStatus#FAILED}. */
+    public record FileOutcome(Path file, FileStatus status, ImportResult result, String error) {
+    }
+
+    /** Outcome of a whole directory (or single-file) import. */
+    public record BatchResult(List<FileOutcome> outcomes) {
+
+        public long countOf(FileStatus status) {
+            return outcomes.stream().filter(o -> o.status() == status).count();
+        }
+
+        /** True if any file threw — the caller should exit non-zero. */
+        public boolean anyFailed() {
+            return countOf(FileStatus.FAILED) > 0;
+        }
+    }
+
+    /**
+     * Imports {@code target} — either one {@code .xlsx} or every {@code .xlsx} directly inside a
+     * directory, oldest filename first — and optionally deletes each file that actually
+     * contributed rows.
+     *
+     * <p>A file is deleted <b>only</b> when the import both completed and kept at least one row.
+     * A file that parses to zero kept rows is reported as {@link FileStatus#NOTHING_IMPORTED} and
+     * left alone: these spreadsheets are ~80&nbsp;MB downloads, and "imported nothing" is far more
+     * likely to mean a changed column layout than a genuinely empty quarter. Failures never abort
+     * the batch — every remaining file is still attempted.
+     */
+    public BatchResult importAll(Path target, boolean deleteAfterImport) {
+        List<Path> files = spreadsheetsIn(target);
+        if (files.isEmpty()) {
+            log.warn("no .xlsx files to import at {}", target);
+            return new BatchResult(List.of());
+        }
+
+        List<FileOutcome> outcomes = new ArrayList<>(files.size());
+        for (Path file : files) {
+            log.info("importing {} ({})", file.getFileName(), humanSize(file));
+            try {
+                ImportResult result = importFrom(file);
+                if (result.rowsKept() == 0) {
+                    log.warn("{} contributed no rows (read {}) - keeping the file so the cause "
+                            + "can be diagnosed; check the column layout or the staleness cutoff",
+                            file.getFileName(), result.rowsRead());
+                    outcomes.add(new FileOutcome(file, FileStatus.NOTHING_IMPORTED, result, null));
+                    continue;
+                }
+                outcomes.add(new FileOutcome(file, deleteQuietly(file, deleteAfterImport), result, null));
+            } catch (RuntimeException e) {
+                log.error("import failed for {}: {}", file.getFileName(), e.toString());
+                outcomes.add(new FileOutcome(file, FileStatus.FAILED, null, e.toString()));
+            }
+        }
+        return new BatchResult(List.copyOf(outcomes));
+    }
+
+    /** Deletes an imported file when asked; a delete failure downgrades the status, never throws. */
+    private FileStatus deleteQuietly(Path file, boolean deleteAfterImport) {
+        if (!deleteAfterImport) {
+            return FileStatus.IMPORTED_KEPT;
+        }
+        try {
+            java.nio.file.Files.delete(file);
+            log.info("deleted {} after a successful import", file.getFileName());
+            return FileStatus.IMPORTED_AND_DELETED;
+        } catch (java.io.IOException e) {
+            log.warn("imported {} but could not delete it: {}", file.getFileName(), e.toString());
+            return FileStatus.IMPORTED_KEPT;
+        }
+    }
+
+    /** One file, or every {@code .xlsx} directly inside a directory, sorted by filename. */
+    private static List<Path> spreadsheetsIn(Path target) {
+        if (!java.nio.file.Files.isDirectory(target)) {
+            return java.nio.file.Files.isRegularFile(target) ? List.of(target) : List.of();
+        }
+        try (var entries = java.nio.file.Files.list(target)) {
+            return entries
+                    .filter(java.nio.file.Files::isRegularFile)
+                    // "~$..." are Excel lock files, not spreadsheets.
+                    .filter(p -> !p.getFileName().toString().startsWith("~$"))
+                    .filter(p -> p.getFileName().toString().toLowerCase().endsWith(".xlsx"))
+                    .sorted()
+                    .toList();
+        } catch (java.io.IOException e) {
+            throw new IllegalArgumentException("could not list " + target + ": " + e.getMessage(), e);
+        }
+    }
+
+    private static String humanSize(Path file) {
+        try {
+            return (java.nio.file.Files.size(file) / (1024 * 1024)) + " MB";
+        } catch (java.io.IOException e) {
+            return "unknown size";
+        }
+    }
+
     private final XlsxStreamReader reader;
     private final LcaWageRepository lcaWageRepository;
     private final SalaryProperties properties;
@@ -83,7 +196,8 @@ public class LcaImportService {
                 return true;
             }
 
-            String employerKey = CompanyKey.of(row.get("EMPLOYER_NAME"));
+            String rawEmployer = row.get("EMPLOYER_NAME");
+            String employerKey = CompanyKey.of(rawEmployer);
             if (employerKey.isEmpty()) {
                 return true;
             }
@@ -96,9 +210,9 @@ public class LcaImportService {
             LocalDate date = dataDate.get();
             double annual = wage.getAsDouble();
 
-            groups.computeIfAbsent(new Key(employerKey, soc, ""), k -> new Group()).add(annual, date);
+            groups.computeIfAbsent(new Key(employerKey, soc, ""), k -> new Group()).add(annual, date, rawEmployer);
             if (!state.isEmpty()) {
-                groups.computeIfAbsent(new Key(employerKey, soc, state), k -> new Group()).add(annual, date);
+                groups.computeIfAbsent(new Key(employerKey, soc, state), k -> new Group()).add(annual, date, rawEmployer);
             }
 
             counters[1]++;
@@ -131,7 +245,7 @@ public class LcaImportService {
             double[] sorted = g.sortedWages();
             batch.add(new LcaWageRow(k.employerKey(), k.soc(), k.state(),
                     percentile(sorted, 25), percentile(sorted, 50), percentile(sorted, 75),
-                    sorted[sorted.length - 1], sorted.length, g.latest.toString()));
+                    sorted[sorted.length - 1], sorted.length, g.latest.toString(), g.display));
             written++;
             if (batch.size() >= FLUSH_EVERY) {
                 lcaWageRepository.upsertAll(batch);
@@ -247,11 +361,16 @@ public class LcaImportService {
     private static final class Group {
         private final List<Double> wages = new ArrayList<>();
         private LocalDate latest;
+        /** First raw {@code EMPLOYER_NAME} seen for this group — the human-readable matched entity. */
+        private String display;
 
-        void add(double wage, LocalDate date) {
+        void add(double wage, LocalDate date, String rawEmployer) {
             wages.add(wage);
             if (latest == null || date.isAfter(latest)) {
                 latest = date;
+            }
+            if (display == null && rawEmployer != null && !rawEmployer.isBlank()) {
+                display = rawEmployer.trim();
             }
         }
 
