@@ -14,9 +14,9 @@ Sources, recorded in `salarySource`:
 
 | `salarySource` | Source | Credential | What it gives |
 | --- | --- | --- | --- |
-| `lca` | US DOL H-1B LCA disclosure data (local import) | none | company-specific wages |
-| `adzuna` | Adzuna API | free key | title + location estimate |
-| `h1bapi` | h1bapi.com | free key | company-specific H-1B wages |
+| `lca` | US DOL H-1B LCA disclosure data (local import) | none | company-specific wages, no request limit |
+| `adzuna` | Adzuna API | free key required | title + location estimate, ~1,000/month |
+| `h1bapi` | h1bapi.com | **none** (key optional) | company-specific H-1B wages, 20/day free |
 
 ## Which file to edit
 
@@ -34,17 +34,34 @@ Sources, recorded in `salarySource`:
 4. Copy **Application ID** → `ADZUNA_APP_ID` in `.env`.
 5. Copy **Application Keys** → `ADZUNA_APP_KEY` in `.env`.
 
-Free tier is roughly 1,000 calls/month. The backend rate-limits Adzuna and caps daily
-usage at `salary.daily-cap.adzuna`, so the app stays within the free tier.
+Adzuna's free tier is a **monthly** allowance (~1,000 calls/month), so the backend enforces
+**two** windows: `salary.daily-cap.adzuna` (40/day, stops one big run eating the month) and
+`salary.monthly-cap.adzuna` (900 per rolling 30 days, the one that actually protects the
+quota). Both are counted from the `external_request_log` table, so a restart never resets them.
+If Adzuna publishes a different quota for your account, adjust `monthly-cap` to match.
 
-## h1bapi.com key
+## h1bapi.com — key is OPTIONAL
 
-1. Go to https://h1bapi.com/ and sign up.
-2. Get the API key from the account / dashboard page.
-3. Set `H1BAPI_KEY` in `.env`.
+**You do not need to sign up for this one.** h1bapi.com's free tier works unauthenticated:
 
-It must stay within the free tier — the backend rate-limits it and caps daily calls at
-`salary.daily-cap.h1bapi`. If the free tier is exhausted, the source is simply skipped.
+| Tier | Cost | Limit | Coverage |
+| --- | --- | --- | --- |
+| **Free** | $0 | **20 requests/day** | last 2 fiscal years |
+| Dev | $9/mo | 5,000/day | all years |
+| Pro | $29/mo | 25,000/day | all years |
+
+The app calls the endpoint with no auth header when `H1BAPI_KEY` is blank, and attaches an
+`X-API-Key` header only if you set one. So:
+
+- **Leave `H1BAPI_KEY` empty** to use the free tier. Nothing else to do.
+- **Set it** only if you buy a paid plan — then also raise `salary.daily-cap.h1bapi` to match.
+
+`salary.daily-cap.h1bapi` defaults to **20**, exactly the free allowance. **Do not raise it
+without a paid plan** — you would just generate rejected requests.
+
+Because 20/day is tiny, this source sits **last** in the cascade and will normally be exhausted
+early in a large run. It is a long-shot fallback; the local LCA dataset is the real workhorse
+for company-specific data, and it has no limits at all.
 
 ## LCA disclosure data (primary source, no key)
 
@@ -71,8 +88,10 @@ In `application.yml` under `salary:`
 | `cache-ttl` | `90d` | how long a looked-up salary is reused before re-checking |
 | `max-data-age` | `1095d` (3 years) | data older than this is treated as no data |
 | `pacing.min-delay` | `1s` | minimum delay between outbound API calls (all sources share one gate) |
-| `daily-cap.adzuna` | `200` | max Adzuna calls per rolling 24h |
-| `daily-cap.h1bapi` | `100` | max h1bapi.com calls per rolling 24h |
+| `daily-cap.adzuna` | `40` | max Adzuna calls per rolling 24h |
+| `daily-cap.h1bapi` | `20` | max h1bapi.com calls per rolling 24h — **equals the free tier; don't raise without a paid plan** |
+| `monthly-cap.adzuna` | `900` | max Adzuna calls per rolling 30 days (protects the ~1,000/mo free quota) |
+| `monthly-cap.h1bapi` | `0` | `0` = no monthly limit (h1bapi bills per day, not per month) |
 
 Every value is overridable by environment variable (e.g. `SALARY_ENABLED=false`,
 `SALARY_CACHE_TTL=30d`).

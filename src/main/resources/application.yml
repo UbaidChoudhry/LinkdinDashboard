@@ -38,9 +38,17 @@ salary:
   max-data-age: 1095d
   pacing:
     min-delay: 1s
+  # Free-tier ceilings, verified 2026-09-06. Both windows are enforced (see SalaryRateLimiter):
+  #   adzuna   - free tier is a MONTHLY allowance of ~1000 calls, so the monthly cap is the
+  #              real constraint; the daily cap just stops one run eating the whole month.
+  #   h1bapi   - free tier is 20 requests/day (last 2 fiscal years). No monthly limit published,
+  #              so 0 = unlimited there. Do not raise this above 20 without a paid plan.
   daily-cap:
-    adzuna: 200
-    h1bapi: 100
+    adzuna: 40
+    h1bapi: 20
+  monthly-cap:
+    adzuna: 900
+    h1bapi: 0
   adzuna:
     app-id: ${ADZUNA_APP_ID:}
     app-key: ${ADZUNA_APP_KEY:}

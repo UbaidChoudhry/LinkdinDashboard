@@ -24,7 +24,7 @@ class LcaImportServiceTest extends AbstractStoreTest {
     private LcaImportService newService() {
         SalaryProperties props = new SalaryProperties(
                 true, Duration.ofDays(90), Duration.ofDays(1095),
-                null, null, null, null, new SalaryProperties.Lca(""));
+                null, null, null, null, null, new SalaryProperties.Lca(""));
         Clock clock = Clock.fixed(Instant.parse("2026-09-06T00:00:00Z"), ZoneOffset.UTC);
         return new LcaImportService(new XlsxStreamReader(), lcaWageRepository, props, clock);
     }

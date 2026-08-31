@@ -19,22 +19,31 @@ import java.util.concurrent.locks.ReentrantLock;
  *     <li><b>Rolling daily cap</b> ({@link #check(String)}): compares the number of calls to a
  *     source in the last 24h (from {@link ExternalRequestLogRepository#countSince}) against that
  *     source's configured cap, so a restart never resets it.</li>
+ *     <li><b>Rolling monthly cap</b> (same method, 30-day window): several of these providers
+ *     bill a <em>monthly</em> free allowance, which a daily cap alone cannot protect — 30 days
+ *     at a "safe" daily rate can still blow a monthly quota. A cap of {@code <= 0} means the
+ *     source has no monthly limit.</li>
  * </ul>
  * Must be used as a singleton — the pacing gate ({@code lastCallAt}) is an instance field.
  */
 public final class SalaryRateLimiter {
+
+    private static final Duration DAY = Duration.ofHours(24);
+    private static final Duration MONTH = Duration.ofDays(30);
 
     private final Clock clock;
     private final Sleeper sleeper;
     private final ExternalRequestLogRepository log;
     private final Duration minDelay;
     private final Map<String, Integer> dailyCaps;
+    private final Map<String, Integer> monthlyCaps;
 
     private final ReentrantLock pacingGate = new ReentrantLock();
     private volatile Instant lastCallAt;
 
     public SalaryRateLimiter(Clock clock, Sleeper sleeper, ExternalRequestLogRepository log,
-                             Duration minDelay, Map<String, Integer> dailyCaps) {
+                             Duration minDelay, Map<String, Integer> dailyCaps,
+                             Map<String, Integer> monthlyCaps) {
         if (minDelay.isNegative()) {
             throw new IllegalArgumentException("minDelay must not be negative");
         }
@@ -43,23 +52,37 @@ public final class SalaryRateLimiter {
         this.log = log;
         this.minDelay = minDelay;
         this.dailyCaps = Map.copyOf(dailyCaps);
-    }
-
-    /** Outcome of a daily-cap check for one source. */
-    public enum Decision {
-        ALLOWED,
-        BLOCKED_DAILY_CAP
+        this.monthlyCaps = Map.copyOf(monthlyCaps);
     }
 
     /**
-     * Checks the rolling 24h cap for {@code source}. Returns {@link Decision#BLOCKED_DAILY_CAP}
-     * once the count of calls in the last 24h reaches the configured cap.
+     * Outcome of a quota check for one source. Callers should treat anything other than
+     * {@link #ALLOWED} as "skip this source" rather than switching on each blocked reason.
+     */
+    public enum Decision {
+        ALLOWED,
+        BLOCKED_DAILY_CAP,
+        BLOCKED_MONTHLY_CAP
+    }
+
+    /**
+     * Checks both rolling windows for {@code source}: the 24h cap first, then the 30-day cap
+     * (skipped when that source's monthly cap is {@code <= 0}, meaning "no monthly limit").
      */
     public Decision check(String source) {
-        int cap = dailyCaps.getOrDefault(source, 0);
-        Instant since = clock.instant().minus(Duration.ofHours(24));
-        long used = log.countSince(source, since);
-        return used >= cap ? Decision.BLOCKED_DAILY_CAP : Decision.ALLOWED;
+        Instant now = clock.instant();
+
+        int dailyCap = dailyCaps.getOrDefault(source, 0);
+        if (log.countSince(source, now.minus(DAY)) >= dailyCap) {
+            return Decision.BLOCKED_DAILY_CAP;
+        }
+
+        int monthlyCap = monthlyCaps.getOrDefault(source, 0);
+        if (monthlyCap > 0 && log.countSince(source, now.minus(MONTH)) >= monthlyCap) {
+            return Decision.BLOCKED_MONTHLY_CAP;
+        }
+
+        return Decision.ALLOWED;
     }
 
     /**

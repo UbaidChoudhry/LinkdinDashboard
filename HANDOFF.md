@@ -288,10 +288,32 @@ order):
   all local SQLite — but if you make enrichment heavier, move it to end-of-run.
 - **`SalaryEnrichmentService` never throws.** Per-row `catch (Exception)`, per-source
   `catch (RuntimeException)`. A salary failure must never abort a sweep. Assert this stays true.
-- **Two rate-limit layers on the external APIs** (`SalaryRateLimiter`, a singleton like
-  `RateLimiter` — the pacing gate is an instance field): a shared 1s pacing gate, and a
-  per-source rolling-24h cap counted from the `external_request_log` table (survives restart).
-  This is **separate from** the LinkedIn `request_log` / `RateLimiter` — never conflate them.
+- **Three rate-limit layers on the external APIs** (`SalaryRateLimiter`, a singleton like
+  `RateLimiter` — the pacing gate is an instance field): a shared 1s pacing gate, a per-source
+  rolling-**24h** cap, and a per-source rolling-**30-day** cap, both counted from the
+  `external_request_log` table (survives restart). This is **separate from** the LinkedIn
+  `request_log` / `RateLimiter` — never conflate them.
+- **Provider free-tier limits are load-bearing config, verified 2026-09-06.** The first cut of
+  this feature shipped `daily-cap.h1bapi: 100` and `daily-cap.adzuna: 200` — both numbers were
+  guessed from search snippets, never checked against the providers' pricing pages, and both
+  were wrong in a way that would have silently burned the user's free quota:
+
+  | Provider | Real free tier | Enforced by |
+  |---|---|---|
+  | h1bapi.com | **20 requests/day**, last 2 fiscal years, **no API key required** | `daily-cap.h1bapi: 20` |
+  | Adzuna | ~**1,000 calls/month** (a *monthly* allowance) | `monthly-cap.adzuna: 900` + `daily-cap.adzuna: 40` |
+
+  Two lessons baked into the code: **(a)** a daily cap cannot protect a *monthly* quota — 30 days
+  of "safe" daily usage still blows it, which is why the 30-day window exists (a cap of `<= 0`
+  means "no monthly limit"); **(b)** an absent API key is not the same as a disabled source —
+  `H1bApiSalarySource` calls the endpoint either way and only attaches `X-API-Key` when one is
+  set, because short-circuiting on a blank key silently disabled the free tier for everyone who
+  never signed up. `H1bApiSalarySourceTest.blankKeyStillCallsTheApiButSendsNoAuthHeader` and
+  `SalaryRateLimiterTest.monthlyCapBlocksEvenWhenEveryIndividualDayIsUnderTheDailyCap` are the
+  regression guards. **Before changing any cap, open the provider's pricing page.**
+- **h1bapi is a long-shot fallback, not a real source.** 20 requests/day is exhausted almost
+  immediately on any real run. The local LCA dataset is the workhorse for company-specific pay;
+  h1bapi sits last in the cascade for a reason.
 - **3-year staleness** (`salary.max-data-age`, default 1095d): a source result whose `dataDate`
   is older than that is dropped and the cascade continues. LCA rows older than the cutoff are
   dropped at *import* time too.

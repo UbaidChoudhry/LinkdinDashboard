@@ -27,10 +27,14 @@ import java.util.Optional;
  * live response): base {@code https://h1bapi.com/api/v1/salaries}, header auth {@code X-API-Key},
  * GET filters {@code employer}/{@code job_title}/{@code state}, records under
  * {@code data[]} with {@code salary_min}/{@code salary_max}/{@code prevailing_wage_annual}/
- * {@code fiscal_year}. The endpoint URL and field mapping may need adjustment once a key is
- * available. Parsing is deliberately defensive.
+ * {@code fiscal_year}. The endpoint URL and field mapping may need adjustment against a live
+ * response. Parsing is deliberately defensive.
  * <p>
- * Disabled (returns empty immediately) when {@code salary.h1b-api.api-key} is blank.
+ * <b>The key is optional.</b> h1bapi.com's free tier is 20 requests/day covering the last two
+ * fiscal years; a key raises that ceiling. We call the endpoint either way and only attach the
+ * {@code X-API-Key} header when {@code salary.h1b-api.api-key} is set. Because the free
+ * allowance is so small, {@code salary.daily-cap.h1bapi} defaults to 20 and this source sits
+ * last in the cascade — it is a long-shot fallback, not a primary source.
  */
 @Component
 public class H1bApiSalarySource implements SalarySource {
@@ -61,13 +65,14 @@ public class H1bApiSalarySource implements SalarySource {
 
     @Override
     public Optional<SalaryResult> lookup(SalaryLookup q) {
+        // A blank key is NOT a disabled source: h1bapi.com's free tier is usable without
+        // credentials, so we still make the call and simply omit the auth header. Setting a
+        // key only raises the ceiling. (If the service does start demanding a key, the
+        // unauthenticated call returns 401 and is handled as any other non-2xx: empty result.)
         String apiKey = properties.h1bApi().apiKey();
-        if (apiKey == null || apiKey.isBlank()) {
-            log.debug("h1bapi salary source disabled: api-key not configured");
-            return Optional.empty();
-        }
-        if (rateLimiter.check(SOURCE) == SalaryRateLimiter.Decision.BLOCKED_DAILY_CAP) {
-            log.debug("h1bapi salary source blocked by daily cap");
+        SalaryRateLimiter.Decision quota = rateLimiter.check(SOURCE);
+        if (quota != SalaryRateLimiter.Decision.ALLOWED) {
+            log.debug("h1bapi salary source skipped: {}", quota);
             return Optional.empty();
         }
         try {
@@ -91,11 +96,13 @@ public class H1bApiSalarySource implements SalarySource {
         int status;
         String body;
         try {
-            HttpRequest request = HttpRequest.newBuilder(URI.create(url))
-                    .header("X-API-Key", apiKey)
+            HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
                     .header("Accept", "application/json")
-                    .GET()
-                    .build();
+                    .GET();
+            if (apiKey != null && !apiKey.isBlank()) {
+                builder.header("X-API-Key", apiKey);
+            }
+            HttpRequest request = builder.build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             status = response.statusCode();
             body = response.body();

@@ -37,8 +37,11 @@ public class SalaryConfiguration {
         Map<String, Integer> dailyCaps = Map.of(
                 "adzuna", properties.dailyCap().adzuna(),
                 "h1bapi", properties.dailyCap().h1bapi());
+        Map<String, Integer> monthlyCaps = Map.of(
+                "adzuna", properties.monthlyCap().adzuna(),
+                "h1bapi", properties.monthlyCap().h1bapi());
         return new SalaryRateLimiter(clock, sleeper, externalRequestLogRepository,
-                properties.pacing().minDelay(), dailyCaps);
+                properties.pacing().minDelay(), dailyCaps, monthlyCaps);
     }
 
     /**

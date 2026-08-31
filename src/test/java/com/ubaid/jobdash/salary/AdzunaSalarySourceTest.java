@@ -28,6 +28,7 @@ class AdzunaSalarySourceTest extends AbstractStoreTest {
         return new SalaryProperties(true, Duration.ofDays(90), Duration.ofDays(1095),
                 new SalaryProperties.Pacing(Duration.ofSeconds(1)),
                 new SalaryProperties.DailyCap(200, 100),
+                new SalaryProperties.MonthlyCap(0, 0),
                 new SalaryProperties.Adzuna(appId, appKey),
                 new SalaryProperties.H1bApi(""),
                 new SalaryProperties.Lca(""));
@@ -36,7 +37,8 @@ class AdzunaSalarySourceTest extends AbstractStoreTest {
     private AdzunaSalarySource source(SalaryProperties props) {
         FakeSleeper sleeper = new FakeSleeper(clock);
         SalaryRateLimiter limiter = new SalaryRateLimiter(clock, sleeper, externalRequestLogRepository,
-                Duration.ofSeconds(1), Map.of("adzuna", props.dailyCap().adzuna(), "h1bapi", props.dailyCap().h1bapi()));
+                Duration.ofSeconds(1), Map.of("adzuna", props.dailyCap().adzuna(), "h1bapi", props.dailyCap().h1bapi()),
+                Map.of("adzuna", props.monthlyCap().adzuna(), "h1bapi", 0));
         return new AdzunaSalarySource(http, limiter, props, JsonMapper.builder().build(), clock);
     }
 

@@ -29,6 +29,7 @@ class H1bApiSalarySourceTest extends AbstractStoreTest {
         return new SalaryProperties(true, Duration.ofDays(90), Duration.ofDays(1095),
                 new SalaryProperties.Pacing(Duration.ofSeconds(1)),
                 new SalaryProperties.DailyCap(200, 100),
+                new SalaryProperties.MonthlyCap(0, 0),
                 new SalaryProperties.Adzuna("", ""),
                 new SalaryProperties.H1bApi(apiKey),
                 new SalaryProperties.Lca(""));
@@ -37,7 +38,8 @@ class H1bApiSalarySourceTest extends AbstractStoreTest {
     private H1bApiSalarySource source(SalaryProperties props) {
         FakeSleeper sleeper = new FakeSleeper(clock);
         SalaryRateLimiter limiter = new SalaryRateLimiter(clock, sleeper, externalRequestLogRepository,
-                Duration.ofSeconds(1), Map.of("adzuna", 200, "h1bapi", props.dailyCap().h1bapi()));
+                Duration.ofSeconds(1), Map.of("adzuna", 200, "h1bapi", props.dailyCap().h1bapi()),
+                Map.of("adzuna", 0, "h1bapi", props.monthlyCap().h1bapi()));
         return new H1bApiSalarySource(http, limiter, props, JsonMapper.builder().build());
     }
 
@@ -87,11 +89,22 @@ class H1bApiSalarySourceTest extends AbstractStoreTest {
         assertThat(r.salaryMax()).isEqualTo(145000.0);
     }
 
+    /**
+     * The free tier is usable unauthenticated, so a blank key must still issue the request —
+     * just without the auth header. Short-circuiting here would silently disable the source for
+     * every user who never signs up.
+     */
     @Test
-    void blankKeyShortCircuits() {
-        assertThat(source(props("")).lookup(lookup())).isEmpty();
-        assertThat(http.requestsSeen()).isEmpty();
-        assertThat(externalRequestLogRepository.countSince("h1bapi", Instant.EPOCH)).isZero();
+    void blankKeyStillCallsTheApiButSendsNoAuthHeader() {
+        http.enqueue(new StubHttpResponse(200,
+                "{\"data\":[{\"salary_min\":120000,\"salary_max\":150000,\"fiscal_year\":2025}]}", null));
+
+        SalaryResult r = source(props("")).lookup(lookup()).orElseThrow();
+
+        assertThat(r.salaryMax()).isEqualTo(150000.0);
+        assertThat(http.requestsSeen()).hasSize(1);
+        assertThat(http.requestsSeen().get(0).headers().firstValue("X-API-Key")).isEmpty();
+        assertThat(externalRequestLogRepository.countSince("h1bapi", Instant.EPOCH)).isEqualTo(1);
     }
 
     @Test

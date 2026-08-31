@@ -67,8 +67,9 @@ public class AdzunaSalarySource implements SalarySource {
             log.debug("adzuna salary source disabled: app-id/app-key not configured");
             return Optional.empty();
         }
-        if (rateLimiter.check(SOURCE) == SalaryRateLimiter.Decision.BLOCKED_DAILY_CAP) {
-            log.debug("adzuna salary source blocked by daily cap");
+        SalaryRateLimiter.Decision quota = rateLimiter.check(SOURCE);
+        if (quota != SalaryRateLimiter.Decision.ALLOWED) {
+            log.debug("adzuna salary source skipped: {}", quota);
             return Optional.empty();
         }
         try {

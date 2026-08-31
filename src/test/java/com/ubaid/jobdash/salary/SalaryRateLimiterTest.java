@@ -41,7 +41,8 @@ class SalaryRateLimiterTest {
 
     private SalaryRateLimiter newLimiter(int adzunaCap) {
         return new SalaryRateLimiter(clock, sleeper, log, MIN_DELAY,
-                Map.of("adzuna", adzunaCap, "h1bapi", 100));
+                Map.of("adzuna", adzunaCap, "h1bapi", 20),
+                Map.of("adzuna", 0, "h1bapi", 0));
     }
 
     @Test
@@ -82,5 +83,49 @@ class SalaryRateLimiterTest {
         // Slide the 24h window past all three recorded calls.
         clock.advance(Duration.ofHours(24).plusMinutes(1));
         assertThat(limiter.check("adzuna")).isEqualTo(SalaryRateLimiter.Decision.ALLOWED);
+    }
+
+    /**
+     * The reason the monthly window exists: Adzuna's free tier is a monthly allowance, and a
+     * daily cap alone cannot protect it — staying under the daily limit every day for a month
+     * still blows the month. Without the 30-day check this walks straight past the quota.
+     */
+    @Test
+    void monthlyCapBlocksEvenWhenEveryIndividualDayIsUnderTheDailyCap() {
+        SalaryRateLimiter limiter = new SalaryRateLimiter(clock, sleeper, log, MIN_DELAY,
+                Map.of("adzuna", 5, "h1bapi", 20),
+                Map.of("adzuna", 12, "h1bapi", 0));
+
+        // 4 calls a day (under the daily cap of 5) for 3 days = 12 calls, hitting the monthly cap.
+        for (int day = 0; day < 3; day++) {
+            for (int i = 0; i < 4; i++) {
+                assertThat(limiter.check("adzuna")).isEqualTo(SalaryRateLimiter.Decision.ALLOWED);
+                limiter.recordCall("adzuna", "https://api.adzuna.com/x", 200);
+            }
+            clock.advance(Duration.ofHours(24).plusMinutes(1));
+        }
+
+        assertThat(limiter.check("adzuna")).isEqualTo(SalaryRateLimiter.Decision.BLOCKED_MONTHLY_CAP);
+
+        // Slide the 30-day window past every recorded call and it opens back up.
+        clock.advance(Duration.ofDays(30));
+        assertThat(limiter.check("adzuna")).isEqualTo(SalaryRateLimiter.Decision.ALLOWED);
+    }
+
+    /** A monthly cap of 0 means "no monthly limit" — only the daily cap applies. */
+    @Test
+    void monthlyCapOfZeroMeansUnlimited() {
+        SalaryRateLimiter limiter = new SalaryRateLimiter(clock, sleeper, log, MIN_DELAY,
+                Map.of("adzuna", 5, "h1bapi", 20),
+                Map.of("adzuna", 0, "h1bapi", 0));
+
+        for (int day = 0; day < 10; day++) {
+            for (int i = 0; i < 4; i++) {
+                limiter.recordCall("h1bapi", "https://h1bapi.com/x", 200);
+            }
+            clock.advance(Duration.ofHours(24).plusMinutes(1));
+        }
+
+        assertThat(limiter.check("h1bapi")).isEqualTo(SalaryRateLimiter.Decision.ALLOWED);
     }
 }

@@ -20,6 +20,7 @@ public record SalaryProperties(
         Duration maxDataAge,
         Pacing pacing,
         DailyCap dailyCap,
+        MonthlyCap monthlyCap,
         Adzuna adzuna,
         H1bApi h1bApi,
         Lca lca
@@ -33,11 +34,22 @@ public record SalaryProperties(
     public record DailyCap(int adzuna, int h1bapi) {
     }
 
+    /**
+     * Per-source rolling 30-day ceilings. Providers whose free tier is billed monthly need this
+     * as well as a daily cap — 30 days of "safe" daily usage can still exceed a monthly quota.
+     * A value of {@code <= 0} means that source has no monthly limit.
+     */
+    public record MonthlyCap(int adzuna, int h1bapi) {
+    }
+
     /** Adzuna API credentials; blank when unconfigured (the source then stays disabled). */
     public record Adzuna(String appId, String appKey) {
     }
 
-    /** h1bdata-style API key; blank when unconfigured. */
+    /**
+     * h1bapi.com API key. <b>Optional</b> — the free tier (20 requests/day, last two fiscal
+     * years) works unauthenticated; a key only raises the ceiling.
+     */
     public record H1bApi(String apiKey) {
     }
 

@@ -25,6 +25,7 @@ class SalaryEnrichmentServiceTest extends AbstractStoreTest {
         return new SalaryProperties(enabled, Duration.ofDays(90), Duration.ofDays(1095),
                 new SalaryProperties.Pacing(Duration.ofSeconds(1)),
                 new SalaryProperties.DailyCap(200, 100),
+                new SalaryProperties.MonthlyCap(0, 0),
                 new SalaryProperties.Adzuna("", ""),
                 new SalaryProperties.H1bApi(""),
                 new SalaryProperties.Lca(""));
