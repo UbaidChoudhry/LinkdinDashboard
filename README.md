@@ -92,19 +92,24 @@ so they assert scheduling without sleeping.
 
 ## Using the dashboard
 
-**Start a run.** Keywords (default "Software Engineer"), a time window in hours (default 24),
-and a location (default "United States"). Enable **test mode** to cap it at 3 pages while you're
-experimenting — a full run is 100 requests, a test run is 3.
+The dashboard has four top-level tabs — **Search**, **Results**, **Filters**, **Data**. Switching
+between them keeps each panel's state (the results table's sort, min-salary filter and sub-tab
+all survive), and a run in progress shows a live pill in the header from any tab.
+
+**Start a run** (Search tab). Keywords (default "Software Engineer"), a time window in hours
+(default 24), and a location (default "United States"). Enable **test mode** to cap it at 3 pages
+while you're experimenting — a full run is 100 requests, a test run is 3.
 
 **Watch it live.** Progress streams over SSE: pages fetched, requests made, cards seen, new jobs.
 There's a Cancel button. A 15-minute run behind a spinner would be unusable, so results land as
-they're parsed.
+they're parsed. When the run finishes you're moved to **Results** automatically — but only if you
+were still on the Search tab watching it.
 
-**Triage.** Three tabs:
+**Triage** (Results tab — gets the full window, with a count badge). Three sub-tabs:
 
-| Tab | Shows |
+| Sub-tab | Shows |
 |---|---|
-| **Search** | Passing jobs from the current run that you haven't triaged |
+| **Untriaged** | Passing jobs from the current run that you haven't triaged |
 | **Applied** | Everything you marked Applied, **across all runs** |
 | **Not interested** | Everything you dismissed, **across all runs** |
 
@@ -124,6 +129,8 @@ h1bapi.com APIs as fallbacks. Results are cached per company+title for 90 days; 
 than 3 years is ignored. Jobs sort highest-salary-first, unknown salary last, and the
 **Min salary** box hides jobs whose known salary is below a threshold (never hides
 unknown-salary jobs). See [SALARY_SETUP.md](SALARY_SETUP.md) for API keys and the LCA import.
+
+**Filters tab.** The exclude-word and blocked-company lists, plus the company-volume report.
 
 **Data tab.** Database size on disk, row counts by verdict and status, and a
 **Clear job data** button (two-step confirm, runs `VACUUM` so the file actually shrinks).

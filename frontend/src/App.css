@@ -1,6 +1,6 @@
 .app-shell {
   width: 100%;
-  max-width: 1100px;
+  max-width: 1500px;
   margin: 0 auto;
   padding: 0 24px 64px;
   text-align: left;
@@ -9,6 +9,10 @@
 
 .app-header {
   padding: 24px 0 8px;
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  flex-wrap: wrap;
 }
 
 .app-header h1 {
@@ -16,10 +20,104 @@
   font-size: 32px;
 }
 
+/* Live run indicator, shown in the header on every tab while a sweep is in flight. */
+.run-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-bg);
+  color: var(--text-h);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.run-pill-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: run-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes run-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .run-pill-dot { animation: none; }
+}
+
+/* Top-level section tabs. Visually heavier than the .tab-bar used inside a card. */
+.app-tab-bar {
+  display: flex;
+  gap: 4px;
+  margin: 16px 0 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.app-tab {
+  background: none;
+  border: none;
+  border-radius: 6px 6px 0 0;
+  padding: 10px 18px;
+  margin: 0;
+  font-size: 15px;
+  color: var(--text);
+  border-bottom: 2px solid transparent;
+}
+
+.app-tab:hover {
+  color: var(--text-h);
+}
+
+.app-tab.active {
+  color: var(--text-h);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+
+.app-tab-count {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.app-tab.active .app-tab-count {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+  color: var(--text-h);
+}
+
 .app-main {
   display: flex;
   flex-direction: column;
   gap: 32px;
+}
+
+.tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+/*
+  Panels are hidden with the `hidden` attribute rather than unmounted, so their state survives
+  a tab switch. `!important` is required: .tab-panel and .run-section set `display`, which would
+  otherwise beat the user-agent's [hidden] { display: none } rule and show every panel at once.
+*/
+[hidden] {
+  display: none !important;
 }
 
 .run-section {
@@ -249,8 +347,14 @@ table {
   overflow-x: auto;
 }
 
+/*
+  The results table owns its whole tab now, so let it use the viewport instead of a fixed 600px
+  box. The subtracted space is the header + tab bar + the panel's own tab bar/filters/hint;
+  min-height keeps it usable on a short window.
+*/
 .job-table {
-  max-height: 600px;
+  max-height: calc(100vh - 330px);
+  min-height: 320px;
   overflow-y: auto;
 }
 

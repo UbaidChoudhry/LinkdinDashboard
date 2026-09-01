@@ -8,17 +8,21 @@ import { PlainHeader, SortableHeader } from "./SortableHeader";
 interface JobsPanelProps {
   /** Bumped whenever the caller wants JobsPanel to refetch (e.g. a run just finished). */
   refreshToken: number;
-  /** The most recently known run (live or historical), used to explain an empty Search tab. */
+  /** The most recently known run (live or historical), used to explain an empty Untriaged tab. */
   latestRun: RunResponse | null;
+  /** Reports how many rows are currently on screen, so the shell can badge the Results tab. */
+  onCountChange?: (count: number) => void;
 }
 
+// The API tab id stays "search" - only the label changes. It sits inside the shell's own
+// "Search" tab (which is the run form), so calling it "Search" here too read as Search > Search.
 const TABS: { id: JobTab; label: string }[] = [
-  { id: "search", label: "Search" },
+  { id: "search", label: "Untriaged" },
   { id: "applied", label: "Applied" },
   { id: "not_interested", label: "Not interested" },
 ];
 
-export function JobsPanel({ refreshToken, latestRun }: JobsPanelProps) {
+export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelProps) {
   const [activeTab, setActiveTab] = useState<JobTab>("search");
   const [includePreviousRuns, setIncludePreviousRuns] = useState(false);
   const [jobs, setJobs] = useState<JobResponse[] | null>(null);
@@ -59,6 +63,10 @@ export function JobsPanel({ refreshToken, latestRun }: JobsPanelProps) {
   const handleSort = useCallback((column: Parameters<typeof nextSortState>[1]) => {
     setSort((current) => nextSortState(current, column));
   }, []);
+
+  useEffect(() => {
+    onCountChange?.(sortedJobs?.length ?? 0);
+  }, [sortedJobs, onCountChange]);
 
   function handleChanged(updated: JobResponse) {
     setJobs((prev) => {

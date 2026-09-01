@@ -209,7 +209,9 @@ comparator is already correct for when that changes.
 `frontend/src/`
 
 ```
-App.tsx                     top-level layout: run controls, jobs panel, filters, reports, data tab
+App.tsx                     top-level tab shell: Search / Results / Filters / Data. Panels stay
+                            mounted and toggle via `hidden` (so their state survives a switch),
+                            hence the `[hidden]{display:none!important}` rule in App.css
 api/client.ts                every fetch() call in the app lives here, one function per endpoint
 types/api.ts                 hand-kept mirror of the backend DTOs — keep in sync manually
 hooks/useRunStream.ts        the SSE subscription for live run progress
