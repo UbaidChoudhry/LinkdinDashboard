@@ -224,8 +224,11 @@ components/
   FiltersPanel.tsx            exclude words + blocked companies, list/add/delete
   CompanyVolumeReport.tsx     the relay-detection volume report
   DataPanel.tsx                DB size/stats + the two-step-confirm clear action
+  CompanyGroupRow.tsx         collapsed summary row for a company with 2+ jobs (Group by company)
 utils/
   sort.ts                     sortJobsBy() — mirrors JobSortOrder.java, plus per-column sort + filterByMinSalary()
+  group.ts                    groupByCompany() — buckets an ALREADY-SORTED list, preserving order
+                              between and within groups, so the active sort keeps working untouched
   format.ts                   relative/absolute time, byte-size formatting
   runStatus.ts                human copy for each terminal run status
 ```

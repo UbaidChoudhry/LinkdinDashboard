@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError, listJobs } from "../api/client";
 import type { JobResponse, JobTab, RunResponse } from "../types/api";
 import { DEFAULT_SORT, filterByMinSalary, nextSortState, sortJobsBy, type SortState } from "../utils/sort";
+import { groupByCompany } from "../utils/group";
 import { JobRow } from "./JobRow";
+import { CompanyGroupRow } from "./CompanyGroupRow";
 import { PlainHeader, SortableHeader } from "./SortableHeader";
 
 interface JobsPanelProps {
@@ -31,6 +33,10 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
   // Empty input = no filter. Stored as a number once the field parses.
   const [minSalary, setMinSalary] = useState<number | null>(null);
+  const [groupByCompanyOn, setGroupByCompanyOn] = useState(false);
+  // Groups start collapsed - the point of grouping is to stop one prolific company flooding
+  // the list, so expanding is opt-in per company.
+  const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(new Set());
 
   const load = useCallback(async () => {
     setError(null);
@@ -54,6 +60,7 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
   useEffect(() => {
     setSort(DEFAULT_SORT);
     setMinSalary(null);
+    setExpandedGroups(new Set());
   }, [activeTab]);
 
   const sortedJobs = useMemo(() => {
@@ -67,6 +74,23 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
   useEffect(() => {
     onCountChange?.(sortedJobs?.length ?? 0);
   }, [sortedJobs, onCountChange]);
+
+  // Grouping runs on the already-sorted, already-filtered list, so the active sort still decides
+  // both the order of the groups and the order within each one. See utils/group.ts.
+  const groups = useMemo(
+    () => (groupByCompanyOn && sortedJobs ? groupByCompany(sortedJobs) : null),
+    [groupByCompanyOn, sortedJobs],
+  );
+
+  const toggleGroup = useCallback((key: string) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(key)) {
+        next.add(key);
+      }
+      return next;
+    });
+  }, []);
 
   function handleChanged(updated: JobResponse) {
     setJobs((prev) => {
@@ -153,6 +177,16 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
         />
       </div>
 
+      <div className="field-row checkbox-row">
+        <input
+          id="jp-group-company"
+          type="checkbox"
+          checked={groupByCompanyOn}
+          onChange={(e) => setGroupByCompanyOn(e.target.checked)}
+        />
+        <label htmlFor="jp-group-company">Group by company</label>
+      </div>
+
       {actionError && (
         <p className="form-error" role="alert">
           {actionError}
@@ -201,9 +235,48 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
               </tr>
             </thead>
             <tbody>
-              {sortedJobs.map((job) => (
-                <JobRow key={job.jobId} job={job} tab={activeTab} onChanged={handleChanged} onError={setActionError} />
-              ))}
+              {groups
+                ? groups.map((group) =>
+                    // A company with a single job is just that job - grouping never buries a
+                    // one-off behind an expander.
+                    group.jobs.length === 1 ? (
+                      <JobRow
+                        key={group.jobs[0].jobId}
+                        job={group.jobs[0]}
+                        tab={activeTab}
+                        onChanged={handleChanged}
+                        onError={setActionError}
+                      />
+                    ) : (
+                      <Fragment key={group.key}>
+                        <CompanyGroupRow
+                          group={group}
+                          expanded={expandedGroups.has(group.key)}
+                          onToggle={toggleGroup}
+                        />
+                        {expandedGroups.has(group.key) &&
+                          group.jobs.map((job) => (
+                            <JobRow
+                              key={job.jobId}
+                              job={job}
+                              tab={activeTab}
+                              onChanged={handleChanged}
+                              onError={setActionError}
+                              grouped
+                            />
+                          ))}
+                      </Fragment>
+                    ),
+                  )
+                : sortedJobs.map((job) => (
+                    <JobRow
+                      key={job.jobId}
+                      job={job}
+                      tab={activeTab}
+                      onChanged={handleChanged}
+                      onError={setActionError}
+                    />
+                  ))}
             </tbody>
           </table>
         </>

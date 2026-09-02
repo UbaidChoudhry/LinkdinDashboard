@@ -118,6 +118,14 @@ shouldn't vanish because this morning's run replaced the view.
 
 Click any column header to sort by it; click again to reverse.
 
+**Group by company.** A checkbox that collapses each company with more than one posting into a
+single collapsed row (job count, distinct-location count, newest posting, top salary) that you
+expand on demand. A company with exactly one job stays a normal row — grouping never buries a
+one-off behind an expander. Grouping is applied *after* sorting and filtering, so the active sort
+still decides both the order of the groups (by their best job) and the order within each one.
+Useful when one prolific poster is drowning out everything else; a high location count on a
+collapsed group is the same relay/spam smell the company-volume report looks for.
+
 **Filters.** Exclude words match job **titles** (whole-word, case-insensitive), seeded with
 `Senior, Sr, Staff, Principal, Lead, Manager, Director, Intern`. Blocked companies match the
 full company name exactly. Editing either list **re-evaluates every job already stored**, not

@@ -30,9 +30,11 @@ interface JobRowProps {
   tab: JobTab;
   onChanged: (updated: JobResponse) => void;
   onError: (message: string) => void;
+  /** True when this row sits inside an expanded company group, which indents it. */
+  grouped?: boolean;
 }
 
-export function JobRow({ job, tab, onChanged, onError }: JobRowProps) {
+export function JobRow({ job, tab, onChanged, onError, grouped = false }: JobRowProps) {
   const [busy, setBusy] = useState(false);
   const sourceLabel = salarySourceLabel(job.salarySource);
 
@@ -61,7 +63,7 @@ export function JobRow({ job, tab, onChanged, onError }: JobRowProps) {
   }
 
   return (
-    <tr>
+    <tr className={grouped ? "grouped-job" : undefined}>
       <td className="col-title">
         <a href={job.jobUrl} target="_blank" rel="noopener noreferrer">
           {job.title}
