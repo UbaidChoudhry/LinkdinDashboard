@@ -237,6 +237,31 @@ There is no client-side routing and no global state library — `App.tsx` holds 
 cross-component state (current run id, a `refreshToken` counter that other panels bump to
 trigger a refetch) and passes them down as props.
 
+### The layout "fill chain" — read before touching App.css
+
+The results table is sized to absorb whatever vertical space is left over, so the dashboard fits
+one screen without page scrolling. That depends on an unbroken chain, and **removing any single
+link silently brings the page scrollbar back**:
+
+```
+#root            height: 100svh   (a DEFINITE height - min-height leaves it content-sized
+                 overflow: auto    and "leftover space" undefined); overflow is the
+                                   short-window fallback
+  .app-shell     flex: 1; min-height: 0
+  .app-main      flex: 1; min-height: 0
+  .tab-panel     flex: 1; min-height: 0
+  .jobs-panel    flex: 1; min-height: 0
+  .job-table-scroll  flex: 1; min-height: 320px; overflow: auto   ← absorbs the remainder
+```
+
+`min-height: 0` is the load-bearing half: a flex item defaults to `min-height: auto` (its content
+size) and refuses to shrink, pushing overflow onto the page instead of into the table's own
+scroll area. The `320px` floor at the end is deliberate — on a window too short for the chrome
+plus that floor, the page scrolls, which is the accepted small-screen behaviour.
+
+Width is the mirror image: `#root` and `.app-shell` are uncapped (full monitor), and only
+`.tab-panel:not(.tab-panel-wide)` re-caps the non-table panels to a readable 1200px.
+
 ---
 
 ## 5. The database

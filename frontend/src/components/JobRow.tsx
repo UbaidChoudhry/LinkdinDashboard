@@ -64,12 +64,14 @@ export function JobRow({ job, tab, onChanged, onError, grouped = false }: JobRow
 
   return (
     <tr className={grouped ? "grouped-job" : undefined}>
-      <td className="col-title">
+      <td className="col-title" title={job.title}>
         <a href={job.jobUrl} target="_blank" rel="noopener noreferrer">
           {job.title}
         </a>
       </td>
-      <td>{job.company}</td>
+      <td className="col-company" title={job.company}>
+        {job.company}
+      </td>
       <td>{job.location}</td>
       <td title={absoluteTime(job.postedAt)}>{relativeTime(job.postedAt)}</td>
       <td className="col-salary" title={salaryCellTitle}>

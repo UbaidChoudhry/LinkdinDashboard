@@ -50,16 +50,31 @@
   }
 }
 
+/*
+  Full-bleed. This was a fixed 1126px column left over from the Vite starter, which capped the
+  whole app regardless of any max-width set on .app-shell inside it - the results table could
+  never use a wide monitor. Width is now controlled per-panel in App.css instead: the results
+  table spans everything, forms and copy are held at a readable measure by .tab-panel.
+  The decorative border-inline went with it; it framed the narrow column and is meaningless
+  against the window edges.
+*/
 #root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
-  text-align: center;
-  border-inline: 1px solid var(--border);
-  min-height: 100svh;
+  width: 100%;
+  margin: 0;
+  text-align: left;
+  box-sizing: border-box;
+
+  /*
+    A DEFINITE height, not min-height: it anchors the flex chain in App.css that lets the results
+    table absorb the leftover vertical space. With min-height the container stays content-sized,
+    so "leftover space" is undefined and the table grows to fit all its rows, pushing the page
+    into a scroll. overflow: auto is the deliberate fallback for a window too short to hold the
+    chrome plus the table's min-height - a small screen still scrolls, a large one does not.
+  */
+  height: 100svh;
+  overflow: auto;
   display: flex;
   flex-direction: column;
-  box-sizing: border-box;
 }
 
 body {

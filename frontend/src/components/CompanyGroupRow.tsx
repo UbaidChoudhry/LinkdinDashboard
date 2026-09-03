@@ -40,7 +40,9 @@ export function CompanyGroupRow({ group, expanded, onToggle }: CompanyGroupRowPr
           {count} jobs
         </button>
       </td>
-      <td className="group-company">{group.company}</td>
+      <td className="col-company group-company" title={group.company}>
+        {group.company}
+      </td>
       <td>
         {locations.length === 0
           ? "–"

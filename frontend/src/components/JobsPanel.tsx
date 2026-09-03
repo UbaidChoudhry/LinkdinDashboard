@@ -1,10 +1,12 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent } from "react";
 import { ApiError, listJobs } from "../api/client";
 import type { JobResponse, JobTab, RunResponse } from "../types/api";
 import { DEFAULT_SORT, filterByMinSalary, nextSortState, sortJobsBy, type SortState } from "../utils/sort";
 import { groupByCompany } from "../utils/group";
 import { JobRow } from "./JobRow";
 import { CompanyGroupRow } from "./CompanyGroupRow";
+import { InfoTip } from "./InfoTip";
 import { PlainHeader, SortableHeader } from "./SortableHeader";
 
 interface JobsPanelProps {
@@ -24,6 +26,26 @@ const TABS: { id: JobTab; label: string }[] = [
   { id: "not_interested", label: "Not interested" },
 ];
 
+/** 130000 -> "130,000". Empty string when there's no value. */
+function groupDigits(value: number | null): string {
+  return value == null ? "" : value.toLocaleString("en-US");
+}
+
+/**
+ * Where the caret belongs in a freshly formatted string: after the same number of DIGITS it was
+ * after before. Counting digits rather than characters is what stops an inserted comma shunting
+ * the cursor - typing "1" into "30,000" must land the caret after the 1, not at the end.
+ */
+function caretAfterDigits(formatted: string, digitCount: number): number {
+  let pos = 0;
+  let seen = 0;
+  while (pos < formatted.length && seen < digitCount) {
+    if (formatted[pos] >= "0" && formatted[pos] <= "9") seen++;
+    pos++;
+  }
+  return pos;
+}
+
 export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelProps) {
   const [activeTab, setActiveTab] = useState<JobTab>("search");
   const [includePreviousRuns, setIncludePreviousRuns] = useState(false);
@@ -33,6 +55,12 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
   // Empty input = no filter. Stored as a number once the field parses.
   const [minSalary, setMinSalary] = useState<number | null>(null);
+  const minSalaryInputRef = useRef<HTMLInputElement>(null);
+  // Where to put the caret once React has rewritten the input's formatted value.
+  const minSalaryCaretRef = useRef<number | null>(null);
+  // Gates the min-salary filter without discarding the number, so it can be flicked off and
+  // back on without retyping. On by default: typing a figure normally means you want it applied.
+  const [minSalaryOn, setMinSalaryOn] = useState(true);
   const [groupByCompanyOn, setGroupByCompanyOn] = useState(false);
   // Groups start collapsed - the point of grouping is to stop one prolific company flooding
   // the list, so expanding is opt-in per company.
@@ -60,13 +88,17 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
   useEffect(() => {
     setSort(DEFAULT_SORT);
     setMinSalary(null);
+    setMinSalaryOn(true);
     setExpandedGroups(new Set());
   }, [activeTab]);
 
+  // Null when the toggle is off - the typed value stays in the box, it just isn't applied.
+  const effectiveMinSalary = minSalaryOn ? minSalary : null;
+
   const sortedJobs = useMemo(() => {
     if (!jobs) return jobs;
-    return filterByMinSalary(sortJobsBy(jobs, sort), minSalary);
-  }, [jobs, sort, minSalary]);
+    return filterByMinSalary(sortJobsBy(jobs, sort), effectiveMinSalary);
+  }, [jobs, sort, effectiveMinSalary]);
   const handleSort = useCallback((column: Parameters<typeof nextSortState>[1]) => {
     setSort((current) => nextSortState(current, column));
   }, []);
@@ -81,6 +113,43 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
     () => (groupByCompanyOn && sortedJobs ? groupByCompany(sortedJobs) : null),
     [groupByCompanyOn, sortedJobs],
   );
+
+  /**
+   * Single entry point for every edit to the min-salary box: strip to digits, store the number,
+   * and remember where the caret should land once the formatted value is re-rendered.
+   */
+  function commitMinSalary(rawValue: string, caret: number) {
+    const digitsBeforeCaret = rawValue.slice(0, caret).replace(/\D/g, "").length;
+    const digits = rawValue.replace(/\D/g, "");
+    const next = digits === "" ? null : Number(digits);
+    setMinSalary(next);
+    minSalaryCaretRef.current = caretAfterDigits(groupDigits(next), digitsBeforeCaret);
+  }
+
+  function handleMinSalaryKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    const el = e.currentTarget;
+    if (e.key !== "Backspace" || el.selectionStart !== el.selectionEnd) {
+      return;
+    }
+    const caret = el.selectionStart ?? 0;
+    if (caret === 0 || el.value[caret - 1] !== ",") {
+      return;
+    }
+    // Backspacing a separator would look like nothing happened - the comma is derived, so it
+    // just gets re-inserted. Delete the digit in front of it instead, which is what was meant.
+    e.preventDefault();
+    commitMinSalary(el.value.slice(0, caret - 2) + el.value.slice(caret), caret - 2);
+  }
+
+  // Restore the caret after React rewrites the input's value with the grouped version.
+  useLayoutEffect(() => {
+    const el = minSalaryInputRef.current;
+    const caret = minSalaryCaretRef.current;
+    if (el && caret != null) {
+      el.setSelectionRange(caret, caret);
+      minSalaryCaretRef.current = null;
+    }
+  });
 
   const toggleGroup = useCallback((key: string) => {
     setExpandedGroups((prev) => {
@@ -148,43 +217,70 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
         ))}
       </div>
 
-      {activeTab === "search" && (
+      {/* One horizontal toolbar rather than three stacked rows - the vertical space it saves
+          goes to the table, which is what the tab is actually for. */}
+      <div className="table-controls">
+        <div className={minSalaryOn ? "field-row min-salary-row" : "field-row min-salary-row off"}>
+          {/*
+            type="text", not "number": a number input requires its value to parse as a plain
+            number, so it can never display the thousands separators - and setSelectionRange,
+            which the caret restore depends on, is not allowed on number inputs either.
+          */}
+          <input
+            id="jp-min-salary"
+            ref={minSalaryInputRef}
+            aria-label="Minimum salary"
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            placeholder="No minimum"
+            value={groupDigits(minSalary)}
+            onKeyDown={handleMinSalaryKeyDown}
+            onChange={(e) => commitMinSalary(e.target.value, e.target.selectionStart ?? e.target.value.length)}
+          />
+          {/* The checkbox sits under the number and doubles as the field's label. */}
+          <span className="checkbox-row min-salary-label">
+            <input
+              id="jp-min-salary-on"
+              type="checkbox"
+              checked={minSalaryOn}
+              onChange={(e) => setMinSalaryOn(e.target.checked)}
+            />
+            <label htmlFor="jp-min-salary-on">Min salary</label>
+          </span>
+        </div>
+
         <div className="field-row checkbox-row">
           <input
-            id="jp-include-previous"
+            id="jp-group-company"
             type="checkbox"
-            checked={includePreviousRuns}
-            onChange={(e) => setIncludePreviousRuns(e.target.checked)}
+            checked={groupByCompanyOn}
+            onChange={(e) => setGroupByCompanyOn(e.target.checked)}
           />
-          <label htmlFor="jp-include-previous">Include previous runs</label>
+          <label htmlFor="jp-group-company">Group by company</label>
         </div>
-      )}
 
-      <div className="field-row min-salary-row">
-        <label htmlFor="jp-min-salary">Min salary</label>
-        <input
-          id="jp-min-salary"
-          type="number"
-          min="0"
-          step="10000"
-          inputMode="numeric"
-          placeholder="No minimum"
-          value={minSalary ?? ""}
-          onChange={(e) => {
-            const v = Number(e.target.value);
-            setMinSalary(e.target.value.trim() === "" || Number.isNaN(v) ? null : v);
-          }}
-        />
-      </div>
+        {activeTab === "search" && (
+          <div className="field-row checkbox-row">
+            <input
+              id="jp-include-previous"
+              type="checkbox"
+              checked={includePreviousRuns}
+              onChange={(e) => setIncludePreviousRuns(e.target.checked)}
+            />
+            <label htmlFor="jp-include-previous">Include previous runs</label>
+          </div>
+        )}
 
-      <div className="field-row checkbox-row">
-        <input
-          id="jp-group-company"
-          type="checkbox"
-          checked={groupByCompanyOn}
-          onChange={(e) => setGroupByCompanyOn(e.target.checked)}
-        />
-        <label htmlFor="jp-group-company">Group by company</label>
+        <div className="field-row checkbox-row">
+          <InfoTip label="About sorting and salary sources">
+            {sort.column === "default"
+              ? "Sorted by salary, then most recent. Click a column to sort by it instead."
+              : "Click a column to change sort, or click it again to reverse."}{" "}
+            The min-salary box never hides jobs whose salary is unknown. Salaries from LCA disclosure
+            data show the employer entity they were matched to; a leading ≈ marks an approximate match.
+          </InfoTip>
+        </div>
       </div>
 
       {actionError && (
@@ -208,22 +304,16 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
         sortedJobs !== null &&
         sortedJobs.length === 0 &&
         !error &&
-        minSalary != null && (
+        effectiveMinSalary != null && (
           <p className="hint">
-            No jobs at or above {formatUsd(minSalary)}. Lower the minimum or clear it.
+            No jobs at or above {formatUsd(effectiveMinSalary)}. Lower the minimum, or switch it off.
           </p>
         )}
 
       {sortedJobs !== null && sortedJobs.length > 0 && (
         <>
-          <p className="hint sort-hint">
-            {sort.column === "default"
-              ? "Sorted by salary, then most recent. Click a column to sort by it instead."
-              : "Click a column to change sort, or click it again to reverse."}{" "}
-            The min-salary box never hides jobs whose salary is unknown. Salaries from LCA disclosure
-            data show the employer entity they were matched to; a leading ≈ marks an approximate match.
-          </p>
-          <table className="job-table">
+          <div className="job-table-scroll">
+            <table className="job-table">
             <thead>
               <tr>
                 <SortableHeader column="title" label="Title" sort={sort} onSort={handleSort} />
@@ -278,7 +368,8 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
                     />
                   ))}
             </tbody>
-          </table>
+            </table>
+          </div>
         </>
       )}
     </section>

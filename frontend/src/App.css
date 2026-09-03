@@ -1,10 +1,30 @@
+/*
+  No width cap: the shell uses the whole monitor. Only the results table actually wants that
+  much room, so the narrower panels are re-constrained below - a run form or a paragraph of
+  copy stretched across an ultrawide display is worse, not better.
+*/
 .app-shell {
   width: 100%;
-  max-width: 1500px;
+  max-width: none;
   margin: 0 auto;
-  padding: 0 24px 64px;
+  padding: 0 24px 24px;
   text-align: left;
   box-sizing: border-box;
+
+  /*
+    First link in the "table fills the leftover height" chain. #root is already a flex column
+    of at least 100svh; every link from here down to .job-table-scroll takes flex: 1 and
+    min-height: 0, so the table absorbs whatever vertical space the header, tabs and controls
+    leave over - on any monitor, without a hardcoded number.
+
+    min-height: 0 is the load-bearing half: a flex item defaults to min-height: auto (its content
+    size), which refuses to shrink and pushes the overflow onto the page instead of into the
+    table's own scroll area. Omit it on any one of these and the page scrolls again.
+  */
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .app-header {
@@ -99,16 +119,36 @@
   color: var(--text-h);
 }
 
+/* Links 2 and 3 of the fill chain (see .app-shell). */
 .app-main {
   display: flex;
   flex-direction: column;
   gap: 32px;
+  flex: 1;
+  min-height: 0;
 }
 
 .tab-panel {
   display: flex;
   flex-direction: column;
   gap: 32px;
+  flex: 1;
+  min-height: 0;
+}
+
+/*
+  Forms, filter lists and explanatory copy stay at a readable measure, and don't stretch their
+  card down the whole screen the way the results table deliberately does.
+*/
+.tab-panel:not(.tab-panel-wide) {
+  max-width: 1200px;
+  justify-content: flex-start;
+  flex: 0 1 auto;
+}
+
+/* ...while the results table gets the full width of the display. */
+.tab-panel-wide {
+  max-width: none;
 }
 
 /*
@@ -341,21 +381,39 @@ table {
   font-size: 14px;
 }
 
-.job-table,
 .company-table {
   display: block;
   overflow-x: auto;
 }
 
 /*
-  The results table owns its whole tab now, so let it use the viewport instead of a fixed 600px
-  box. The subtracted space is the header + tab bar + the panel's own tab bar/filters/hint;
-  min-height keeps it usable on a short window.
+  Scrolling lives on this wrapper, NOT on the <table>. Putting `display: block` on a table to
+  make it scrollable leaves the rows short of the scrollbar: the block goes full width, but the
+  browser then wraps the rows in an anonymous table box that shrink-to-fits its content, so the
+  last column stops well before the scrollbar with dead space between them. Keeping the table a
+  real table with width:100% inside a scrolling div makes the rows span the full width.
+
+  The results table owns its whole tab, so it uses the viewport rather than a fixed box. The
+  subtracted space is the header + tab bar + the panel's own tab bar/filters/hint; min-height
+  keeps it usable on a short window.
 */
-.job-table {
-  max-height: calc(100vh - 330px);
+/*
+  Last link of the fill chain: the table takes the leftover height instead of a guessed
+  `calc(100vh - Npx)`, which was always wrong for some combination of monitor, font size and
+  how many control rows were on screen.
+
+  min-height keeps it usable when the window is genuinely short: the scroll area refuses to
+  shrink past it, so a small screen gets a page scrollbar (the acceptable fallback) rather than
+  a two-row-tall table.
+*/
+.job-table-scroll {
+  flex: 1;
   min-height: 320px;
-  overflow-y: auto;
+  overflow: auto;
+}
+
+.job-table {
+  width: 100%;
 }
 
 .job-table thead tr {
@@ -373,6 +431,36 @@ td {
   white-space: nowrap;
 }
 
+/*
+  Job titles are the longest thing in the table and every cell is nowrap, so an unbounded title
+  column pushed Actions off-screen - you had to scroll right (losing Title and Company) just to
+  reach the buttons. Truncate with an ellipsis; the full title is in the cell's title attribute.
+
+  The caps scale with the viewport rather than being fixed pixels, so a wider monitor spends its
+  extra space on showing more of the title instead of leaving it truncated with empty space to
+  the right. The lower bound keeps a laptop usable; the upper bound stops a title running so far
+  that the eye loses the row.
+*/
+/*
+  The three vw factors below (28 + 12 + 13 = 53% of the viewport) are a budget, not a guess.
+  The other columns - Location, Posted, the salary figure, the two action buttons, cell padding -
+  cost roughly 540px that does not scale, and the page chrome another ~90px. So the table fits
+  without a horizontal scrollbar whenever  V - 90 >= 540 + 0.53V, i.e. from about 1340px of
+  viewport upward. Raising these percentages shows more of each title but reintroduces
+  side-scrolling on narrower windows; 65% only fitted above ~1800px.
+*/
+.col-title {
+  max-width: clamp(300px, 28vw, 760px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.col-company {
+  max-width: clamp(160px, 12vw, 320px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .col-title a {
   color: var(--accent);
   font-weight: 600;
@@ -383,9 +471,20 @@ td {
   text-decoration: underline;
 }
 
+/*
+  Do NOT put `display: flex` on this cell. A <td> that becomes a flex container drops out of the
+  table layout algorithm: it stops stretching to the row height and stops aligning with the other
+  cells in its row, so the buttons visibly float out of their row. That was invisible while every
+  row was one line tall, and became obvious once rows varied in height (the LCA employer sub-label)
+  and group summary rows introduced empty actions cells. Space the buttons with a margin instead.
+*/
 .col-actions {
-  display: flex;
-  gap: 8px;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.col-actions button + button {
+  margin-left: 8px;
 }
 
 .col-salary {
@@ -400,7 +499,7 @@ td {
 /* Matched LCA employer legal entity, shown under the salary figure. */
 .lca-employer {
   display: block;
-  max-width: 200px;
+  max-width: clamp(180px, 13vw, 280px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -413,11 +512,6 @@ td {
 
 .min-salary-row {
   max-width: 220px;
-}
-
-.sort-hint {
-  margin-top: 12px;
-  margin-bottom: 6px;
 }
 
 th.sortable {
@@ -653,4 +747,142 @@ th.sortable.active .sort-button {
 
 .grouped-job > td {
   background: color-mix(in srgb, var(--code-bg) 35%, transparent);
+}
+
+/*
+  Row hover. Cheap at 1100px, genuinely load-bearing once the table spans a wide monitor: it is
+  what keeps your eye on the same record while tracking from Title across to the Actions buttons.
+  Group summary rows keep their own darker fill, so exclude them.
+*/
+.job-table tbody tr:not(.company-group):hover > td {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+/* Keep the indented children of an expanded group distinguishable while hovered. */
+.job-table tbody tr.grouped-job:hover > td {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* ---- Fit-the-viewport layout ---------------------------------------------------------------- */
+
+/*
+  Link 4 of the fill chain (see .app-shell): the results card itself is a flex column so its
+  sub-tabs, controls and hint keep their natural height and .job-table-scroll takes the rest.
+*/
+.jobs-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Min salary, Group by company and Include previous runs on one line instead of three rows. */
+.table-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 28px;
+  margin-bottom: 12px;
+}
+
+.table-controls .field-row {
+  margin-bottom: 0;
+}
+
+/* The controls and hint are fixed-height rows; only the table flexes. */
+.jobs-panel .tab-bar,
+.jobs-panel .table-controls,
+.jobs-panel .form-error {
+  flex: none;
+}
+
+/* ---- Info tooltip --------------------------------------------------------------------------- */
+
+.info-tip {
+  position: relative;
+  display: inline-flex;
+}
+
+.info-tip-button {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: Georgia, "Times New Roman", serif;
+  font-style: italic;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.info-tip-button:hover {
+  color: var(--text-h);
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
+}
+
+.info-tip-content {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 20;
+  width: max-content;
+  max-width: 460px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--code-bg);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.55;
+  white-space: normal;
+  box-shadow: var(--shadow);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 120ms ease;
+}
+
+/* focus-within, not just hover: a hover-only tooltip is unreachable by keyboard. */
+.info-tip:hover .info-tip-content,
+.info-tip:focus-within .info-tip-content {
+  opacity: 1;
+  visibility: visible;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .info-tip-content { transition: none; }
+}
+
+/* ---- Min salary toggle ---------------------------------------------------------------------- */
+
+/* The checkbox doubles as the field label, so it keeps the weight of the other field labels. */
+/*
+  The label sits UNDER the number it controls. It carries .checkbox-row for the checkbox+label
+  pairing, but that class only supplies flex *properties* - `display: flex` comes from .field-row,
+  which this <span> is not - so set it here or the gap silently does nothing.
+*/
+.table-controls .checkbox-row.min-salary-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 0;
+  padding: 0;
+}
+
+.min-salary-label label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+/* Switched off: the number stays put and stays editable, it just reads as inactive. */
+.min-salary-row.off input[type="text"] {
+  opacity: 0.55;
 }
