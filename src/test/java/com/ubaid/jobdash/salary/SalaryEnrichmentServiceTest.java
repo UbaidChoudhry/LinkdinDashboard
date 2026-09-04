@@ -62,12 +62,23 @@ class SalaryEnrichmentServiceTest extends AbstractStoreTest {
                 jobListingRepository, props(enabled), clock);
     }
 
-    private long seedPassingJob(long jobId, String company, String title) {
+    /** Seeds one passing job and returns the sweep run id it belongs to. */
+    private long seedPassingJob(long sourceJobId, String company, String title) {
         long runId = sweepRunRepository.create(NOW, "swe", "", 24, false, null);
-        jobListingRepository.upsertAll(List.of(new JobCardInsert(jobId, title, company, "Austin, Texas",
-                NOW, "https://linkedin.com/jobs/view/" + jobId, "https://linkedin.com/company/x")), runId, NOW);
-        client.sql("update job_listing set filter_verdict = 'pass' where job_id = :id").param("id", jobId).update();
+        jobListingRepository.upsertAll(List.of(new JobCardInsert("linkedin", String.valueOf(sourceJobId), title, company,
+                "Austin, Texas", NOW, "https://linkedin.com/jobs/view/" + sourceJobId,
+                "https://linkedin.com/company/x", null)), runId, NOW);
+        client.sql("update job_listing set filter_verdict = 'pass' where source_job_id = :id")
+                .param("id", String.valueOf(sourceJobId)).update();
         return runId;
+    }
+
+    /** Resolves a seeded card's actual (autoincrement surrogate) job_id by its source_job_id. */
+    private long jobIdFor(long sourceJobId) {
+        return client.sql("select job_id from job_listing where source_job_id = :id")
+                .param("id", String.valueOf(sourceJobId))
+                .query(Long.class)
+                .single();
     }
 
     private static final BooleanSupplier NOT_CANCELLED = () -> false;
@@ -82,7 +93,7 @@ class SalaryEnrichmentServiceTest extends AbstractStoreTest {
                 new SalaryResult(1.0, 2.0, "USD", LocalDate.now(clock), 1, "lca", null), false);
         service(true, shouldNotRun).enrichRun(runId, "Austin, Texas", NOT_CANCELLED);
 
-        JobListing job = jobListingRepository.findById(1).orElseThrow();
+        JobListing job = jobListingRepository.findById(jobIdFor(1)).orElseThrow();
         assertThat(job.salaryMax()).isEqualTo(155000.0);
         assertThat(job.salarySource()).isEqualTo("adzuna");
     }
@@ -97,7 +108,7 @@ class SalaryEnrichmentServiceTest extends AbstractStoreTest {
         // No source should run on a fresh cache hit; the detail must still land on the job.
         service(true, new FakeSource("lca", null, true)).enrichRun(runId, "Austin, Texas", NOT_CANCELLED);
 
-        JobListing job = jobListingRepository.findById(7).orElseThrow();
+        JobListing job = jobListingRepository.findById(jobIdFor(7)).orElseThrow();
         assertThat(job.salarySource()).isEqualTo("lca");
         assertThat(job.salarySourceDetail()).isEqualTo("ACME ROBOTICS LLC");
     }
@@ -111,7 +122,7 @@ class SalaryEnrichmentServiceTest extends AbstractStoreTest {
 
         service(true, lca).enrichRun(runId, "Austin, Texas", NOT_CANCELLED);
 
-        JobListing job = jobListingRepository.findById(2).orElseThrow();
+        JobListing job = jobListingRepository.findById(jobIdFor(2)).orElseThrow();
         assertThat(job.salaryMin()).isEqualTo(160000.0);
         assertThat(job.salaryMax()).isEqualTo(210000.0);
         assertThat(job.salarySource()).isEqualTo("lca");
@@ -134,7 +145,7 @@ class SalaryEnrichmentServiceTest extends AbstractStoreTest {
 
         service(true, fresh, stale).enrichRun(runId, "Austin, Texas", NOT_CANCELLED);
 
-        JobListing job = jobListingRepository.findById(3).orElseThrow();
+        JobListing job = jobListingRepository.findById(jobIdFor(3)).orElseThrow();
         assertThat(job.salarySource()).isEqualTo("adzuna");
         assertThat(job.salaryMax()).isEqualTo(175000.0);
     }
@@ -146,7 +157,7 @@ class SalaryEnrichmentServiceTest extends AbstractStoreTest {
 
         service(true, empty).enrichRun(runId, "Austin, Texas", NOT_CANCELLED);
 
-        JobListing job = jobListingRepository.findById(4).orElseThrow();
+        JobListing job = jobListingRepository.findById(jobIdFor(4)).orElseThrow();
         assertThat(job.salarySource()).isNull();
         assertThat(job.salaryMax()).isNull();
 
@@ -160,9 +171,10 @@ class SalaryEnrichmentServiceTest extends AbstractStoreTest {
     void cancelledStopsMidLoop() {
         long runId = sweepRunRepository.create(NOW, "swe", "", 24, false, null);
         for (long id : new long[]{10, 11}) {
-            jobListingRepository.upsertAll(List.of(new JobCardInsert(id, "Software Engineer " + id, "Acme Robotics",
-                    "Austin, Texas", NOW, "u", "c")), runId, NOW);
-            client.sql("update job_listing set filter_verdict = 'pass' where job_id = :id").param("id", id).update();
+            jobListingRepository.upsertAll(List.of(new JobCardInsert("linkedin", String.valueOf(id), "Software Engineer " + id, "Acme Robotics",
+                    "Austin, Texas", NOW, "u", "c", null)), runId, NOW);
+            client.sql("update job_listing set filter_verdict = 'pass' where source_job_id = :id")
+                    .param("id", String.valueOf(id)).update();
         }
         FakeSource lca = new FakeSource("lca",
                 new SalaryResult(1.0, 200000.0, "USD", LocalDate.of(2025, 1, 1), 1, "lca", null), false);
@@ -189,7 +201,7 @@ class SalaryEnrichmentServiceTest extends AbstractStoreTest {
 
         service(true, bad).enrichRun(runId, "Austin, Texas", NOT_CANCELLED);
 
-        JobListing job = jobListingRepository.findById(5).orElseThrow();
+        JobListing job = jobListingRepository.findById(jobIdFor(5)).orElseThrow();
         assertThat(job.salarySource()).isNull();
         // A throwing source is treated as "no result" -> a 'none' estimate is still cached.
         assertThat(salaryEstimateRepository.find("acme robotics", "software engineer").orElseThrow().source())
@@ -204,7 +216,7 @@ class SalaryEnrichmentServiceTest extends AbstractStoreTest {
 
         service(false, lca).enrichRun(runId, "Austin, Texas", NOT_CANCELLED);
 
-        assertThat(jobListingRepository.findById(6).orElseThrow().salarySource()).isNull();
+        assertThat(jobListingRepository.findById(jobIdFor(6)).orElseThrow().salarySource()).isNull();
         assertThat(salaryEstimateRepository.find("acme robotics", "software engineer")).isEmpty();
     }
 }

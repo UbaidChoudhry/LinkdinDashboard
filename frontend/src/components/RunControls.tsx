@@ -1,18 +1,25 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
-import { ApiError, createRun } from "../api/client";
-import type { CreateRunRequest } from "../types/api";
+import { ApiError, createRun, listResumes } from "../api/client";
+import type { CreateRunRequest, JobSourceName, ResumeResponse } from "../types/api";
+import { SourceSelect } from "./SourceSelect";
 
 interface RunControlsProps {
   disabled: boolean;
   onRunStarted: (runId: number) => void;
+  /** Bumped by the shell when the resume list changes, so the picker below refetches. */
+  resumeToken?: number;
 }
 
 const DEFAULT_KEYWORDS = "Software Engineer";
 const DEFAULT_HOURS = 24;
 const DEFAULT_LOCATION = "United States";
+const DEFAULT_SOURCES: JobSourceName[] = ["greenhouse", "lever", "workday"];
 
-export function RunControls({ disabled, onRunStarted }: RunControlsProps) {
+export function RunControls({ disabled, onRunStarted, resumeToken = 0 }: RunControlsProps) {
+  const [sources, setSources] = useState<JobSourceName[]>(DEFAULT_SOURCES);
+  const [resumes, setResumes] = useState<ResumeResponse[]>([]);
+  const [resumeId, setResumeId] = useState<number | null>(null);
   const [keywords, setKeywords] = useState(DEFAULT_KEYWORDS);
   const [hours, setHours] = useState(DEFAULT_HOURS);
   const [location, setLocation] = useState(DEFAULT_LOCATION);
@@ -23,7 +30,26 @@ export function RunControls({ disabled, onRunStarted }: RunControlsProps) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const shardToggleBlocked = useShards && !shardWarningAck;
+  const linkedInOnly = sources.length === 1 && sources[0] === "linkedin";
+  // Sharding, the page cap and test mode are all LinkedIn pagination concepts; ATS boards
+  // return a company's whole board in one request and have none of them.
+  const shardToggleBlocked = linkedInOnly && useShards && !shardWarningAck;
+
+  useEffect(() => {
+    listResumes()
+      .then((list) => {
+        setResumes(list);
+        // Follow the default resume unless the user has explicitly picked another.
+        setResumeId((current) => {
+          if (current != null && list.some((r) => r.id === current)) return current;
+          return list.find((r) => r.isDefault)?.id ?? list[0]?.id ?? null;
+        });
+      })
+      .catch(() => {
+        // A resume list failure must not block starting a run - the scan step is optional.
+        setResumes([]);
+      });
+  }, [resumeToken]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -33,7 +59,11 @@ export function RunControls({ disabled, onRunStarted }: RunControlsProps) {
       setError("Keywords are required.");
       return;
     }
-    if (!useShards && !location.trim()) {
+    if (sources.length === 0) {
+      setError("Pick at least one source.");
+      return;
+    }
+    if (linkedInOnly && !useShards && !location.trim()) {
       setError("Location is required unless sharding by metro is enabled.");
       return;
     }
@@ -46,10 +76,14 @@ export function RunControls({ disabled, onRunStarted }: RunControlsProps) {
       keywords: keywords.trim(),
       hours,
       testMode,
-      useShards,
+      useShards: linkedInOnly && useShards,
+      sources,
     };
-    if (!useShards) {
+    if (!(linkedInOnly && useShards)) {
       body.location = location.trim();
+    }
+    if (!linkedInOnly && resumeId != null) {
+      body.resumeId = resumeId;
     }
     if (pageCap.trim()) {
       const parsed = Number(pageCap);
@@ -72,6 +106,34 @@ export function RunControls({ disabled, onRunStarted }: RunControlsProps) {
   return (
     <form className="run-controls" onSubmit={handleSubmit}>
       <h2>Start a run</h2>
+
+      <div className="field-row">
+        <span className="field-label">Sources</span>
+        <SourceSelect value={sources} onChange={setSources} disabled={disabled || submitting} />
+      </div>
+
+      {!linkedInOnly && (
+        <div className="field-row">
+          <label htmlFor="rc-resume">Resume for AI scan</label>
+          <select
+            id="rc-resume"
+            value={resumeId ?? ""}
+            onChange={(e) => setResumeId(e.target.value ? Number(e.target.value) : null)}
+            disabled={disabled || submitting || resumes.length === 0}
+          >
+            {resumes.length === 0 ? (
+              <option value="">No resume uploaded — scan will be skipped</option>
+            ) : (
+              resumes.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                  {r.isDefault ? " (default)" : ""}
+                </option>
+              ))
+            )}
+          </select>
+        </div>
+      )}
 
       <div className="field-row">
         <label htmlFor="rc-keywords">Keywords</label>
@@ -104,11 +166,12 @@ export function RunControls({ disabled, onRunStarted }: RunControlsProps) {
           type="text"
           value={location}
           onChange={(e) => setLocation(e.target.value)}
-          disabled={disabled || submitting || useShards}
-          placeholder={useShards ? "ignored while sharding is on" : undefined}
+          disabled={disabled || submitting || (linkedInOnly && useShards)}
+          placeholder={linkedInOnly && useShards ? "ignored while sharding is on" : undefined}
         />
       </div>
 
+      {linkedInOnly && (
       <div className="field-row">
         <label htmlFor="rc-pagecap">Page cap (optional)</label>
         <input
@@ -121,7 +184,9 @@ export function RunControls({ disabled, onRunStarted }: RunControlsProps) {
           placeholder="no cap"
         />
       </div>
+      )}
 
+      {linkedInOnly && (
       <div className="field-row checkbox-row">
         <input
           id="rc-testmode"
@@ -132,7 +197,9 @@ export function RunControls({ disabled, onRunStarted }: RunControlsProps) {
         />
         <label htmlFor="rc-testmode">Test mode (caps pages fetched, safe to run often)</label>
       </div>
+      )}
 
+      {linkedInOnly && (
       <div className="field-row checkbox-row">
         <input
           id="rc-shards"
@@ -148,8 +215,9 @@ export function RunControls({ disabled, onRunStarted }: RunControlsProps) {
         />
         <label htmlFor="rc-shards">Shard by metro (opt-in, expensive - see warning below)</label>
       </div>
+      )}
 
-      {useShards && (
+      {linkedInOnly && useShards && (
         <div className="shard-warning" role="alert">
           <strong>This is expensive.</strong> A full US-wide sweep is already about 100 requests
           and roughly 15 minutes. Sharding by metro multiplies that cost against a daily budget of

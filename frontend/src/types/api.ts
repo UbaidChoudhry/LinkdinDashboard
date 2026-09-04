@@ -29,10 +29,20 @@ export interface JobResponse {
   // actually matched from (e.g. "AMAZON.COM SERVICES LLC"). Null for non-LCA
   // sources and for rows imported before this field existed.
   salarySourceDetail?: string | null;
+  /** Which job board this row came from: "linkedin" | "greenhouse" | "lever" | "workday". */
+  source?: string | null;
+  /**
+   * AI match verdict against the resume the request was scoped to. Null means "not scanned" -
+   * which is the permanent state for LinkedIn rows, since they carry no description to compare.
+   */
+  aiRecommended?: boolean | null;
+  aiReason?: string | null;
 }
 
 export type RunStatus =
   | "running"
+  | "scanning"
+  | "no_sources"
   | "ok"
   | "capped"
   | "budget_exhausted"
@@ -57,6 +67,11 @@ export interface RunResponse {
   cardsSeen: number;
   jobsNew: number;
   saturated: boolean;
+  /** Comma-separated sources this run pulled from, e.g. "greenhouse,lever". */
+  sources?: string | null;
+  /** Companies visited so far (ATS runs); null for LinkedIn runs. */
+  companiesDone?: number | null;
+  companiesTotal?: number | null;
 }
 
 export interface CreateRunRequest {
@@ -67,6 +82,10 @@ export interface CreateRunRequest {
   pageCap?: number;
   useShards?: boolean;
   shards?: string[];
+  /** Which sources to pull from. Omitted means LinkedIn, preserving the previous behaviour. */
+  sources?: JobSourceName[];
+  /** Resume to run the AI match against. Null/omitted uses the default resume. */
+  resumeId?: number | null;
 }
 
 export interface RunIdResponse {
@@ -115,4 +134,81 @@ export interface ClearJobDataResponse {
   jobsCleared: number;
   runsCleared: number;
   databaseSizeBytesAfter: number;
+}
+
+// ---------------------------------------------------------------------------
+// Job sources (LinkedIn + ATS boards) and AI resume matching
+// ---------------------------------------------------------------------------
+
+/** Every source a run can pull from. LinkedIn is mutually exclusive with the rest. */
+export type JobSourceName = "linkedin" | "greenhouse" | "lever" | "workday";
+
+export const ATS_SOURCES: JobSourceName[] = ["greenhouse", "lever", "workday"];
+
+export const SOURCE_LABELS: Record<JobSourceName, string> = {
+  linkedin: "LinkedIn",
+  greenhouse: "Greenhouse",
+  lever: "Lever",
+  workday: "Workday",
+};
+
+/**
+ * LinkedIn's guest search returns no job description, so there is nothing for the AI scan to
+ * compare a resume against - which is why it cannot be combined with the ATS sources.
+ */
+export function isLinkedInExclusive(sources: JobSourceName[]): boolean {
+  return sources.includes("linkedin") && sources.length > 1;
+}
+
+/** A company in the ATS slug catalog. Mirrors web/dto/AtsCompanyResponse.java. */
+export interface AtsCompanyResponse {
+  id: number;
+  ats: JobSourceName;
+  slug: string;
+  company: string;
+  host: string | null;
+  site: string | null;
+  enabled: boolean;
+  status: "unverified" | "active" | "dead" | string;
+  consecutiveFailures: number;
+  lastCheckedAt: string | null;
+  lastOkAt: string | null;
+  lastJobCount: number | null;
+  addedAt: string | null;
+}
+
+/** Mirrors web/dto/SourcePageResponse.java. */
+export interface AtsCompanyPage {
+  items: AtsCompanyResponse[];
+  total: number;
+}
+
+/** Mirrors web/dto/SourceSummaryResponse.java. */
+export interface SourceSummaryResponse {
+  byAts: Record<string, number>;
+  byStatus: Record<string, number>;
+}
+
+/** An uploaded resume. Mirrors web/dto/ResumeResponse.java - `contentText` is deliberately absent. */
+export interface ResumeResponse {
+  id: number;
+  name: string;
+  originalFilename: string;
+  charCount: number;
+  isDefault: boolean;
+  uploadedAt: string | null;
+}
+
+/** Which bucket the AI scan put a job in. Null when the job has not been scanned. */
+export type MatchBucket = "recommended" | "not_recommended";
+
+/** Summary of one AI scan. Mirrors ai/ResumeMatchService.ScanResult. */
+export interface ScanResultResponse {
+  scanned: number;
+  recommended: number;
+  notRecommended: number;
+  skipped: number;
+  failedBatches: number;
+  totalCostUsd: number;
+  errorMessage: string | null;
 }

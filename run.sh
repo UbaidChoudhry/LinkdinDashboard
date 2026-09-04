@@ -45,8 +45,44 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-mkdir -p "$LOG_DIR" "$PID_DIR" data
+mkdir -p "$LOG_DIR" "$PID_DIR" data data/resumes
 ROOT="$PWD"
+
+# The AI resume/job match step shells out to the Claude CLI. It is optional - everything
+# else works without it - so this warns rather than failing the boot. CLAUDE_CLI_PATH
+# overrides the binary name (see the ai: block in application.yml).
+CLAUDE_BIN="${CLAUDE_CLI_PATH:-claude}"
+if command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
+  echo "claude CLI    $(command -v "$CLAUDE_BIN") ($("$CLAUDE_BIN" --version 2>/dev/null | head -1))"
+else
+  echo "warning: '$CLAUDE_BIN' is not on PATH - AI resume matching will be unavailable." >&2
+  echo "         Everything else (sweeps, filters, salary) works without it." >&2
+  echo "         Install it, or set CLAUDE_CLI_PATH to the binary, then restart." >&2
+fi
+
+# Safety net for schema migrations. V5 REBUILDS job_listing (SQLite cannot alter a primary
+# key, so the table is recreated and copied), and a rebuild is the one migration shape that
+# can lose rows if it goes wrong. Keep one snapshot per day, and only the 3 most recent -
+# this is a local dev database, not an archive, and the file is ~90MB once LCA data is in.
+backup_database() {
+  local db="data/jobdash.db" dir="data/backups" stamp
+  [ -f "$db" ] || return 0
+  stamp="$(date +%Y%m%d)"
+  mkdir -p "$dir"
+  if [ ! -f "$dir/jobdash-$stamp.db" ]; then
+    # .backup is SQLite's own consistent-snapshot command; copying the file by hand can
+    # capture a torn write, because the real state is spread across the -wal file too.
+    if command -v sqlite3 >/dev/null 2>&1; then
+      sqlite3 "$db" ".backup '$dir/jobdash-$stamp.db'" 2>/dev/null \
+        && echo "database    backed up to $dir/jobdash-$stamp.db"
+    else
+      cp "$db" "$dir/jobdash-$stamp.db" && echo "database    copied to $dir/jobdash-$stamp.db"
+    fi
+  fi
+  # Newest 3 kept; ls -t is safe here because we control the filenames (no spaces).
+  ls -t "$dir"/jobdash-*.db 2>/dev/null | tail -n +4 | while read -r old; do rm -f "$old"; done
+}
+backup_database
 
 # lsof exits non-zero when nothing is listening, which is the expected case here,
 # so swallow it rather than letting `set -e` abort the script.

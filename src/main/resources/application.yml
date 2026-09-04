@@ -62,3 +62,48 @@ salary:
     # Spreadsheets are ~80MB and useless once aggregated into lca_wage, so they are removed
     # after a successful import. Only a file that actually contributed rows is ever deleted.
     delete-after-import: ${LCA_DELETE_AFTER_IMPORT:true}
+
+# ATS job boards (Greenhouse / Lever / Workday). These are public, documented JSON APIs and are
+# NOT subject to the LinkedIn budget above - they are counted separately in external_request_log
+# by AtsRateLimiter. Never conflate the two (see HANDOFF.md §8).
+ats:
+  enabled: true
+  pacing:
+    min-delay: 250ms
+  # Guard rails. The imported slug catalog holds >15,000 companies; a run only ever visits
+  # companies with enabled=1, and these caps bound even that.
+  max-companies-per-run: 150
+  # Greenhouse and Lever return every posting for a company in ONE request. Workday does not:
+  # its search page carries no description and only a relative "Posted 30+ Days Ago", so each
+  # kept job costs an extra detail request. This caps that second phase.
+  workday:
+    max-details-per-run: 120
+    page-size: 20
+  daily-cap:
+    greenhouse: 2000
+    lever: 2000
+    workday: 3000
+  # A company whose board 404s this many runs in a row is marked dead and skipped from then on.
+  dead-slug-threshold: 2
+  # Largest board payload we will read. Palantir's Lever board is ~6MB and Veeva's ~12MB.
+  max-response-bytes: 33554432
+  slugs:
+    # Set ONLY by ./import-slugs.sh, as a command-line argument (a file path or a URL).
+    # Deliberately not wired to an env var: a stray value in .env would make ./run.sh
+    # import-and-exit instead of starting the server - same rule as salary.lca.import-path.
+    import-path: ""
+    prune-dead: false
+
+# Resume/job matching via the Claude CLI. Uses the local `claude` binary and your Claude
+# subscription - no API key and no API credits are involved.
+ai:
+  enabled: true
+  cli-path: ${CLAUDE_CLI_PATH:claude}
+  model: sonnet
+  # Fixed per-invocation overhead is ~25k tokens regardless of payload, so batching is the
+  # dominant cost lever - see HANDOFF.md §9.
+  batch-size: 9
+  concurrency: 3
+  timeout: 5m
+  # Job descriptions are truncated to this many characters before being sent.
+  max-description-chars: 6000

@@ -29,6 +29,7 @@
 	<properties>
 		<java.version>21</java.version>
 		<flyway.version>13.4.0</flyway.version>
+		<pdfbox.version>3.0.8</pdfbox.version>
 	</properties>
 	<dependencies>
 		<dependency>
@@ -57,6 +58,14 @@
 			<artifactId>flyway-database-nc-sqlite</artifactId>
 			<version>${flyway.version}</version>
 			<scope>runtime</scope>
+		</dependency>
+
+		<!-- Resume text extraction. Only PDF needs a library; .txt/.md are read directly.
+		     Used at upload time only - see resume/ResumeTextExtractor. -->
+		<dependency>
+			<groupId>org.apache.pdfbox</groupId>
+			<artifactId>pdfbox</artifactId>
+			<version>${pdfbox.version}</version>
 		</dependency>
 
 		<dependency>

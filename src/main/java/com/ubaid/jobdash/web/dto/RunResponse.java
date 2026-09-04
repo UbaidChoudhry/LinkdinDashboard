@@ -26,14 +26,18 @@ public record RunResponse(
         int requestsMade,
         int cardsSeen,
         int jobsNew,
-        boolean saturated
+        boolean saturated,
+        String sources,
+        int companiesDone,
+        int companiesTotal
 ) {
 
     /** Builds a response from the persisted row alone (no live progress known to this process). */
     public static RunResponse fromRun(SweepRun run) {
         return new RunResponse(run.id(), run.startedAt(), run.finishedAt(), run.status(), run.keywords(),
                 run.location(), run.hours(), run.testMode(), run.pageCap(), run.shardsUsed(), null,
-                run.pagesFetched(), run.requestsMade(), run.cardsSeen(), run.jobsNew(), run.saturated());
+                run.pagesFetched(), run.requestsMade(), run.cardsSeen(), run.jobsNew(), run.saturated(),
+                run.sources(), run.companiesDone(), run.companiesTotal());
     }
 
     /** Builds a response from the persisted row's static fields plus a live progress snapshot. */
@@ -41,6 +45,6 @@ public record RunResponse(
         return new RunResponse(run.id(), run.startedAt(), run.finishedAt(), progress.status(), run.keywords(),
                 run.location(), run.hours(), run.testMode(), run.pageCap(), run.shardsUsed(), progress.currentShard(),
                 progress.pagesFetched(), progress.requestsMade(), progress.cardsSeen(), progress.jobsNew(),
-                progress.saturated());
+                progress.saturated(), run.sources(), progress.companiesDone(), progress.companiesTotal());
     }
 }

@@ -1,0 +1,202 @@
+{
+ "jobs": [
+  {
+   "absolute_url": "https://careers.airbnb.com/positions/8154749?gh_jid=8154749",
+   "data_compliance": [
+    {
+     "type": "gdpr",
+     "requires_consent": false,
+     "requires_processing_consent": false,
+     "requires_retention_consent": false,
+     "retention_period": null,
+     "demographic_data_consent_applies": false
+    }
+   ],
+   "internal_job_id": 3528964,
+   "location": {
+    "name": "Brazil"
+   },
+   "metadata": [
+    {
+     "id": 9245691,
+     "name": "Is this job part of ACC?",
+     "value": false,
+     "value_type": "yes_no"
+    },
+    {
+     "id": 10216612,
+     "name": "Workplace Type",
+     "value": "Remote",
+     "value_type": "single_select"
+    }
+   ],
+   "id": 8154749,
+   "updated_at": "2026-08-24T15:41:54-04:00",
+   "requisition_id": "ONE",
+   "title": "Automation Engineer, Quality Engineering",
+   "company_name": "Airbnb",
+   "first_published": "2026-08-24T15:41:54-04:00",
+   "language": "en",
+   "application_deadline": null,
+   "content": "&lt;div class=&quot;content-intro&quot;&gt;&lt;p&gt;&lt;span style=&quot;font-family: helvetica, arial, sans-serif; font-size: 12pt;&quot;&gt;Airbnb was born in 2007 when two hosts welcomed three guests to their San Francisco home, and has since grown to over 5 million hosts who have welcomed over 2 billion guest arrivals in almost every country across the globe. Every day, hosts offer unique stays and experiences that make it possible for guests to connect with communities in a more authentic way.&lt;/span&gt;&lt;/p&gt;&lt;/div&gt;&lt;h2&gt;&lt;strong&gt;The Community You Will Join&lt;/strong&gt;&lt;/h2&gt;\n&lt;p&gt;The Quality Engineering team helps Airbnb build high-quality software efficiently. We enable Airbnb engineers to build highly testable systems by building and using tools leveraging AI. We own and continuously improve product test cases, automation coverage, test automation tools, environments, frameworks. We navigate Airbnb\u2019s massive codebase identifying weak spots, and help design and implement testable fault-tolerant systems.&amp;nbsp;&lt;/p&gt;\n&lt;h2&gt;&lt;strong&gt;The Difference You Will Make&lt;/strong&gt;&lt;/h2&gt;\n&lt;ul&gt;\n&lt;li&gt;Help Airbnb leverage AI to redefine and accelerate Quality Engineering&lt;/li&gt;\n&lt;li&gt;As an Automation Engineer, you will help us meet this challenge by building and maintaining automation coverage for features and releases. You will work directly with the product engineering team to develop and maintain our test t",
+   "departments": [
+    {
+     "id": 77,
+     "name": "Software Engineering",
+     "child_ids": [],
+     "parent_id": 73703
+    }
+   ],
+   "offices": [
+    {
+     "id": 63869,
+     "name": "Brazil",
+     "location": null,
+     "child_ids": [
+      176
+     ],
+     "parent_id": 63606
+    }
+   ],
+   "ai_disclaimer": null,
+   "include_ai_disclaimer": null,
+   "ai_opt_out_request_url": null
+  },
+  {
+   "absolute_url": "https://careers.airbnb.com/positions/7760914?gh_jid=7760914",
+   "data_compliance": [
+    {
+     "type": "gdpr",
+     "requires_consent": false,
+     "requires_processing_consent": false,
+     "requires_retention_consent": false,
+     "retention_period": null,
+     "demographic_data_consent_applies": false
+    }
+   ],
+   "internal_job_id": 3400214,
+   "location": {
+    "name": "China"
+   },
+   "metadata": [
+    {
+     "id": 9245691,
+     "name": "Is this job part of ACC?",
+     "value": false,
+     "value_type": "yes_no"
+    },
+    {
+     "id": 10216612,
+     "name": "Workplace Type",
+     "value": "Remote",
+     "value_type": "single_select"
+    }
+   ],
+   "id": 7760914,
+   "updated_at": "2026-07-24T02:38:03-04:00",
+   "requisition_id": "ONE",
+   "title": "Engineering Manager, Community Support Engineering",
+   "company_name": "Airbnb",
+   "first_published": "2026-03-29T21:47:23-04:00",
+   "language": "en",
+   "application_deadline": null,
+   "content": "&lt;div class=&quot;content-intro&quot;&gt;&lt;p&gt;&lt;span style=&quot;font-family: helvetica, arial, sans-serif; font-size: 12pt;&quot;&gt;Airbnb was born in 2007 when two hosts welcomed three guests to their San Francisco home, and has since grown to over 5 million hosts who have welcomed over 2 billion guest arrivals in almost every country across the globe. Every day, hosts offer unique stays and experiences that make it possible for guests to connect with communities in a more authentic way.&lt;/span&gt;&lt;/p&gt;&lt;/div&gt;&lt;p&gt;&lt;strong&gt;The Community You Will Join:&lt;/strong&gt;&lt;/p&gt;\n&lt;p&gt;The Community Support Engineering (CSE) China Foundations team works together with our US partners to co-own the Community Support foundations systems, collectively empowering every step of the customer support journey. We&#39;re building the next-generation case management platform that gives a 360-degree view of every customer interaction, helping ambassadors resolve guest and host issues faster. At the same time, we&#39;re developing the centralized supervisor portal alongside agent quality systems that turn performance insights into actionable coaching signals. Our routing platform connects Airbnb customers to the right ambassador, through the right channel, at the right time. The team also provides AI-powered solutions to support TechOps around system inconsistencies and incidents to ensure high availability and reliability of critical CS flows.&lt;/p&gt;\n&lt",
+   "departments": [
+    {
+     "id": 77,
+     "name": "Software Engineering",
+     "child_ids": [],
+     "parent_id": 73703
+    }
+   ],
+   "offices": [
+    {
+     "id": 64270,
+     "name": "China",
+     "location": null,
+     "child_ids": [
+      66098,
+      66097,
+      66099,
+      66100,
+      66101,
+      66102,
+      304702,
+      23356,
+      23355,
+      23354,
+      1611,
+      23353
+     ],
+     "parent_id": 17517
+    }
+   ],
+   "ai_disclaimer": null,
+   "include_ai_disclaimer": null,
+   "ai_opt_out_request_url": null
+  },
+  {
+   "absolute_url": "https://careers.airbnb.com/positions/7995199?gh_jid=7995199",
+   "data_compliance": [
+    {
+     "type": "gdpr",
+     "requires_consent": false,
+     "requires_processing_consent": false,
+     "requires_retention_consent": false,
+     "retention_period": null,
+     "demographic_data_consent_applies": false
+    }
+   ],
+   "internal_job_id": 3468226,
+   "location": {
+    "name": "Paris, France"
+   },
+   "metadata": [
+    {
+     "id": 9245691,
+     "name": "Is this job part of ACC?",
+     "value": false,
+     "value_type": "yes_no"
+    },
+    {
+     "id": 10216612,
+     "name": "Workplace Type",
+     "value": "Hybrid",
+     "value_type": "single_select"
+    }
+   ],
+   "id": 7995199,
+   "updated_at": "2026-06-10T08:51:02-04:00",
+   "requisition_id": "ONE",
+   "title": "Acquisition Manager",
+   "company_name": "Airbnb",
+   "first_published": "2026-06-10T08:51:02-04:00",
+   "language": "en",
+   "application_deadline": null,
+   "content": "&lt;div class=&quot;content-intro&quot;&gt;&lt;p&gt;&lt;span style=&quot;font-family: helvetica, arial, sans-serif; font-size: 12pt;&quot;&gt;Airbnb was born in 2007 when two hosts welcomed three guests to their San Francisco home, and has since grown to over 5 million hosts who have welcomed over 2 billion guest arrivals in almost every country across the globe. Every day, hosts offer unique stays and experiences that make it possible for guests to connect with communities in a more authentic way.&lt;/span&gt;&lt;/p&gt;&lt;/div&gt;&lt;p&gt;&lt;span style=&quot;font-family: arial, helvetica, sans-serif; color: #000000;&quot;&gt;&lt;strong&gt;The Community You Will Join:&lt;/strong&gt;&lt;/span&gt;&lt;/p&gt;\n&lt;p&gt;The Homes team plays a key role in shaping the Airbnb stays experience. As a multidisciplinary team, we partner with Hosts to conceptualize and develop high-quality, repeatable, and commercially viable offerings that align with our brand values.&lt;/p&gt;\n&lt;p&gt;Airbnb is seeking a Market Manager, with a primary focus on France, to support and grow our network of Hosts and Partners. This role will be part of the Homes EMEA team and report to the Field Operations Manager.&lt;/p&gt;\n&lt;p&gt;&lt;span style=&quot;font-family: arial, helvetica, sans-serif; color: #000000;&quot;&gt;&lt;strong&gt;The Difference You will Make:&lt;/strong&gt;&lt;/span&gt;&lt;/p&gt;\n&lt;p&gt;&lt;span style=&quot;font-family: arial, helvetica, sans-serif; color: #000000;&quot;&gt;As an Ac",
+   "departments": [
+    {
+     "id": 57796,
+     "name": "Sales",
+     "child_ids": [],
+     "parent_id": 73691
+    }
+   ],
+   "offices": [
+    {
+     "id": 178,
+     "name": "Paris, France",
+     "location": "Paris, France",
+     "child_ids": [],
+     "parent_id": 64281
+    }
+   ],
+   "ai_disclaimer": null,
+   "include_ai_disclaimer": null,
+   "ai_opt_out_request_url": null
+  }
+ ],
+ "meta": {
+  "total": 3
+ }
+}

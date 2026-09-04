@@ -30,15 +30,19 @@ class FilterEngineTest extends AbstractStoreTest {
     }
 
     private static JobCardInsert card(long jobId, String title, String company) {
-        return new JobCardInsert(jobId, title, company, "Remote",
+        return new JobCardInsert("linkedin", String.valueOf(jobId), title, company, "Remote",
                 Instant.parse("2026-08-27T00:00:00Z"),
-                "https://linkedin.com/jobs/view/" + jobId, "https://linkedin.com/company/x");
+                "https://linkedin.com/jobs/view/" + jobId, "https://linkedin.com/company/x", null);
     }
 
-    private long insertJob(long jobId, String title, String company) {
+    /** Inserts a job and returns its actual (autoincrement surrogate) job_id. */
+    private long insertJob(long sourceJobId, String title, String company) {
         long runId = sweepRunRepository.create(Instant.now(), "java", "remote", 24, false, null);
-        jobListingRepository.upsertAll(List.of(card(jobId, title, company)), runId, Instant.now());
-        return runId;
+        jobListingRepository.upsertAll(List.of(card(sourceJobId, title, company)), runId, Instant.now());
+        return client.sql("select job_id from job_listing where source_job_id = :id")
+                .param("id", String.valueOf(sourceJobId))
+                .query(Long.class)
+                .single();
     }
 
     private JobListing find(long jobId) {
@@ -115,13 +119,13 @@ class FilterEngineTest extends AbstractStoreTest {
 
     @Test
     void reevaluateStaleAppliesCurrentRulesAndStampsVersion() {
-        insertJob(100, "Backend Developer", "Acme Corp");
+        long jobId = insertJob(100, "Backend Developer", "Acme Corp");
 
         int v1 = filterStateRepository.currentVersion();
         int changed1 = engine().reevaluateStale();
         assertThat(changed1).isEqualTo(1);
 
-        JobListing afterFirstPass = find(100);
+        JobListing afterFirstPass = find(jobId);
         assertThat(afterFirstPass.filterVerdict()).isEqualTo(FilterVerdict.PASS);
         assertThat(afterFirstPass.filterVersion()).isEqualTo(v1);
 
@@ -129,7 +133,7 @@ class FilterEngineTest extends AbstractStoreTest {
         excludeWordRepository.add("Backend", Instant.now());
         engine().bumpVersionAndReevaluate();
 
-        JobListing afterSecondPass = find(100);
+        JobListing afterSecondPass = find(jobId);
         assertThat(afterSecondPass.filterVerdict()).isEqualTo(FilterVerdict.REJECT);
         assertThat(afterSecondPass.rejectReason()).contains("Backend");
         assertThat(afterSecondPass.filterVersion()).isEqualTo(filterStateRepository.currentVersion());
@@ -138,10 +142,10 @@ class FilterEngineTest extends AbstractStoreTest {
 
     @Test
     void removingExcludeWordFlipsRejectedRowBackToPassStoredAsLowercase() {
-        insertJob(200, "Senior Backend Developer", "Acme Corp");
+        long jobId = insertJob(200, "Senior Backend Developer", "Acme Corp");
         engine().reevaluateStale();
 
-        JobListing rejected = find(200);
+        JobListing rejected = find(jobId);
         assertThat(rejected.filterVerdict()).isEqualTo(FilterVerdict.REJECT);
 
         excludeWordRepository.delete("Senior");
@@ -149,14 +153,14 @@ class FilterEngineTest extends AbstractStoreTest {
         int changed = engine().bumpVersionAndReevaluate();
         assertThat(changed).isEqualTo(1);
 
-        JobListing flipped = find(200);
+        JobListing flipped = find(jobId);
         assertThat(flipped.filterVerdict()).isEqualTo(FilterVerdict.PASS);
         assertThat(flipped.rejectReason()).isNull();
 
         // The partial index on job_detail_queue has the literal predicate filter_verdict = 'pass'
         // with no collate nocase, so verify by re-querying with exactly that literal.
         List<Long> passingLiteral = jobListingRepositoryRawPassQuery();
-        assertThat(passingLiteral).contains(200L);
+        assertThat(passingLiteral).contains(jobId);
     }
 
     private List<Long> jobListingRepositoryRawPassQuery() {
@@ -187,12 +191,12 @@ class FilterEngineTest extends AbstractStoreTest {
 
     @Test
     void evaluateNewRowsStampsFreshlyInsertedRowsOnly() {
-        insertJob(400, "Senior Backend Developer", "Acme Corp");
+        long jobId = insertJob(400, "Senior Backend Developer", "Acme Corp");
 
         int evaluated = engine().evaluateNewRows();
         assertThat(evaluated).isEqualTo(1);
 
-        JobListing job = find(400);
+        JobListing job = find(jobId);
         assertThat(job.filterVerdict()).isEqualTo(FilterVerdict.REJECT);
         assertThat(job.filterVersion()).isEqualTo(filterStateRepository.currentVersion());
 

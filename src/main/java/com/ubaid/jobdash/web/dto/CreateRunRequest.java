@@ -16,6 +16,13 @@ import java.util.List;
  *                   null/absent means false.
  * @param shards     optional explicit shard list overriding the configured default; only
  *                   consulted when {@code useShards} is true.
+ * @param sources    which source(s) to run: any of {@code "linkedin"}, {@code "greenhouse"},
+ *                   {@code "lever"}, {@code "workday"}. Null/empty means {@code ["linkedin"]},
+ *                   preserving today's behaviour for any existing caller. {@code "linkedin"}
+ *                   cannot be combined with any other source (see {@code RunController}).
+ * @param resumeId   an explicit resume to scan collected jobs against; null falls back to the
+ *                   default resume, or skips the AI scan entirely if none exists. Ignored for a
+ *                   LinkedIn-only run (LinkedIn's guest search carries no job description).
  */
 public record CreateRunRequest(
         String keywords,
@@ -24,7 +31,9 @@ public record CreateRunRequest(
         Boolean testMode,
         Integer pageCap,
         Boolean useShards,
-        List<String> shards
+        List<String> shards,
+        List<String> sources,
+        Long resumeId
 ) {
 
     public boolean testModeOrDefault() {
@@ -33,5 +42,10 @@ public record CreateRunRequest(
 
     public boolean useShardsOrDefault() {
         return Boolean.TRUE.equals(useShards);
+    }
+
+    /** {@code sources}, or {@code ["linkedin"]} when null/empty. */
+    public List<String> sourcesOrDefault() {
+        return sources == null || sources.isEmpty() ? List.of("linkedin") : sources;
     }
 }

@@ -9,6 +9,7 @@ import java.time.Instant;
  */
 public record JobListing(
         long jobId,
+        String sourceJobId,
         String source,
         String title,
         String company,

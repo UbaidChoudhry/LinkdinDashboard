@@ -1,14 +1,40 @@
 # jobdash
 
-A local, single-user dashboard for finding software engineering jobs on LinkedIn.
+A local, single-user dashboard for finding software engineering jobs — from LinkedIn, and from
+company job boards (Greenhouse, Lever, Workday).
 
-You trigger a run, it pages through LinkedIn's public job search, stores what it finds in a
-local SQLite file, filters out the noise (seniority keywords, blocked companies), and gives you
-a table where you can click through to the real posting and mark each one **Applied** or
-**Not interested**.
+You trigger a run, it collects postings, stores them in a local SQLite file, filters out the
+noise (seniority keywords, blocked companies), and gives you a table where you can click through
+to the real posting and mark each one **Applied** or **Not interested**.
+
+When the jobs come from an ATS board — which, unlike LinkedIn, gives you the full job
+description — the last step of a run hands each description and your resume to the **Claude
+CLI**, which sorts them into **Recommended match** and **Not recommended**, with a one-sentence
+reason for each. That uses your existing Claude subscription; there is no API key and no API
+credit spend.
 
 It runs entirely on your machine. There is no server to deploy, no account to create, and no
 credentials anywhere in the system.
+
+---
+
+## Where the jobs come from
+
+| Source | Coverage | Description? | AI scan |
+|---|---|---|---|
+| **Greenhouse** | per company, 1 request for the whole board | yes | ✅ |
+| **Lever** | per company, 1 request for the whole board | yes | ✅ |
+| **Workday** | per company, server-side keyword search + 1 request per job | yes | ✅ |
+| **LinkedIn** | broad search across all companies | **no** | ❌ |
+
+**LinkedIn can't be combined with the others.** Its guest search returns no job description, so
+there is nothing for the scan to compare your resume against. Pick either LinkedIn *or* any mix
+of the ATS boards.
+
+ATS boards are **per company** — there is no global search across them — so jobdash keeps a
+catalog of companies and only visits the ones you enable. It ships with **42 companies verified
+live**, and you can add more by hand or import thousands at once (see
+[Job sources](#job-sources)).
 
 ---
 
@@ -67,6 +93,7 @@ Other options:
 ./run.sh --backend-only     # API only, no dev server
 ./run.sh --frontend-only    # UI only, expects a backend already running
 ./import-lca.sh             # one-shot: load every DOL LCA .xlsx in data/lca (then deletes them)
+./import-slugs.sh           # one-shot: import an ATS company catalog (imported rows start disabled)
 ```
 
 ### Running the pieces by hand
@@ -79,7 +106,7 @@ cd frontend && npm install && npm run dev   # front end (first run needs the ins
 ## Tests
 
 ```bash
-./mvnw test                         # 206 tests, no network access
+./mvnw test                         # 305 tests, no network access
 cd frontend && npm run build        # tsc -b && vite build - type errors fail the build
 cd frontend && npm run lint
 ```
@@ -92,13 +119,20 @@ so they assert scheduling without sleeping.
 
 ## Using the dashboard
 
-The dashboard has four top-level tabs — **Search**, **Results**, **Filters**, **Data**. Switching
+The dashboard has six top-level tabs — **Search**, **Results**, **Sources**, **Resumes**,
+**Filters**, **Data**. Switching
 between them keeps each panel's state (the results table's sort, min-salary filter and sub-tab
 all survive), and a run in progress shows a live pill in the header from any tab.
 
-**Start a run** (Search tab). Keywords (default "Software Engineer"), a time window in hours
-(default 24), and a location (default "United States"). Enable **test mode** to cap it at 3 pages
-while you're experimenting — a full run is 100 requests, a test run is 3.
+**Start a run** (Search tab). First pick your **sources** from the dropdown — any mix of
+Greenhouse, Lever and Workday, or LinkedIn on its own. Then keywords (default "Software
+Engineer"), a time window in hours (default 24), and a location (default "United States").
+For an ATS run you also pick which **resume** the AI scan compares against.
+
+The LinkedIn-only controls (test mode, page cap, shard by metro) appear only when LinkedIn is
+the selected source — they are LinkedIn pagination concepts and have no ATS equivalent. Enable
+**test mode** to cap a LinkedIn run at 3 pages while you're experimenting; a full run is 100
+requests, a test run is 3.
 
 **Watch it live.** Progress streams over SSE: pages fetched, requests made, cards seen, new jobs.
 There's a Cancel button. A 15-minute run behind a spinner would be unusable, so results land as
@@ -112,6 +146,12 @@ were still on the Search tab watching it.
 | **Untriaged** | Passing jobs from the current run that you haven't triaged |
 | **Applied** | Everything you marked Applied, **across all runs** |
 | **Not interested** | Everything you dismissed, **across all runs** |
+
+**AI match buckets.** Once a run has been scanned, the Untriaged list gains **All /
+Recommended match / Not recommended** buckets with counts, plus a **Re-scan** button. Each row
+carries its one-sentence reason under the title. Rows that were never scanned — every LinkedIn
+row, and anything the scan skipped — stay visible under **All** and are counted separately as
+"not scanned", never silently dropped.
 
 The status tabs deliberately ignore which run a job came from — a job you applied to last week
 shouldn't vanish because this morning's run replaced the view.
@@ -197,16 +237,96 @@ The same file has a `salary:` block (cache TTL, 3-year staleness cutoff, per-sou
 daily caps, API keys). API keys come from the environment (`.env`, sourced by `run.sh`) — see
 [SALARY_SETUP.md](SALARY_SETUP.md).
 
+It also has `ats:` and `ai:` blocks:
+
+```yaml
+ats:
+  max-companies-per-run: 150   # a run never visits more enabled companies than this
+  workday:
+    max-details-per-run: 120   # Workday costs 1 extra request PER JOB for the description
+  dead-slug-threshold: 2       # consecutive 404s before a board is retired
+  daily-cap:                   # counted in external_request_log, separate from LinkedIn's budget
+    greenhouse: 2000
+    lever: 2000
+    workday: 3000
+
+ai:
+  cli-path: ${CLAUDE_CLI_PATH:claude}
+  model: sonnet
+  batch-size: 9                # jobs per `claude` invocation
+  concurrency: 3               # simultaneous `claude` processes
+  max-description-chars: 6000
+```
+
+**`batch-size` is the cost lever that matters.** Every CLI invocation carries roughly 25k tokens
+of fixed overhead no matter how small the payload, so nine jobs in one call cost far less than
+nine calls. Raising it trades per-job attention for throughput.
+
+**The ATS daily caps are not a scarce quota** the way the salary APIs' are — these are public,
+documented JSON endpoints. The caps exist to bound a runaway loop, and they are counted
+separately from LinkedIn's 300/day budget. Never conflate the two.
+
+---
+
+## Job sources
+
+The **Sources** tab is the company catalog. A run only ever visits companies that are
+**enabled** there and not marked dead.
+
+### Importing a catalog
+
+```bash
+./stop.sh                 # the import writes to the same SQLite file as the server
+./import-slugs.sh         # pulls the public open-jobs catalog
+./import-slugs.sh path/to/slugs.json      # or a local file
+./import-slugs.sh --prune                 # also delete rows already marked dead
+```
+
+The expected JSON shape is `{"ats": {"greenhouse": ["airbnb", ...], "lever": [...], "workday":
+["nvidia.wd5.myworkdayjobs.com", ...]}}`. Only the three platforms jobdash implements are read,
+so the same file keeps working as more are added.
+
+**Imported companies arrive disabled.** The public catalog holds over 15,000 companies for those
+three platforms alone; enabling them all would mean 15,000 requests per run. Enable the ones you
+want in the Sources tab. Importing never touches a company you have already configured.
+
+### Dead slugs retire themselves
+
+Public catalogs go stale quickly — when this was last measured, 8 of 34 sampled Greenhouse slugs
+and 7 of 8 sampled Lever slugs were already dead. A board that 404s on
+`ats.dead-slug-threshold` consecutive runs is marked **dead** and disabled, and is never called
+again. It is kept, not deleted, so you can see why a company vanished from your results.
+
+---
+
+## Resumes and the AI scan
+
+Upload a resume in the **Resumes** tab — PDF, `.txt` or `.md`. A PDF must contain selectable
+text; an image-only scan is rejected with a message saying so. You can keep several and pick
+which one a run scans against; one is the default.
+
+The scan runs automatically as the last step of any non-LinkedIn run, and the **Re-scan** button
+in the Results tab re-runs it (after switching resumes, say). Results are cached per
+(job, resume), so re-scanning already-scored jobs costs nothing.
+
+It shells out to the `claude` binary on your PATH. If it isn't installed, `./run.sh` says so and
+everything else still works — you just don't get scored results. Set `CLAUDE_CLI_PATH` if it
+lives somewhere unusual.
+
 ---
 
 ## What's not built yet
 
 Deliberately out of scope for this version, with the seams left in place:
 
-- **Detail fetching** — no descriptions are fetched. The schema columns and the partial-index
-  queue are in place for it.
-- **ATS adapters** (Greenhouse, Lever, Ashby, Workday) — the `JobSource` seam exists.
-- **Relay/spam detection** — only the company-volume report works without descriptions.
+- **LinkedIn detail fetching** — LinkedIn rows still carry no description, which is why they
+  can't be AI-scanned. The schema columns and the partial-index queue are in place for it.
+  (ATS rows *do* have descriptions — they arrive with the listing.)
+- **More ATS platforms** — the catalog file already lists 25 (Ashby, Workable, SmartRecruiters,
+  Recruitee, …); three are implemented. Adding a fourth means one `JobSource` implementation —
+  see the "Add a NEW ATS platform" row in [CODEMAP.md](CODEMAP.md).
+- **Relay/spam detection** — the duplicate-description signal is now possible for ATS rows but
+  isn't wired up; only the company-volume report exists today.
 - **Scheduling** — runs are manual only.
 
 See [HANDOFF.md](HANDOFF.md) for why each of these was cut and what it would take to add them,

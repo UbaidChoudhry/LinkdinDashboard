@@ -886,3 +886,323 @@ th.sortable.active .sort-button {
 .min-salary-row.off input[type="text"] {
   opacity: 0.55;
 }
+
+/* ---------------------------------------------------------------------------
+   Source multi-select (run form)
+   --------------------------------------------------------------------------- */
+
+.field-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.source-select {
+  position: relative;
+}
+
+.source-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-h);
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.source-select-caret {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.source-select-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  box-shadow: var(--shadow);
+}
+
+.source-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-h);
+  cursor: pointer;
+}
+
+.source-option:hover {
+  background: var(--code-bg);
+}
+
+/* Not disabled - clicking still works and swaps the selection. Dimmed only to signal that
+   picking this one will clear what is currently selected. */
+.source-option.blocked {
+  opacity: 0.55;
+}
+
+.source-option-note {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text);
+}
+
+.source-select-hint {
+  margin: 6px 4px 2px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text);
+}
+
+/* ---------------------------------------------------------------------------
+   Sources tab (ATS company catalog)
+   --------------------------------------------------------------------------- */
+
+.panel-hint {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.sources-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.sources-summary-item {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.source-status {
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.source-status-active {
+  color: var(--accent);
+}
+
+.source-status-dead {
+  color: #c0392b;
+}
+
+.source-fails,
+.source-site {
+  font-size: 12px;
+  color: var(--text);
+}
+
+tr.source-dead {
+  opacity: 0.6;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.add-source {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.add-source h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+
+.checkbox-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--text-h);
+}
+
+/* ---------------------------------------------------------------------------
+   Resumes tab
+   --------------------------------------------------------------------------- */
+
+.resume-upload {
+  padding-bottom: 8px;
+}
+
+.resume-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+
+.resume-item {
+  padding: 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.resume-item.default {
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
+}
+
+.resume-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.resume-name {
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.resume-badge {
+  padding: 1px 7px;
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.resume-meta {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.resume-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.resume-preview {
+  max-height: 320px;
+  margin: 10px 0 0;
+  padding: 10px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--code-bg);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.muted {
+  font-size: 14px;
+  color: var(--text);
+}
+
+/* ---------------------------------------------------------------------------
+   AI match buckets and per-row verdicts
+   --------------------------------------------------------------------------- */
+
+.bucket-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.bucket-tab {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.bucket-tab.active {
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
+  color: var(--text-h);
+  font-weight: 600;
+}
+
+.bucket-count {
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+.bucket-unscanned {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.bucket-rescan {
+  margin-left: auto;
+}
+
+.scan-note {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.job-source-tag {
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  vertical-align: middle;
+}
+
+/* Clamped to two lines: the reason is a full sentence and an unclamped cell would make row
+   heights wildly uneven. The full text stays available via the title attribute. */
+.ai-reason {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text);
+}
+
+.ai-reason.recommended {
+  color: var(--accent);
+}
+
+.ai-reason.not-recommended {
+  opacity: 0.75;
+}

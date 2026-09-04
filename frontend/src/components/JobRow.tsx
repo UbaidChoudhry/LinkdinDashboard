@@ -68,6 +68,19 @@ export function JobRow({ job, tab, onChanged, onError, grouped = false }: JobRow
         <a href={job.jobUrl} target="_blank" rel="noopener noreferrer">
           {job.title}
         </a>
+        {job.source && job.source !== "linkedin" && (
+          <span className="job-source-tag">{job.source}</span>
+        )}
+        {/* The AI verdict rides under the title rather than in its own column: the reason is a
+            full sentence, and a column wide enough for it would squeeze everything else out. */}
+        {job.aiRecommended != null && job.aiReason && (
+          <span
+            className={job.aiRecommended ? "ai-reason recommended" : "ai-reason not-recommended"}
+            title={job.aiReason}
+          >
+            {job.aiRecommended ? "✓" : "✕"} {job.aiReason}
+          </span>
+        )}
       </td>
       <td className="col-company" title={job.company}>
         {job.company}

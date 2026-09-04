@@ -21,12 +21,12 @@ class DataRepositoryTest extends AbstractStoreTest {
         Instant t1 = Instant.parse("2026-08-27T15:00:00Z");
 
         jobListingRepository.upsertAll(List.of(
-                new JobCardInsert(1, "Java Engineer", "Acme", "Remote", t0,
-                        "https://linkedin.com/jobs/view/1", null),
-                new JobCardInsert(2, "Senior Java Engineer", "Acme", "Remote", t1,
-                        "https://linkedin.com/jobs/view/2", null),
-                new JobCardInsert(3, "Backend Engineer", "Blocked Co", "Remote", t1,
-                        "https://linkedin.com/jobs/view/3", null)
+                new JobCardInsert("linkedin", "1", "Java Engineer", "Acme", "Remote", t0,
+                        "https://linkedin.com/jobs/view/1", null, null),
+                new JobCardInsert("linkedin", "2", "Senior Java Engineer", "Acme", "Remote", t1,
+                        "https://linkedin.com/jobs/view/2", null, null),
+                new JobCardInsert("linkedin", "3", "Backend Engineer", "Blocked Co", "Remote", t1,
+                        "https://linkedin.com/jobs/view/3", null, null)
         ), runId, t0);
 
         // job 1: passing, untriaged

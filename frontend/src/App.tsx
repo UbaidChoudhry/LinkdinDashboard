@@ -7,15 +7,19 @@ import { JobsPanel } from "./components/JobsPanel";
 import { FiltersPanel } from "./components/FiltersPanel";
 import { CompanyVolumeReport } from "./components/CompanyVolumeReport";
 import { DataPanel } from "./components/DataPanel";
+import { SourcesPanel } from "./components/SourcesPanel";
+import { ResumesPanel } from "./components/ResumesPanel";
 import { useRunStream } from "./hooks/useRunStream";
 import type { RunResponse } from "./types/api";
 
 /** The top-level sections of the dashboard. Each is a tab; only one is visible at a time. */
-type AppTab = "search" | "results" | "filters" | "data";
+type AppTab = "search" | "results" | "sources" | "resumes" | "filters" | "data";
 
 const APP_TABS: { id: AppTab; label: string }[] = [
   { id: "search", label: "Search" },
   { id: "results", label: "Results" },
+  { id: "sources", label: "Sources" },
+  { id: "resumes", label: "Resumes" },
   { id: "filters", label: "Filters" },
   { id: "data", label: "Data" },
 ];
@@ -25,6 +29,8 @@ function App() {
   const [lastKnownRun, setLastKnownRun] = useState<RunResponse | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState(0);
+  // Bumped when a resume is added/removed, so the run form's resume picker refetches.
+  const [resumeToken, setResumeToken] = useState(0);
   const [activeTab, setActiveTab] = useState<AppTab>("search");
   const [resultCount, setResultCount] = useState<number | null>(null);
   const prevStatusRef = useRef<string | null>(null);
@@ -146,7 +152,11 @@ function App() {
       <main className="app-main">
         <div className="tab-panel" hidden={activeTab !== "search"}>
           <div className="run-section">
-            <RunControls disabled={runInFlight} onRunStarted={handleRunStarted} />
+            <RunControls
+              disabled={runInFlight}
+              onRunStarted={handleRunStarted}
+              resumeToken={resumeToken}
+            />
             {displayRun && <RunProgress run={displayRun} streamError={streamError} onCancelled={handleCancelled} />}
           </div>
         </div>
@@ -157,6 +167,14 @@ function App() {
             latestRun={lastKnownRun}
             onCountChange={handleJobCountChange}
           />
+        </div>
+
+        <div className="tab-panel tab-panel-wide" hidden={activeTab !== "sources"}>
+          <SourcesPanel />
+        </div>
+
+        <div className="tab-panel" hidden={activeTab !== "resumes"}>
+          <ResumesPanel onResumesChanged={() => setResumeToken((t) => t + 1)} />
         </div>
 
         <div className="tab-panel" hidden={activeTab !== "filters"}>

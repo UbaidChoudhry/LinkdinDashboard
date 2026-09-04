@@ -5,9 +5,10 @@ import com.ubaid.jobdash.http.CircuitSnapshot;
 import com.ubaid.jobdash.http.CircuitState;
 import com.ubaid.jobdash.http.CircuitStateStore;
 import com.ubaid.jobdash.store.SweepRunRepository;
+import com.ubaid.jobdash.sweep.RunOrchestrator;
+import com.ubaid.jobdash.sweep.RunProgressRegistry;
 import com.ubaid.jobdash.sweep.SweepProgress;
 import com.ubaid.jobdash.sweep.SweepRunRequest;
-import com.ubaid.jobdash.sweep.SweepService;
 import com.ubaid.jobdash.web.dto.CreateRunRequest;
 import com.ubaid.jobdash.web.dto.RunIdResponse;
 import com.ubaid.jobdash.web.dto.RunResponse;
@@ -34,8 +35,10 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * REST surface for kicking off, watching, listing and cancelling sweep runs. All the actual
- * pagination/rate-limiting/circuit-breaking work lives in {@link SweepService}; this controller
- * only translates HTTP in and out of it.
+ * collection work lives in {@link RunOrchestrator} (which dispatches to {@code SweepService} for
+ * LinkedIn or {@code AtsSweepService} for Greenhouse/Lever/Workday); this controller only
+ * translates HTTP in and out of it, plus the request validation that has to happen before either
+ * path starts (source selection, the circuit-breaker guard).
  */
 @RestController
 public class RunController {
@@ -46,16 +49,20 @@ public class RunController {
     private static final long SSE_POLL_MS = 750;
     /** Generous emitter timeout so a slow/long run's stream is never dropped early. */
     private static final long SSE_TIMEOUT_MS = Duration.ofMinutes(30).toMillis();
+    private static final List<String> VALID_SOURCES = List.of("linkedin", "greenhouse", "lever", "workday");
 
-    private final SweepService sweepService;
+    private final RunOrchestrator runOrchestrator;
+    private final RunProgressRegistry runProgressRegistry;
     private final SweepRunRepository sweepRunRepository;
     private final CircuitStateStore circuitStateStore;
     private final Clock clock;
     private final ScheduledExecutorService sseScheduler;
 
-    public RunController(SweepService sweepService, SweepRunRepository sweepRunRepository,
-                          CircuitStateStore circuitStateStore, Clock clock, ScheduledExecutorService sseScheduler) {
-        this.sweepService = sweepService;
+    public RunController(RunOrchestrator runOrchestrator, RunProgressRegistry runProgressRegistry,
+                          SweepRunRepository sweepRunRepository, CircuitStateStore circuitStateStore, Clock clock,
+                          ScheduledExecutorService sseScheduler) {
+        this.runOrchestrator = runOrchestrator;
+        this.runProgressRegistry = runProgressRegistry;
         this.sweepRunRepository = sweepRunRepository;
         this.circuitStateStore = circuitStateStore;
         this.clock = clock;
@@ -64,15 +71,25 @@ public class RunController {
 
     @PostMapping("/api/runs")
     public ResponseEntity<RunIdResponse> createRun(@RequestBody(required = false) CreateRunRequest body) {
-        CreateRunRequest request = body == null ? new CreateRunRequest(null, null, null, null, null, null, null)
+        CreateRunRequest request = body == null
+                ? new CreateRunRequest(null, null, null, null, null, null, null, null, null)
                 : body;
 
         if (request.keywords() == null || request.keywords().isBlank()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "keywords is required to start a run.");
         }
-        if (!request.useShardsOrDefault() && (request.location() == null || request.location().isBlank())) {
+        List<String> sources = request.sourcesOrDefault();
+        validateSources(sources);
+
+        // location is only MANDATORY for LinkedIn: SweepQueryBuilder has to put it in the query
+        // string, so a blank one would search the wrong thing. For the ATS boards it is just an
+        // optional local filter on what the board already returned - a blank location there
+        // legitimately means "anywhere", and demanding one would make a perfectly valid
+        // nationwide ATS run impossible to start.
+        if (sources.contains("linkedin") && !request.useShardsOrDefault()
+                && (request.location() == null || request.location().isBlank())) {
             throw new ApiException(HttpStatus.BAD_REQUEST,
-                    "location is required unless useShards is true.");
+                    "location is required for a LinkedIn run unless useShards is true.");
         }
 
         sweepRunRepository.findRunning().ifPresent(running -> {
@@ -81,7 +98,10 @@ public class RunController {
                             + "(POST /api/runs/" + running.id() + "/cancel) before starting another.");
         });
 
-        checkCircuitNotOpen();
+        // The breaker only guards LinkedIn traffic - a pure ATS run must never be blocked by it.
+        if (sources.contains("linkedin")) {
+            checkCircuitNotOpen();
+        }
 
         int hours = request.hours() != null ? request.hours() : DEFAULT_HOURS;
         String location = request.location() == null ? "" : request.location();
@@ -89,8 +109,22 @@ public class RunController {
                 request.testModeOrDefault(), request.useShardsOrDefault(), request.shards(),
                 request.pageCap());
 
-        long runId = sweepService.startRun(sweepRunRequest);
+        long runId = runOrchestrator.startRun(sweepRunRequest, sources, request.resumeId());
         return ResponseEntity.status(HttpStatus.CREATED).body(new RunIdResponse(runId));
+    }
+
+    private static void validateSources(List<String> sources) {
+        for (String source : sources) {
+            if (!VALID_SOURCES.contains(source)) {
+                throw new ApiException(HttpStatus.BAD_REQUEST,
+                        "Unknown source '" + source + "'. Valid values are: " + String.join(", ", VALID_SOURCES) + ".");
+            }
+        }
+        if (sources.contains("linkedin") && sources.size() > 1) {
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "linkedin cannot be combined with other sources: its guest search returns no job "
+                            + "description, so there is nothing for the AI scan to compare against.");
+        }
     }
 
     private void checkCircuitNotOpen() {
@@ -130,14 +164,14 @@ public class RunController {
     }
 
     private RunResponse toResponse(SweepRun run) {
-        Optional<SweepProgress> progress = sweepService.progress(run.id());
+        Optional<SweepProgress> progress = runProgressRegistry.progress(run.id());
         return progress.map(p -> RunResponse.fromRunAndProgress(run, p)).orElseGet(() -> RunResponse.fromRun(run));
     }
 
     @PostMapping("/api/runs/{id}/cancel")
     public ResponseEntity<Void> cancelRun(@PathVariable long id) {
         sweepRunRepository.findById(id).orElseThrow(() -> notFound(id));
-        boolean cancelled = sweepService.cancel(id);
+        boolean cancelled = runProgressRegistry.cancel(id);
         if (!cancelled) {
             throw new ApiException(HttpStatus.CONFLICT,
                     "Run " + id + " is not currently running in this process, so it cannot be cancelled "
@@ -173,7 +207,7 @@ public class RunController {
         try {
             RunResponse response;
             String status;
-            Optional<SweepProgress> progress = sweepService.progress(id);
+            Optional<SweepProgress> progress = runProgressRegistry.progress(id);
             if (progress.isPresent()) {
                 SweepRun run = sweepRunRepository.findById(id).orElse(null);
                 if (run == null) {
@@ -196,7 +230,9 @@ public class RunController {
 
             emitter.send(SseEmitter.event().name("progress").data(response, MediaType.APPLICATION_JSON));
 
-            if (!"running".equals(status)) {
+            // "scanning" is the transient state between an ATS run's collection phase and its AI
+            // resume scan - still in flight, not a terminal status, so the stream stays open.
+            if (!"running".equals(status) && !"scanning".equals(status)) {
                 emitter.complete();
                 cancelQuietly(futureRef);
             }

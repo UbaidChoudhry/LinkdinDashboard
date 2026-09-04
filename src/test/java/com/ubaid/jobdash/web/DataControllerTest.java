@@ -69,17 +69,20 @@ class DataControllerTest {
         return id;
     }
 
-    private void insertJob(long jobId, long runId, String verdict, String userStatus) {
-        JobCardInsert card = new JobCardInsert(jobId, "Engineer " + jobId, "Acme", "Remote", Instant.now(),
-                "https://linkedin.com/jobs/view/" + jobId, null);
+    private void insertJob(long sourceJobId, long runId, String verdict, String userStatus) {
+        JobCardInsert card = new JobCardInsert("linkedin", String.valueOf(sourceJobId), "Engineer " + sourceJobId,
+                "Acme", "Remote", Instant.now(), "https://linkedin.com/jobs/view/" + sourceJobId, null, null);
         jobListingRepository.upsertAll(List.of(card), runId, Instant.now());
+        // job_id is now an internal autoincrement surrogate, decoupled from sourceJobId - target
+        // these fixture updates by the natural key instead.
         if (verdict != null) {
-            client.sql("update job_listing set filter_verdict = :v, filter_version = 1 where job_id = :id")
-                    .param("v", verdict).param("id", jobId).update();
+            client.sql("update job_listing set filter_verdict = :v, filter_version = 1 where source_job_id = :id")
+                    .param("v", verdict).param("id", String.valueOf(sourceJobId)).update();
         }
         if (userStatus != null) {
-            client.sql("update job_listing set user_status = :s, user_status_at = :at where job_id = :id")
-                    .param("s", userStatus).param("at", Instant.now().toString()).param("id", jobId).update();
+            client.sql("update job_listing set user_status = :s, user_status_at = :at where source_job_id = :id")
+                    .param("s", userStatus).param("at", Instant.now().toString())
+                    .param("id", String.valueOf(sourceJobId)).update();
         }
     }
 

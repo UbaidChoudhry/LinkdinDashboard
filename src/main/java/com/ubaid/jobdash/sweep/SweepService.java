@@ -18,7 +18,6 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -49,16 +48,14 @@ public class SweepService {
     private final SweepShardsProperties shardsProperties;
     private final SweepProperties sweepProperties;
     private final SalaryEnrichmentService salaryEnrichmentService;
+    private final RunProgressRegistry progressRegistry;
     private final Clock clock;
-
-    private final ConcurrentHashMap<Long, SweepProgress> progressRegistry = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<Long, AtomicBoolean> cancelFlags = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<Long, Thread> runThreads = new ConcurrentHashMap<>();
 
     public SweepService(PacedHttpClient pacedHttpClient, CardParser cardParser, FilterEngine filterEngine,
                          JobListingRepository jobListingRepository, SweepRunRepository sweepRunRepository,
                          SweepShardsProperties shardsProperties, SweepProperties sweepProperties,
-                         SalaryEnrichmentService salaryEnrichmentService, Clock clock) {
+                         SalaryEnrichmentService salaryEnrichmentService, RunProgressRegistry progressRegistry,
+                         Clock clock) {
         this.pacedHttpClient = pacedHttpClient;
         this.cardParser = cardParser;
         this.filterEngine = filterEngine;
@@ -67,6 +64,7 @@ public class SweepService {
         this.shardsProperties = shardsProperties;
         this.sweepProperties = sweepProperties;
         this.salaryEnrichmentService = salaryEnrichmentService;
+        this.progressRegistry = progressRegistry;
         this.clock = clock;
     }
 
@@ -78,14 +76,14 @@ public class SweepService {
     public long startRun(SweepRunRequest request) {
         long runId = createRun(request);
         Thread thread = Thread.ofVirtual().name("sweep-run-" + runId).unstarted(() -> run(runId, request));
-        runThreads.put(runId, thread);
+        progressRegistry.registerThread(runId, thread);
         thread.start();
         return runId;
     }
 
     /** Reads the current in-memory progress snapshot for a run, if it's known to this process. */
     public Optional<SweepProgress> progress(long runId) {
-        return Optional.ofNullable(progressRegistry.get(runId));
+        return progressRegistry.progress(runId);
     }
 
     /**
@@ -97,16 +95,7 @@ public class SweepService {
      * finished); false otherwise.
      */
     public boolean cancel(long runId) {
-        AtomicBoolean flag = cancelFlags.get(runId);
-        if (flag == null) {
-            return false;
-        }
-        flag.set(true);
-        Thread thread = runThreads.get(runId);
-        if (thread != null) {
-            thread.interrupt();
-        }
-        return true;
+        return progressRegistry.cancel(runId);
     }
 
     private long createRun(SweepRunRequest request) {
@@ -114,8 +103,8 @@ public class SweepService {
         String location = request.shardingEnabled() ? "" : nullToEmpty(request.location());
         long runId = sweepRunRepository.create(clock.instant(), request.keywords(), location,
                 request.hours(), request.testMode(), pageCap);
-        cancelFlags.put(runId, new AtomicBoolean(false));
-        progressRegistry.put(runId, new SweepProgress(runId, "running", null, 0, 0, 0, 0, false));
+        progressRegistry.start(runId, new SweepProgress(runId, "running", null, 0, 0, 0, 0, false,
+                0, 0, "linkedin"));
         return runId;
     }
 
@@ -127,8 +116,8 @@ public class SweepService {
      * {@link #startRun} is the async entry point production code uses.
      */
     public void run(long runId, SweepRunRequest request) {
-        runThreads.putIfAbsent(runId, Thread.currentThread());
-        AtomicBoolean cancelFlag = cancelFlags.computeIfAbsent(runId, id -> new AtomicBoolean(false));
+        progressRegistry.registerCurrentThreadIfAbsent(runId);
+        AtomicBoolean cancelFlag = progressRegistry.cancelFlag(runId);
 
         List<String> shardsToRun = request.shardingEnabled()
                 ? (request.shards() != null && !request.shards().isEmpty() ? request.shards() : shardsProperties.shardsOrDefault())
@@ -158,8 +147,7 @@ public class SweepService {
             String finalStatus = status;
             sweepRunRepository.finish(runId, clock.instant(), finalStatus);
             publishProgress(runId, finalStatus, null, acc);
-            cancelFlags.remove(runId);
-            runThreads.remove(runId);
+            progressRegistry.finish(runId);
         }
     }
 
@@ -266,19 +254,22 @@ public class SweepService {
         String shardsUsed = acc.shardsRun.isEmpty() ? null : String.join(",", acc.shardsRun);
         sweepRunRepository.updateProgress(runId, shardsUsed, acc.pagesFetched, acc.requestsMade,
                 acc.cardsSeen, acc.jobsNew, acc.saturated);
-        progressRegistry.put(runId, new SweepProgress(runId, status, currentShard,
-                acc.pagesFetched, acc.requestsMade, acc.cardsSeen, acc.jobsNew, acc.saturated));
+        progressRegistry.publish(runId, new SweepProgress(runId, status, currentShard,
+                acc.pagesFetched, acc.requestsMade, acc.cardsSeen, acc.jobsNew, acc.saturated,
+                0, 0, "linkedin"));
     }
 
     private static JobCardInsert toInsert(JobCard card) {
         return new JobCardInsert(
-                card.jobId(),
+                "linkedin",
+                String.valueOf(card.jobId()),
                 card.title(),
                 card.company(),
                 card.location(),
                 card.postedDate() == null ? null : card.postedDate().atStartOfDay(ZoneOffset.UTC).toInstant(),
                 card.jobUrl(),
-                card.companyUrl()
+                card.companyUrl(),
+                null
         );
     }
 

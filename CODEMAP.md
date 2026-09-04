@@ -12,7 +12,7 @@ frontend/  React + TypeScript dashboard (Vite dev server, :5173)
 src/       Spring Boot backend (Java 21, :8080)
              ├─ main/java/com/ubaid/jobdash/   application code, by package (below)
              ├─ main/resources/                application.yml, Flyway migrations
-             └─ test/                          mirrors main/java/, 206 tests
+             └─ test/                          mirrors main/java/, 305 tests
 data/      the SQLite database file (gitignored, created on first boot)
 ```
 
@@ -20,8 +20,12 @@ There is no build step tying frontend and backend together in dev — Vite proxi
 `localhost:8080` (see `frontend/vite.config.ts`). In production you'd build the frontend
 (`npm run build`) and serve `frontend/dist/` some other way; nothing in this repo does that yet.
 
-The backend talks to exactly one external thing: LinkedIn's anonymous guest HTML endpoints. It
-never talks to any other service, holds no credentials, and never authenticates.
+The backend talks to four kinds of external thing, and they are deliberately kept apart:
+LinkedIn's anonymous guest HTML endpoints, the ATS job boards (Greenhouse / Lever / Workday),
+the salary APIs, and the local `claude` CLI. It never authenticates to any of them — the ATS
+boards and LinkedIn are public, the salary keys are optional, and the CLI uses your own Claude
+subscription. **Each has its own rate limiter and its own budget; conflating them is a bug**
+(see HANDOFF.md §8 and §9).
 
 ---
 
@@ -29,6 +33,18 @@ never talks to any other service, holds no credentials, and never authenticates.
 
 Everything the system does is one of these two flows. Learn these and the rest of the code is
 just detail.
+
+**Since 2026-09-07 a run picks its sources**, and `RunOrchestrator` is the fork in the road:
+
+```
+POST /api/runs { sources: [...] }            [RunController -> RunOrchestrator]
+   sources == ["linkedin"]  → SweepService     (Flow A below — unchanged)
+   otherwise                → AtsSweepService  (Flow A' — one pass per enabled company)
+                              then, as the LAST step, ResumeMatchService (the AI scan)
+```
+LinkedIn cannot be combined with the ATS sources: its guest search returns no job description
+(HANDOFF.md §2), so the scan would have nothing to read. The API rejects the combination with a
+400. Flow A below describes the LinkedIn path and is unchanged by any of this.
 
 ### Flow A — starting a sweep (write path, hits LinkedIn)
 
@@ -73,6 +89,31 @@ User clicks "Start run" in RunControls.tsx
 **If you're debugging "why didn't my job show up," this is the flow to trace.** Check, in order:
 did the HTTP request succeed → did the parser produce a card → did the upsert insert a new row
 → did the filter engine mark it `pass` → is it in the current run.
+
+### Flow A' — an ATS run (write path, hits Greenhouse / Lever / Workday)
+
+```
+RunOrchestrator → AtsSweepService.run(runId, request)      [sweep/AtsSweepService.java]
+  companies = AtsCompanyRepository.findForRun(sources, ats.max-companies-per-run)
+      ← ONLY rows with enabled=1 AND status<>'dead'
+      ← if empty, the run finishes 'no_sources' (a config problem, not a successful empty run)
+  for each company:
+      Workday with no cached site? WorkdaySiteResolver reads its robots.txt, then upsertSite()
+      JobSource.fetch(SourceQuery)  →  sealed SourceFetchResult
+        Ok             → upsertAll(...) → FilterEngine.evaluateNewRows()
+                          → SalaryEnrichmentService.enrichRun(...)  → recordSuccess()
+        DeadSlug       → recordFailure(): after ats.dead-slug-threshold strikes the row goes
+                          status='dead', enabled=0 and is never visited again
+        RateLimited    → stop the whole run, status='budget_exhausted'
+        TransportError → record it and CONTINUE — one unreachable company must not abort 150
+      publish progress (companiesDone / companiesTotal)
+
+  then, last: status='scanning' → ResumeMatchService.scan(runId, resumeId, cancelled)
+      jobs WITH a description, minus anything already cached in ai_match
+      → batches of ai.batch-size, ai.concurrency `claude` processes at once
+      → ai_match rows → the Recommended / Not recommended buckets in the UI
+      (no resume uploaded? the scan is skipped and the run still finishes 'ok')
+```
 
 ### Flow B — reading the dashboard (read path, never touches LinkedIn)
 
@@ -164,6 +205,33 @@ salary-less rows; for each it checks the `salary_estimate` cache (key: normalize
 `SalaryEnrichmentService` **never throws** — a salary failure must not abort a sweep. Keys come
 from `.env` (sourced by `run.sh`); see `SALARY_SETUP.md`.
 
+### `source/` — the job-source seam (added 2026-09-07)
+`JobSource.fetch(SourceQuery) -> SourceFetchResult` is the seam every board plugs into, and
+`SourceFetchResult` is sealed (`Ok` / `DeadSlug` / `RateLimited` / `TransportError`) so callers
+must switch exhaustively. Implementations **never throw** — same discipline as `SalarySource`.
+
+| Package | Job |
+|---|---|
+| `source/linkedin/` | the original HTML card parser (unchanged) |
+| `source/greenhouse/` | one request returns the whole board; `content` is entity-escaped HTML |
+| `source/lever/` | one request returns the whole board; ids are UUIDs, `createdAt` is epoch ms. **HTTP 200 + `[]` is a live board with no jobs, NOT a dead slug** |
+| `source/workday/` | two-phase: a server-side-filtered search page, then one detail request per job for the description and real date. `WorkdaySiteResolver` discovers the site id from the tenant's `robots.txt` |
+| `source/ats/` | `AtsRateLimiter` (pacing + per-source daily cap off `external_request_log` — **never** LinkedIn's `request_log`), `AtsProperties`, and `SlugCatalogImportService` / `SlugImportRunner` behind `./import-slugs.sh` |
+
+### `resume/` — turning an upload into text
+`ResumeService` stores the original under `data/resumes/` and the extracted text in the `resume`
+table; `ResumeTextExtractor` handles PDF (Apache PDFBox 3 — `Loader.loadPDF`, the 2.x
+`PDDocument.load` is gone) and .txt/.md, and rejects an image-only PDF with a message saying so.
+
+### `ai/` — resume ↔ job matching via the Claude CLI
+`ResumeMatchService` is the orchestrator: it takes the run's passing jobs **that have a
+description**, drops the ones already cached in `ai_match`, batches the rest
+(`ai.batch-size`), and runs up to `ai.concurrency` `claude` processes at once.
+`MatchPromptBuilder` renders the batch (stripping HTML from both Greenhouse's escaped and
+Lever's raw form) and owns the `--json-schema`. `ClaudeCliClient` runs the binary — prompt on
+**stdin**, stdout and stderr drained on separate threads — and returns a sealed
+`ClaudeCliResult`. **Neither class ever throws**; an AI failure must not fail a run.
+
 ### `store/` — all SQL lives here
 One `@Repository` per table, all built on Spring's `JdbcClient` (hand-written SQL, no JPA — see
 HANDOFF.md §3 for why). If you need a new query, it goes in the matching repository, not
@@ -181,7 +249,10 @@ scattered elsewhere.
 | `DatabaseFileLocator` | resolves the SQLite file path from `spring.datasource.url`, reports its size on disk (main + `-wal` + `-shm`) |
 | `SalaryEstimateRepository` | `salary_estimate` — the per-(company,title) salary cache (90-day TTL; a `source='none'` row means "looked, found nothing") |
 | `LcaWageRepository` | `lca_wage` — aggregated DOL LCA wage percentiles, keyed `(employer_key, soc_code, state)` (`state=''` is the national roll-up), plus `employer_display` (the raw legal name, shown in the UI). **`lookup()`'s prefix predicate is word-boundary only — see HANDOFF.md §8 before touching it** |
-| `ExternalRequestLogRepository` | `external_request_log` — backs `SalaryRateLimiter`'s per-source daily cap; **not** the LinkedIn budget |
+| `ExternalRequestLogRepository` | `external_request_log` — backs `SalaryRateLimiter`'s and `AtsRateLimiter`'s per-source daily caps; **not** the LinkedIn budget |
+| `AtsCompanyRepository` | `ats_company` — the company catalog. `findForRun` returns only enabled, non-dead rows; `recordFailure` retires a slug after `ats.dead-slug-threshold` consecutive 404s |
+| `ResumeRepository` | `resume` — uploaded resumes; `setDefault` keeps exactly one default row |
+| `AiMatchRepository` | `ai_match` — cached AI verdicts keyed `(job_id, resume_id)` |
 
 `store/adapter/` — `JdbcRequestBudgetStore` and `JdbcCircuitStateStore` bridge the `http`
 package's storage-agnostic interfaces (`RequestBudgetStore`, `CircuitStateStore`) onto the real
@@ -216,7 +287,14 @@ api/client.ts                every fetch() call in the app lives here, one funct
 types/api.ts                 hand-kept mirror of the backend DTOs — keep in sync manually
 hooks/useRunStream.ts        the SSE subscription for live run progress
 components/
-  RunControls.tsx            the "start a run" form
+  RunControls.tsx            the "start a run" form (+ source picker and resume picker)
+  SourceSelect.tsx            multi-select dropdown for a run's sources; enforces LinkedIn's
+                              exclusivity AT SELECTION TIME, so an invalid combination can't
+                              even be assembled
+  SourcesPanel.tsx            the ATS company catalog: paginated + searchable (it can hold
+                              >15,000 rows), enable toggles, dead-slug state, manual add
+  ResumesPanel.tsx            upload / set default / delete, and preview the exact extracted
+                              text the model will be given
   RunProgress.tsx            live counters + saturation warning + cancel button
   JobsPanel.tsx               the 3-tab job table, owns which tab/sort is active + the Min salary filter
   JobRow.tsx                  one row: title link, company, location, posted, salary (+ source label), actions
@@ -274,7 +352,8 @@ One SQLite file, `data/jobdash.db`, WAL mode. Schema lives in
 
 ```
 job_listing        the results. See JobListingRepository above for the upsert rule.
-sweep_run           one row per run, updated live while it's running
+sweep_run           one row per run, updated live while it's running (+ sources, resume_id,
+                     companies_done/total from V8)
 exclude_word        user's title-exclusion list, seeded with 8 defaults
 company_blocklist    user's company-exclusion list
 filter_state         single row, the version counter that drives re-evaluation
@@ -282,7 +361,10 @@ request_log          every LinkedIn request ever made — audit trail + rate-lim
 circuit_state         single row, persisted breaker state
 salary_estimate      per-(company,title) salary cache, 90-day TTL           (V3)
 lca_wage             aggregated DOL LCA wage percentiles by employer/SOC/state (V3)
-external_request_log  audit + daily-cap source for the salary APIs (NOT the LinkedIn budget) (V3)
+external_request_log  audit + daily-cap source for the salary AND ATS APIs (NOT LinkedIn's) (V3)
+ats_company          the ATS slug catalog: enabled/status/dead tracking, Workday host+site (V6)
+resume               uploaded resumes + their extracted text                        (V7)
+ai_match             cached AI verdicts, keyed (job_id, resume_id)                  (V7)
 ```
 
 Two indexes worth knowing about:
@@ -311,7 +393,7 @@ Test packages mirror `main/java` exactly — if you're looking for tests of
   file names for what each fixture represents (the two 26-byte files are the real end-of-results
   sentinel, not corrupt captures).
 
-Current count: **206 tests**. Run `./mvnw test`. Salary tests follow the same rules — the
+Current count: **305 tests**. Run `./mvnw test`. Salary tests follow the same rules — the
 Adzuna / h1bapi sources are driven through `StubHttpClient`, `SalaryRateLimiter` through
 `FakeClock`/`FakeSleeper`, and `LcaImportServiceTest` generates a tiny `.xlsx` in memory.
 
@@ -329,6 +411,11 @@ Adzuna / h1bapi sources are driven through `StubHttpClient`, `SalaryRateLimiter`
 | Work on salary data / add a salary source | `salary/` package, `SalaryEnrichmentService` is the orchestrator; `SALARY_SETUP.md` + HANDOFF.md §8 |
 | Import DOL LCA wage data | `./import-lca.sh <xlsx>` → `salary/LcaImportService.java` |
 | Understand the rate limiter's math | `http/RateLimiter.java`, tests in `http/RateLimiterTest.java` use `FakeClock` to assert timing without waiting |
+| Add an ATS company | the Sources tab, or `./import-slugs.sh` for a whole catalog — **imported rows arrive disabled**, see HANDOFF.md §9 |
+| Add a NEW ATS platform (the 4th, 5th, …) | implement `source/JobSource`, add the name to `RunController`'s valid set and `AtsProperties.DailyCap`, and teach `SlugCatalogImportService` its key. The seam is the whole point — nothing in `sweep/` should need to change |
+| Work out why a company returns nothing | its `ats_company` row: `status`, `consecutive_failures`, `last_checked_at`, and for Workday whether `site` ever resolved |
+| Change how jobs are scored against a resume | `ai/MatchPromptBuilder` (the prompt + JSON schema); `ai/ResumeMatchService` (batching/caching) |
+| Understand the Claude CLI invocation | `ai/ClaudeCliClient` + HANDOFF.md §9 — **prompt on stdin, read `structured_output`** |
 | Add a new metro shard | `application.yml`'s `sweep.shards` list — **verify the string against live LinkedIn first** (a wrong string returns the firehose, not an error) |
 | Find what LinkedIn's HTML actually looks like | `src/test/resources/fixtures/*.html` — these are real saved responses |
 | See what was deliberately left out | README's "What's not built yet" and HANDOFF.md §5 |

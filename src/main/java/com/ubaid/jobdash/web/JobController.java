@@ -1,11 +1,15 @@
 package com.ubaid.jobdash.web;
 
+import com.ubaid.jobdash.domain.AiMatch;
 import com.ubaid.jobdash.domain.FilterVerdict;
 import com.ubaid.jobdash.domain.JobListing;
+import com.ubaid.jobdash.domain.Resume;
 import com.ubaid.jobdash.domain.SweepRun;
 import com.ubaid.jobdash.domain.UserStatus;
 import com.ubaid.jobdash.filter.FilterEngine;
+import com.ubaid.jobdash.store.AiMatchRepository;
 import com.ubaid.jobdash.store.JobListingRepository;
+import com.ubaid.jobdash.store.ResumeRepository;
 import com.ubaid.jobdash.store.SweepRunRepository;
 import com.ubaid.jobdash.web.dto.JobResponse;
 import com.ubaid.jobdash.web.dto.JobStatusUpdateRequest;
@@ -20,6 +24,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.time.Clock;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * REST surface over {@code job_listing}: the tabbed browse list and per-job status triage.
@@ -33,13 +38,18 @@ public class JobController {
     private final JobListingRepository jobListingRepository;
     private final SweepRunRepository sweepRunRepository;
     private final FilterEngine filterEngine;
+    private final ResumeRepository resumeRepository;
+    private final AiMatchRepository aiMatchRepository;
     private final Clock clock;
 
     public JobController(JobListingRepository jobListingRepository, SweepRunRepository sweepRunRepository,
-                          FilterEngine filterEngine, Clock clock) {
+                          FilterEngine filterEngine, ResumeRepository resumeRepository,
+                          AiMatchRepository aiMatchRepository, Clock clock) {
         this.jobListingRepository = jobListingRepository;
         this.sweepRunRepository = sweepRunRepository;
         this.filterEngine = filterEngine;
+        this.resumeRepository = resumeRepository;
+        this.aiMatchRepository = aiMatchRepository;
         this.clock = clock;
     }
 
@@ -47,7 +57,8 @@ public class JobController {
     public List<JobResponse> jobs(
             @RequestParam(name = "tab", defaultValue = "search") String tab,
             @RequestParam(name = "includePreviousRuns", defaultValue = "false") boolean includePreviousRuns,
-            @RequestParam(name = "sort", required = false) String sort) {
+            @RequestParam(name = "sort", required = false) String sort,
+            @RequestParam(name = "resumeId", required = false) Long resumeId) {
 
         String normalizedTab = tab.toLowerCase(Locale.ROOT);
         if (!VALID_TABS.contains(normalizedTab)) {
@@ -62,12 +73,17 @@ public class JobController {
             default -> throw new IllegalStateException("unreachable: " + normalizedTab);
         };
 
-        return jobs.stream()
-                .sorted(JobSortOrder.DEFAULT)
-                .map(JobResponse::from)
-                .toList();
+        List<JobListing> sorted = jobs.stream().sorted(JobSortOrder.DEFAULT).toList();
         // `sort` is currently accepted but not otherwise interpreted - the two-bucket order
         // above is the only sort defined so far; see JobSortOrder's javadoc.
+
+        Long effectiveResumeId = resumeId != null ? resumeId
+                : resumeRepository.findDefault().map(Resume::id).orElse(null);
+        // One batched lookup for the whole page, never a query per row.
+        Map<Long, AiMatch> aiMatches = effectiveResumeId == null ? Map.of()
+                : aiMatchRepository.findByJobIds(sorted.stream().map(JobListing::jobId).toList(), effectiveResumeId);
+
+        return sorted.stream().map(job -> JobResponse.from(job, aiMatches.get(job.jobId()))).toList();
     }
 
     private List<JobListing> searchTab(boolean includePreviousRuns) {

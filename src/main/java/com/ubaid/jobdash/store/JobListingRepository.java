@@ -32,7 +32,12 @@ public class JobListingRepository {
      *
      * <p>{@code first_seen_at} is only ever written on initial insert; a conflicting row keeps
      * its original {@code first_seen_at} and only has {@code last_seen_at} /
-     * {@code last_seen_run_id} refreshed.
+     * {@code last_seen_run_id} refreshed. The conflict target is the natural key
+     * {@code (source, source_job_id)}, not the surrogate {@code job_id} - that column is left
+     * for SQLite's autoincrement to assign on genuine insert. A conflicting row's
+     * {@code description} is only overwritten when the incoming one is non-null, so an ATS
+     * re-fetch can refresh a description but a source with no inline description (LinkedIn)
+     * never blanks one out.
      *
      * @return the number of cards that were genuinely new (did not already exist)
      */
@@ -42,30 +47,37 @@ public class JobListingRepository {
             return 0;
         }
 
-        List<Long> ids = cards.stream().map(JobCardInsert::jobId).toList();
-        Set<Long> existing = new HashSet<>(client.sql(
-                        "select job_id from job_listing where job_id in (:ids)")
-                .param("ids", ids)
-                .query(Long.class)
+        List<String> sources = cards.stream().map(JobCardInsert::source).distinct().toList();
+        List<String> sourceJobIds = cards.stream().map(JobCardInsert::sourceJobId).distinct().toList();
+        // char(1) is a safe composite-key delimiter: source and source_job_id are short
+        // identifier-like strings that never contain a control character.
+        Set<String> existing = new HashSet<>(client.sql(
+                        "select source || char(1) || source_job_id from job_listing " +
+                                "where source in (:sources) and source_job_id in (:sourceJobIds)")
+                .param("sources", sources)
+                .param("sourceJobIds", sourceJobIds)
+                .query(String.class)
                 .list());
 
         String sql = """
                 insert into job_listing
-                    (job_id, source, title, company, location, posted_at,
-                     first_seen_at, last_seen_at, last_seen_run_id, job_url, company_url)
+                    (source, source_job_id, title, company, location, posted_at,
+                     first_seen_at, last_seen_at, last_seen_run_id, job_url, company_url, description)
                 values
-                    (:jobId, 'linkedin', :title, :company, :location, :postedAt,
-                     :now, :now, :runId, :jobUrl, :companyUrl)
-                on conflict(job_id) do update set
+                    (:source, :sourceJobId, :title, :company, :location, :postedAt,
+                     :now, :now, :runId, :jobUrl, :companyUrl, :description)
+                on conflict(source, source_job_id) do update set
                     last_seen_at = excluded.last_seen_at,
-                    last_seen_run_id = excluded.last_seen_run_id
+                    last_seen_run_id = excluded.last_seen_run_id,
+                    description = coalesce(excluded.description, job_listing.description)
                 """;
 
         String nowText = Timestamps.toText(now);
         int newRows = 0;
         for (JobCardInsert card : cards) {
             client.sql(sql)
-                    .param("jobId", card.jobId())
+                    .param("source", card.source())
+                    .param("sourceJobId", card.sourceJobId())
                     .param("title", card.title())
                     .param("company", card.company())
                     .param("location", card.location())
@@ -74,8 +86,9 @@ public class JobListingRepository {
                     .param("runId", runId)
                     .param("jobUrl", card.jobUrl())
                     .param("companyUrl", card.companyUrl())
+                    .param("description", card.description())
                     .update();
-            if (!existing.contains(card.jobId())) {
+            if (!existing.contains(card.source() + "\u0001" + card.sourceJobId())) {
                 newRows++;
             }
         }
@@ -211,6 +224,39 @@ public class JobListingRepository {
                 .list();
     }
 
+    /**
+     * Rows eligible for AI resume matching from one run: passing the filter, not yet triaged by
+     * the user, and carrying a non-blank description. Sources with no inline description
+     * (LinkedIn) are excluded here rather than sent to the CLI to be scored on nothing.
+     */
+    public List<JobListing> findScannableByRun(long runId) {
+        return client.sql("""
+                        select * from job_listing
+                        where last_seen_run_id = :runId and filter_verdict = 'pass' and user_status is null
+                          and description is not null and trim(description) != ''
+                        order by posted_at desc
+                        """)
+                .param("runId", runId)
+                .query(JobListingRepository::mapRow)
+                .list();
+    }
+
+    /** The same eligibility shape as {@link #findScannableByRun}, for a manual re-scan of a specific job set. */
+    public List<JobListing> findScannableByIds(java.util.Collection<Long> jobIds) {
+        if (jobIds.isEmpty()) {
+            return List.of();
+        }
+        return client.sql("""
+                        select * from job_listing
+                        where job_id in (:jobIds) and filter_verdict = 'pass' and user_status is null
+                          and description is not null and trim(description) != ''
+                        order by posted_at desc
+                        """)
+                .param("jobIds", jobIds)
+                .query(JobListingRepository::mapRow)
+                .list();
+    }
+
     /** Rows that have never been evaluated by the filter engine yet (freshly inserted). */
     public List<JobListing> findWithoutVerdict() {
         return client.sql("select * from job_listing where filter_verdict is null")
@@ -274,6 +320,7 @@ public class JobListingRepository {
     static JobListing mapRow(ResultSet rs, int rowNum) throws SQLException {
         return new JobListing(
                 rs.getLong("job_id"),
+                rs.getString("source_job_id"),
                 rs.getString("source"),
                 rs.getString("title"),
                 rs.getString("company"),

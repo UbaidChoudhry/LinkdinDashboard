@@ -1,4 +1,6 @@
 import type {
+  AtsCompanyPage,
+  AtsCompanyResponse,
   ClearJobDataResponse,
   CompanyBlocklistResponse,
   CompanyVolumeResponse,
@@ -7,8 +9,12 @@ import type {
   ErrorResponse,
   JobResponse,
   JobTab,
+  JobSourceName,
+  ResumeResponse,
   RunIdResponse,
   RunResponse,
+  ScanResultResponse,
+  SourceSummaryResponse,
 } from "../types/api";
 
 /** Thrown for any non-2xx API response. Always carries a user-facing message. */
@@ -22,11 +28,15 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, rawText = false): Promise<T> {
   let res: Response;
+  // FormData must be sent WITHOUT an explicit Content-Type: the browser generates a multipart
+  // boundary and puts it in that header itself, and setting the header by hand strips the
+  // boundary, leaving the server unable to parse the upload.
+  const isFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;
   try {
     res = await fetch(path, {
-      headers: init?.body ? { "Content-Type": "application/json" } : undefined,
+      headers: init?.body && !isFormData ? { "Content-Type": "application/json" } : undefined,
       ...init,
     });
   } catch {
@@ -54,7 +64,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!text) {
     return undefined as T;
   }
-  return JSON.parse(text) as T;
+  // GET /api/resumes/{id}/text returns text/plain, not JSON - parsing it would throw.
+  return (rawText ? text : JSON.parse(text)) as T;
 }
 
 export function createRun(body: CreateRunRequest): Promise<RunIdResponse> {
@@ -76,9 +87,27 @@ export function cancelRun(id: number): Promise<void> {
   return request<void>(`/api/runs/${id}/cancel`, { method: "POST" });
 }
 
-export function listJobs(tab: JobTab, includePreviousRuns: boolean): Promise<JobResponse[]> {
+export function listJobs(
+  tab: JobTab,
+  includePreviousRuns: boolean,
+  resumeId?: number | null,
+): Promise<JobResponse[]> {
   const params = new URLSearchParams({ tab, includePreviousRuns: String(includePreviousRuns) });
+  // Scopes the AI verdicts on each row to one resume; omitted means the default resume.
+  if (resumeId != null) params.set("resumeId", String(resumeId));
   return request<JobResponse[]>(`/api/jobs?${params.toString()}`);
+}
+
+/** Runs (or re-runs) the AI match scan. Returns the scan summary. */
+export function scanMatches(body: {
+  runId?: number | null;
+  resumeId?: number | null;
+  jobIds?: number[] | null;
+}): Promise<ScanResultResponse> {
+  return request<ScanResultResponse>("/api/matches/scan", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 export function setJobStatus(id: number, status: "applied" | "not_interested" | null): Promise<JobResponse> {
@@ -137,4 +166,80 @@ export function getDataStats(): Promise<DataStatsResponse> {
 
 export function clearJobData(): Promise<ClearJobDataResponse> {
   return request<ClearJobDataResponse>("/api/data/clear", { method: "POST" });
+}
+
+// --- Resumes -------------------------------------------------------------
+// Upload goes through FormData rather than request(), which always sends JSON: the browser
+// must set its own multipart boundary, so Content-Type is deliberately left unset here.
+
+export async function uploadResume(file: File, name?: string): Promise<ResumeResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  if (name?.trim()) {
+    form.append("name", name.trim());
+  }
+  return request<ResumeResponse>("/api/resumes", { method: "POST", body: form });
+}
+
+export function listResumes(): Promise<ResumeResponse[]> {
+  return request<ResumeResponse[]>("/api/resumes");
+}
+
+export function setDefaultResume(id: number): Promise<void> {
+  return request<void>(`/api/resumes/${id}/default`, { method: "POST" });
+}
+
+export function deleteResume(id: number): Promise<void> {
+  return request<void>(`/api/resumes/${id}`, { method: "DELETE" });
+}
+
+export function getResumeText(id: number): Promise<string> {
+  return request<string>(`/api/resumes/${id}/text`, undefined, true);
+}
+
+// --- ATS company sources -------------------------------------------------
+
+export function listSources(params: {
+  ats?: JobSourceName | "";
+  search?: string;
+  enabledOnly?: boolean;
+  limit?: number;
+  offset?: number;
+}): Promise<AtsCompanyPage> {
+  const q = new URLSearchParams();
+  if (params.ats) q.set("ats", params.ats);
+  if (params.search?.trim()) q.set("search", params.search.trim());
+  if (params.enabledOnly) q.set("enabledOnly", "true");
+  q.set("limit", String(params.limit ?? 50));
+  q.set("offset", String(params.offset ?? 0));
+  return request<AtsCompanyPage>(`/api/sources?${q.toString()}`);
+}
+
+export function getSourceSummary(): Promise<SourceSummaryResponse> {
+  return request<SourceSummaryResponse>("/api/sources/summary");
+}
+
+export function setSourceEnabled(id: number, enabled: boolean): Promise<AtsCompanyResponse> {
+  return request<AtsCompanyResponse>(`/api/sources/${id}/enabled`, {
+    method: "POST",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export function addSource(body: {
+  ats: JobSourceName;
+  slug?: string;
+  company?: string;
+  host?: string;
+  site?: string;
+  careersUrl?: string;
+}): Promise<AtsCompanyResponse> {
+  return request<AtsCompanyResponse>("/api/sources", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteSource(id: number): Promise<void> {
+  return request<void>(`/api/sources/${id}`, { method: "DELETE" });
 }

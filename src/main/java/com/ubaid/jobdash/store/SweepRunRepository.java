@@ -25,7 +25,11 @@ public class SweepRunRepository {
         this.client = client;
     }
 
-    /** Creates a new run row in status {@code running} and returns the generated id. */
+    /**
+     * Creates a new run row in status {@code running} and returns the generated id. Leaves
+     * {@code sources} at its default ({@code 'linkedin'}) and {@code resume_id} null - this is
+     * the overload {@code SweepService} uses for its unchanged LinkedIn-only path.
+     */
     public long create(Instant startedAt, String keywords, String location, int hours, boolean testMode, Integer pageCap) {
         KeyHolder keyHolder = new GeneratedKeyHolder();
         client.sql("""
@@ -38,6 +42,32 @@ public class SweepRunRepository {
                 .param("hours", hours)
                 .param("testMode", testMode ? 1 : 0)
                 .param("pageCap", pageCap)
+                .update(keyHolder);
+        return keyHolder.getKey().longValue();
+    }
+
+    /**
+     * Creates a new run row recording its source selection and (optionally) the resume an AI
+     * scan will run against - used by {@code RunOrchestrator} for any run that isn't
+     * LinkedIn-only.
+     */
+    public long create(Instant startedAt, String keywords, String location, int hours, boolean testMode,
+                        Integer pageCap, String sources, Long resumeId) {
+        KeyHolder keyHolder = new GeneratedKeyHolder();
+        client.sql("""
+                        insert into sweep_run (started_at, status, keywords, location, hours, test_mode, page_cap,
+                                                sources, resume_id)
+                        values (:startedAt, 'running', :keywords, :location, :hours, :testMode, :pageCap,
+                                :sources, :resumeId)
+                        """)
+                .param("startedAt", Timestamps.toText(startedAt))
+                .param("keywords", keywords)
+                .param("location", location)
+                .param("hours", hours)
+                .param("testMode", testMode ? 1 : 0)
+                .param("pageCap", pageCap)
+                .param("sources", sources)
+                .param("resumeId", resumeId)
                 .update(keyHolder);
         return keyHolder.getKey().longValue();
     }
@@ -60,6 +90,26 @@ public class SweepRunRepository {
                 .param("cardsSeen", cardsSeen)
                 .param("jobsNew", jobsNew)
                 .param("saturated", saturated ? 1 : 0)
+                .param("id", id)
+                .update();
+    }
+
+    /** Updates the progress counters on a still-running ATS run (the {@code companies_*} equivalent of {@link #updateProgress}). */
+    public int updateAtsProgress(long id, int companiesDone, int companiesTotal, int requestsMade, int cardsSeen, int jobsNew) {
+        return client.sql("""
+                        update sweep_run
+                        set companies_done = :companiesDone,
+                            companies_total = :companiesTotal,
+                            requests_made = :requestsMade,
+                            cards_seen = :cardsSeen,
+                            jobs_new = :jobsNew
+                        where id = :id
+                        """)
+                .param("companiesDone", companiesDone)
+                .param("companiesTotal", companiesTotal)
+                .param("requestsMade", requestsMade)
+                .param("cardsSeen", cardsSeen)
+                .param("jobsNew", jobsNew)
                 .param("id", id)
                 .update();
     }
@@ -110,7 +160,11 @@ public class SweepRunRepository {
                 rs.getInt("requests_made"),
                 rs.getInt("cards_seen"),
                 rs.getInt("jobs_new"),
-                rs.getInt("saturated") != 0
+                rs.getInt("saturated") != 0,
+                rs.getString("sources"),
+                (Long) rs.getObject("resume_id"),
+                rs.getInt("companies_done"),
+                rs.getInt("companies_total")
         );
     }
 }

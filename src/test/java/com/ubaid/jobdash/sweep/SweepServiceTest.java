@@ -120,7 +120,8 @@ class SweepServiceTest {
 
         RecordingEnrichment enrichment = new RecordingEnrichment();
         SweepService service = new SweepService(pacedHttpClient, new CardParser(), filterEngine,
-                jobListingRepository, sweepRunRepository, shardsProperties, sweepProperties, enrichment, clock);
+                jobListingRepository, sweepRunRepository, shardsProperties, sweepProperties, enrichment,
+                new RunProgressRegistry(), clock);
         return new Fixture(service, http, clock, enrichment);
     }
 

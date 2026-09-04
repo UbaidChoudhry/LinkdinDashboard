@@ -138,6 +138,10 @@ on conflict(job_id) do update set
 break it. It diverges from the spec's `do nothing`, because a job re-found in a new run must
 surface in the current view.
 
+> **Updated 2026-09-07 (§9):** the conflict target is now `on conflict(source, source_job_id)`,
+> not `job_id` — V5 made `job_id` a surrogate key so non-numeric ATS ids fit. The rule above is
+> unchanged: `first_seen_at` is still absent from the update list, and the same test guards it.
+
 ### Enums store lowercase
 `FilterVerdict.toDb()` / `UserStatus.toDb()` write lowercase. **This is load-bearing.** The
 partial index is:
@@ -227,7 +231,7 @@ preserves:
 |---|---|---|
 | **Salary** | ~~Cards carry none.~~ **Built 2026-09-06 — see §8.** | — |
 | **Detail fetching** | Removing eager fetch was a user decision; clicks go straight to LinkedIn. | `detail_*` columns and the `job_detail_queue` partial index are in place. Build a worker draining that index newest-first. Respect the three-outcome rule: 404 → `gone`; 429/999/empty → leave `detail_fetched_at` null and open the breaker; success → populate. **Cache permanently — never re-fetch an `ok` row.** |
-| **ATS adapters** | Deferred; needs a hand-maintained company→slug map. | Put them behind a `JobSource` seam. Greenhouse `boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true`, Lever `api.lever.co/v0/postings/{slug}?mode=json`, Ashby `api.ashbyhq.com/posting-api/job-board/{slug}`. These are free, public, documented, and fresher than LinkedIn. `job_listing.source` already exists. |
+| **ATS adapters** | ~~Deferred.~~ **Built 2026-09-07 — see §9.** Greenhouse, Lever and Workday are implemented behind the `JobSource` seam; the company→slug map is the `ats_company` catalog. Ashby and the other 21 platforms in the catalog file remain unimplemented. | — |
 | **Relay/spam detection** | Its strongest signal is duplicate `description_hash`, which needs descriptions. Its other signal (apply-URL domain) is unavailable — the guest fragment's apply button carries **no href**. | Needs detail fetching first. Then hash `md5(lower(regexp_replace(description,'\s+',' ','g')))` **in Java**, and flag one body appearing under multiple company names. Suppress, never delete. Only the volume report works today. |
 | **Scheduling** | User chose on-demand. | `SweepService.startRun()` is already async on a virtual thread. |
 
@@ -257,7 +261,7 @@ which has zero commits. First commit is yours to make.
 before the first commit** — `data/jobdash.db` may contain real scraped job data you don't want
 in version control.
 
-Test counts by suite are in [CODEMAP.md](CODEMAP.md). Run `./mvnw test` and expect **206
+Test counts by suite are in [CODEMAP.md](CODEMAP.md). Run `./mvnw test` and expect **305
 passing**.
 
 ---
@@ -367,3 +371,147 @@ order):
 - The two-bucket sort (`JobSortOrder`, `utils/sort.ts`) was already built and correct; only the
   frontend **Min salary** input (`filterByMinSalary` in `utils/sort.ts`) is new. It hides rows
   with a *known* salary below the threshold and never hides unknown-salary rows.
+
+---
+
+## 9. ATS sources + AI resume matching (added 2026-09-07)
+
+**What it does.** A run now pulls from one or more job sources instead of only LinkedIn. The
+Greenhouse, Lever and Workday adapters fetch real job **descriptions**, and once the run has
+collected everything, the Claude CLI compares each description against an uploaded resume and
+sorts the results into **Recommended match** / **Not recommended**, each with a one-sentence
+reason.
+
+**LinkedIn cannot be combined with the ATS sources, and this is not a UI preference.** LinkedIn's
+guest search returns no description (§2), so there is nothing for the scan to read. The rule is
+enforced in three places: the source dropdown won't let you assemble the combination, the API
+rejects it with a 400, and `findScannableByRun` only returns rows with a non-blank description.
+
+### Verified API facts (measured live 2026-09-07 — trust these over any doc)
+
+| | Greenhouse | Lever | Workday |
+|---|---|---|---|
+| Endpoint | `boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true` | `api.lever.co/v0/postings/{slug}?mode=json` | `POST {host}/wday/cxs/{tenant}/{site}/jobs` |
+| Requests per company | **1** (whole board) | **1** (whole board) | **1 + N** |
+| Native id | integer | **UUID string** | `JR2015623` |
+| Description | `content`, **HTML-entity-escaped** | `descriptionPlain` + real-HTML `description` | detail response only |
+| Real posted date | `first_published` | `createdAt`, **epoch millis** | detail's `startDate` only |
+| Keyword filtering | local | local | **server-side** (`searchText`) |
+| Dead slug | HTTP 404 `{"status":404,...}` | HTTP 404 `{"ok":false,...}` | site unresolvable |
+
+Measured sizes: Airbnb 167 jobs / 2 MB; Palantir 310 / 6 MB; Veeva 900 / 12 MB. Hence
+`ats.max-response-bytes`. Fixtures for all of the above are real captures in
+`src/test/resources/fixtures/greenhouse_*.json`, `lever_*.json`, `workday_*.json`.
+
+**The non-obvious ones, each of which has a regression test:**
+
+- **A Lever board with no open jobs returns HTTP 200 and `[]` — that is NOT a dead slug.**
+  Verified: `kraken`, `wealthsimple` and `saronic` are all live boards currently returning zero
+  postings. Treating an empty array as death would retire healthy companies permanently. Only a
+  404 marks a slug dead.
+- **Workday's `postedOn` is prose**, literally `"Posted 30+ Days Ago"`. It is not a date and must
+  never be parsed as one. The real date exists only on the detail response, which is why jobs
+  past `ats.workday.max-details-per-run` come back with a null `postedAt`.
+- **`job_listing.job_id` had to stop being LinkedIn's id.** It was `integer primary key` holding
+  the numeric LinkedIn id; Lever's UUIDs and Workday's `JR…` strings don't fit. V5 rebuilds the
+  table so `job_id` is an autoincrement **surrogate** and `(source, source_job_id)` is the
+  natural key. Existing LinkedIn rows keep their original `job_id` verbatim, so the REST API,
+  the frontend and any bookmarked `/api/jobs/{id}` link are unaffected.
+
+### Workday site-id discovery via robots.txt — the thing that makes Workday work at all
+
+Workday's API path needs `{host}/{tenant}/{site}`, but public slug catalogs list only the
+hostname (`nvidia.wd5.myworkdayjobs.com`) and there is no site-listing endpoint. Guessing
+conventional site names (`External`, `Careers`, `{Tenant}ExternalCareerSite`, …) hit **1 in 4**.
+
+**`robots.txt` publishes it.** `GET https://{host}/robots.txt` returns `Allow: /{site}/`, and that
+segment is the site id. Verified 5/5, each then returning HTTP 200 from the jobs API:
+
+| tenant | site |
+|---|---|
+| `3m` | `Search` |
+| `8x8inc` | `8x8_External_Careers` |
+| `7eleven` | `7eleven` |
+| `nvidia` | `NVIDIAExternalCareerSite` |
+| `aah` | `External` |
+| `salesforce` | `External_Career_Site` |
+| `adobe` | `external_experienced` |
+| `paypal` | `jobs` |
+| `visa` | `Visa` |
+
+Two real edge cases the resolver must survive, both encountered:
+- robots.txt may carry **several** `Allow:` lines — collect them all and validate each against
+  the jobs endpoint, first HTTP 200 wins. (`ebay.wd5` resolves to `TCGPlayer_External_Career`;
+  that tenant genuinely only hosts the subsidiary board.)
+- robots.txt may not be a robots file at all — `netflix.wd1.myworkdayjobs.com/robots.txt` returns
+  `{"errorCode":"HTTP_422",...}`. Handle as unresolvable; never crash.
+
+The resolved site is cached onto the `ats_company` row, so this costs one request per tenant ever.
+
+### Catalog vs. selection — why imported companies are disabled
+
+`./import-slugs.sh` ingests a catalog like
+`https://raw.githubusercontent.com/elliottdehn/open-jobs/main/slugs.json`, whose shape is
+`{"ats": {"greenhouse": [...], "lever": [...], "workday": [...]}}` across 25 ATS platforms; only
+the three we implement are read. That file holds **15,576 slugs** for those three alone. A run
+that visited all of them would be 15,000+ requests, so the catalog and the *selection* are
+separate concepts: **imported rows land `enabled=0`, `status='unverified'`**, and a run only ever
+visits `enabled=1 AND status<>'dead'`. Importing never re-enables or overwrites a company you
+have already configured — there is a regression test for exactly that.
+
+`V6__ats_sources.sql` seeds **42 companies I verified live** (26 Greenhouse, 10 Lever, 6 Workday),
+enabled, so the feature works on first boot.
+
+**Public slug catalogs decay fast, and this is why the dead-slug retirement exists.** Measured
+against that file on 2026-09-07: **8 of 34** sampled Greenhouse slugs and **7 of 8** sampled Lever
+slugs were already dead (`doordash`, `openai`, `ramp`, `notion`, `benchling`, `anduril`,
+`sourcegraph`, `hashicorp` have all left Greenhouse; nearly every sampled Lever slug had moved).
+A company that 404s `ats.dead-slug-threshold` runs in a row is set `status='dead'`, `enabled=0`
+and never called again. It is **marked, not deleted** — a dead row is already skipped by every
+run, and keeping it explains why a company disappeared from your results. `--prune` deletes them
+if you want them gone.
+
+### Driving the Claude CLI from Java
+
+The scan shells out to the local `claude` binary — the user's subscription, no API key, no API
+credits. `ai.cli-path` (env `CLAUDE_CLI_PATH`) locates it; `./run.sh` warns if it is missing but
+never fails the boot, because everything else works without it.
+
+```
+claude -p --model sonnet --output-format json --json-schema '<schema>' \
+       --no-session-persistence --safe-mode --restricted     < prompt
+```
+
+- **The prompt goes on stdin, never as an argv argument.** Passed as an argument the CLI still
+  waits for stdin and emits `Warning: no stdin data received in 3s` — a 3-second stall on *every*
+  call. Measured: 6.7s as an argument vs 3.9s piped. argv also has a ~1MB ceiling a batched
+  prompt would breach.
+- **Read `structured_output`, not `result`.** With `--json-schema` the response carries the answer
+  already parsed into an object. Never regex the text.
+- **~25k tokens of fixed overhead per invocation**, independent of payload — it is tool
+  definitions, and `--system-prompt` does *not* reduce it (measured). **Batching is therefore the
+  only real cost lever**, which is what `ai.batch-size` (9) exists for; `ai.concurrency` (3)
+  bounds simultaneous CLI processes. `--bare` would cut the overhead but forces
+  `ANTHROPIC_API_KEY`, defeating the point of using the subscription.
+- `--safe-mode` + `--restricted` stop a scan from picking up this repo's own CLAUDE.md, skills,
+  hooks or MCP servers, and remove the command-running tools.
+- **Drain stdout and stderr on separate threads.** A process whose stderr pipe fills while you
+  only read stdout deadlocks. `ClaudeCliClientTest` has a stderr-flood regression guard.
+- `ClaudeCliClient` never throws — every failure is a `ClaudeCliResult` variant
+  (`Ok`/`CliNotFound`/`Timeout`/`Failed`) — and `ResumeMatchService` never throws either, exactly
+  like `SalaryEnrichmentService` (§8). **An AI failure must never turn a successful collection run
+  into a failed one.**
+- Verdicts are cached in `ai_match` keyed `(job_id, resume_id)`, so a re-scan costs zero CLI
+  invocations for anything already scored. Same "only look where no record exists" rule as the
+  salary cache.
+- Verdicts are correlated back by an echoed `ref`, **never positionally** — the model may return
+  them out of order, and there is a test that deliberately reorders them.
+
+### Tests must never touch the real database
+
+`JobdashApplicationTests` used to boot with no datasource override, which meant `@SpringBootTest`
+inherited `application.yml` and ran Flyway against the developer's own `data/jobdash.db`. That
+both mutates real data and makes the test fail for reasons unrelated to the code — a half-applied
+migration history in that file fails Flyway validation even though a fresh clone migrates
+perfectly. It now points at a `@TempDir`, like every other full-context test here. **Keep it that
+way.**

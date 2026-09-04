@@ -83,10 +83,20 @@ class JobDashApiTest {
         return sweepRunRepository.create(startedAt, "java", "remote", 24, false, null);
     }
 
-    private void insertJob(long jobId, long runId, String title, String company, Instant postedAt) {
-        JobCardInsert card = new JobCardInsert(jobId, title, company, "Remote", postedAt,
-                "https://linkedin.com/jobs/view/" + jobId, "https://linkedin.com/company/" + company);
+    /**
+     * Inserts a job card and returns the actual autoincrement {@code job_id} SQLite assigned to
+     * it - {@code sourceJobId} is just a distinguishing label for the fixture, no longer the row's
+     * primary key.
+     */
+    private long insertJob(long sourceJobId, long runId, String title, String company, Instant postedAt) {
+        JobCardInsert card = new JobCardInsert("linkedin", String.valueOf(sourceJobId), title, company, "Remote",
+                postedAt, "https://linkedin.com/jobs/view/" + sourceJobId,
+                "https://linkedin.com/company/" + company, null);
         jobListingRepository.upsertAll(java.util.List.of(card), runId, Instant.now());
+        return client.sql("select job_id from job_listing where source = 'linkedin' and source_job_id = :id")
+                .param("id", String.valueOf(sourceJobId))
+                .query(Long.class)
+                .single();
     }
 
     private void setVerdictPass(long jobId) {
@@ -115,31 +125,32 @@ class JobDashApiTest {
     void searchTabShowsOnlyCurrentRunPassingStatuslessRows_appliedShowsAcrossRuns() throws Exception {
         Instant t0 = Instant.parse("2026-08-20T00:00:00Z");
         long run1 = createRunRow(t0);
-        insertJob(1, run1, "Software Engineer", "Acme", t0);
-        setVerdictPass(1); // run1, no status -> should NOT appear in search (not current run)
+        long job1 = insertJob(1, run1, "Software Engineer", "Acme", t0);
+        setVerdictPass(job1); // run1, no status -> should NOT appear in search (not current run)
 
-        insertJob(2, run1, "Backend Engineer", "Acme", t0);
-        setVerdictPass(2);
-        setUserStatus(2, "applied"); // run1, applied -> should appear in applied tab
+        long job2 = insertJob(2, run1, "Backend Engineer", "Acme", t0);
+        setVerdictPass(job2);
+        setUserStatus(job2, "applied"); // run1, applied -> should appear in applied tab
 
         Instant t1 = Instant.parse("2026-08-27T00:00:00Z");
         long run2 = createRunRow(t1);
-        insertJob(3, run2, "Platform Engineer", "Acme", t1);
-        setVerdictPass(3); // run2 (current), no status -> SHOULD appear in search
+        long job3 = insertJob(3, run2, "Platform Engineer", "Acme", t1);
+        setVerdictPass(job3); // run2 (current), no status -> SHOULD appear in search
 
-        insertJob(4, run2, "Data Engineer", "Acme", t1);
-        setVerdictPass(4);
-        setUserStatus(4, "applied"); // run2, applied -> should appear in applied tab too
+        long job4 = insertJob(4, run2, "Data Engineer", "Acme", t1);
+        setVerdictPass(job4);
+        setUserStatus(job4, "applied"); // run2, applied -> should appear in applied tab too
 
         mockMvc.perform(get("/api/jobs").param("tab", "search"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(1))
-                .andExpect(jsonPath("$[0].jobId").value(3));
+                .andExpect(jsonPath("$[0].jobId").value((int) job3));
 
         mockMvc.perform(get("/api/jobs").param("tab", "applied"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(2))
-                .andExpect(jsonPath("$[*].jobId").value(org.hamcrest.Matchers.containsInAnyOrder(2, 4)));
+                .andExpect(jsonPath("$[*].jobId").value(
+                        org.hamcrest.Matchers.containsInAnyOrder((int) job2, (int) job4)));
     }
 
     // ---- sort -------------------------------------------------------------------------------
@@ -150,39 +161,39 @@ class JobDashApiTest {
         Instant old = Instant.parse("2026-08-01T00:00:00Z");
         Instant recent = Instant.parse("2026-08-27T00:00:00Z");
 
-        insertJob(11, run, "A", "Acme", old);
-        setVerdictPass(11);
-        setSalaryMax(11, 100000.0);
+        long jobA = insertJob(11, run, "A", "Acme", old);
+        setVerdictPass(jobA);
+        setSalaryMax(jobA, 100000.0);
 
-        insertJob(12, run, "B", "Acme", recent);
-        setVerdictPass(12);
-        setSalaryMax(12, 150000.0);
+        long jobB = insertJob(12, run, "B", "Acme", recent);
+        setVerdictPass(jobB);
+        setSalaryMax(jobB, 150000.0);
 
-        insertJob(13, run, "C", "Acme", recent);
-        setVerdictPass(13); // no salary
+        long jobC = insertJob(13, run, "C", "Acme", recent);
+        setVerdictPass(jobC); // no salary
 
-        insertJob(14, run, "D", "Acme", old);
-        setVerdictPass(14); // no salary
+        long jobD = insertJob(14, run, "D", "Acme", old);
+        setVerdictPass(jobD); // no salary
 
         mockMvc.perform(get("/api/jobs").param("tab", "search"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(4))
-                .andExpect(jsonPath("$[0].jobId").value(12))
-                .andExpect(jsonPath("$[1].jobId").value(11))
-                .andExpect(jsonPath("$[2].jobId").value(13))
-                .andExpect(jsonPath("$[3].jobId").value(14));
+                .andExpect(jsonPath("$[0].jobId").value((int) jobB))
+                .andExpect(jsonPath("$[1].jobId").value((int) jobA))
+                .andExpect(jsonPath("$[2].jobId").value((int) jobC))
+                .andExpect(jsonPath("$[3].jobId").value((int) jobD));
     }
 
     @Test
     void jobsEndpointExposesSalarySourceDetail() throws Exception {
         long run = createRunRow(Instant.parse("2026-08-27T00:00:00Z"));
-        insertJob(50, run, "Software Engineer", "Amazon", Instant.parse("2026-08-27T00:00:00Z"));
-        setVerdictPass(50);
-        setSalary(50, 190000.0, "lca", "AMAZON.COM SERVICES LLC");
+        long job = insertJob(50, run, "Software Engineer", "Amazon", Instant.parse("2026-08-27T00:00:00Z"));
+        setVerdictPass(job);
+        setSalary(job, 190000.0, "lca", "AMAZON.COM SERVICES LLC");
 
         mockMvc.perform(get("/api/jobs").param("tab", "search"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].jobId").value(50))
+                .andExpect(jsonPath("$[0].jobId").value((int) job))
                 .andExpect(jsonPath("$[0].salarySourceDetail").value("AMAZON.COM SERVICES LLC"));
     }
 
@@ -191,13 +202,13 @@ class JobDashApiTest {
     @Test
     void postJobStatusRoundTripsAndMovesBetweenTabs() throws Exception {
         long run = createRunRow(Instant.now());
-        insertJob(21, run, "Engineer", "Acme", Instant.now());
-        setVerdictPass(21);
+        long job = insertJob(21, run, "Engineer", "Acme", Instant.now());
+        setVerdictPass(job);
 
         mockMvc.perform(get("/api/jobs").param("tab", "search"))
                 .andExpect(jsonPath("$.length()").value(1));
 
-        mockMvc.perform(post("/api/jobs/21/status")
+        mockMvc.perform(post("/api/jobs/" + job + "/status")
                         .contentType("application/json")
                         .content("{\"status\":\"applied\"}"))
                 .andExpect(status().isOk())
@@ -208,7 +219,7 @@ class JobDashApiTest {
         mockMvc.perform(get("/api/jobs").param("tab", "applied"))
                 .andExpect(jsonPath("$.length()").value(1));
 
-        mockMvc.perform(post("/api/jobs/21/status")
+        mockMvc.perform(post("/api/jobs/" + job + "/status")
                         .contentType("application/json")
                         .content("{\"status\":null}"))
                 .andExpect(status().isOk())
@@ -234,8 +245,8 @@ class JobDashApiTest {
     @Test
     void addingExcludeWordTriggersReevaluationAndDropsFromSearch() throws Exception {
         long run = createRunRow(Instant.now());
-        insertJob(31, run, "Freelance Consultant", "Acme", Instant.now());
-        setVerdictPass(31);
+        long job = insertJob(31, run, "Freelance Consultant", "Acme", Instant.now());
+        setVerdictPass(job);
 
         mockMvc.perform(get("/api/jobs").param("tab", "search"))
                 .andExpect(jsonPath("$.length()").value(1));
@@ -290,6 +301,60 @@ class JobDashApiTest {
                         .contentType("application/json")
                         .content("{\"location\":\"USA\"}"))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void createRunReturns400WhenLinkedInIsCombinedWithAnotherSource() throws Exception {
+        // Validation happens before the running-run / circuit-breaker guards and before any run
+        // is dispatched, so this is safe to exercise directly - no real HTTP call is made.
+        mockMvc.perform(post("/api/runs")
+                        .contentType("application/json")
+                        .content("{\"keywords\":\"java\",\"location\":\"USA\",\"sources\":[\"linkedin\",\"greenhouse\"]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message", containsString("cannot be combined")));
+    }
+
+    @Test
+    void createRunDefaultsSourcesToLinkedInWhenAbsent() throws Exception {
+        // No "sources" field at all. The circuit-breaker guard only runs when "linkedin" is
+        // among the selected sources (RunController#createRun), so getting the 503 cooldown
+        // response here - rather than a run actually starting - proves the default resolved to
+        // ["linkedin"], not an empty/no-op selection. Safe: the guard throws before any run
+        // (LinkedIn or ATS) is ever dispatched, so no real HTTP call is made.
+        Instant now = clock.instant();
+        circuitStateStore.save(new CircuitSnapshot(CircuitState.OPEN, 1, 0, now, now.plusSeconds(600)));
+
+        mockMvc.perform(post("/api/runs")
+                        .contentType("application/json")
+                        .content("{\"keywords\":\"java\",\"location\":\"USA\"}"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.message", containsString("cooldown")));
+    }
+
+    @Test
+    void createRunRequiresALocationForLinkedInButNotForAnAtsRun() throws Exception {
+        // A LinkedIn run without a location is rejected: SweepQueryBuilder has to put the
+        // location in the query string, so a blank one searches the wrong thing.
+        mockMvc.perform(post("/api/runs")
+                        .contentType("application/json")
+                        .content("{\"keywords\":\"java\",\"sources\":[\"linkedin\"]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message", containsString("location is required")));
+
+        // The SAME request against an ATS source must NOT be rejected: there, location is only a
+        // local filter over what the board already returned, and blank legitimately means
+        // "anywhere". Requiring one made a valid nationwide ATS run impossible to start.
+        // Asserting "not a 400 complaining about location" rather than a specific success code,
+        // because what happens next (a run starting) depends on the catalog, not on validation.
+        mockMvc.perform(post("/api/runs")
+                        .contentType("application/json")
+                        .content("{\"keywords\":\"java\",\"sources\":[\"greenhouse\"]}"))
+                .andExpect(result -> {
+                    String body = result.getResponse().getContentAsString();
+                    if (result.getResponse().getStatus() == 400 && body.contains("location is required")) {
+                        throw new AssertionError("An ATS run must not require a location, but got: " + body);
+                    }
+                });
     }
 
     // ---- reports ---------------------------------------------------------------------------

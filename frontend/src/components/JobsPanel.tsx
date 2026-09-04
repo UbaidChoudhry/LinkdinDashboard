@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { ApiError, listJobs } from "../api/client";
-import type { JobResponse, JobTab, RunResponse } from "../types/api";
+import { ApiError, listJobs, scanMatches } from "../api/client";
+import type { JobResponse, JobTab, MatchBucket, RunResponse } from "../types/api";
 import { DEFAULT_SORT, filterByMinSalary, nextSortState, sortJobsBy, type SortState } from "../utils/sort";
 import { groupByCompany } from "../utils/group";
 import { JobRow } from "./JobRow";
@@ -62,6 +62,11 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
   // back on without retyping. On by default: typing a figure normally means you want it applied.
   const [minSalaryOn, setMinSalaryOn] = useState(true);
   const [groupByCompanyOn, setGroupByCompanyOn] = useState(false);
+  // Which AI bucket to show. "all" keeps every row, including rows that were never scanned
+  // (LinkedIn rows never can be - they have no description).
+  const [bucket, setBucket] = useState<MatchBucket | "all">("all");
+  const [scanning, setScanning] = useState(false);
+  const [scanNote, setScanNote] = useState<string | null>(null);
   // Groups start collapsed - the point of grouping is to stop one prolific company flooding
   // the list, so expanding is opt-in per company.
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(new Set());
@@ -90,6 +95,7 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
     setMinSalary(null);
     setMinSalaryOn(true);
     setExpandedGroups(new Set());
+    setBucket("all");
   }, [activeTab]);
 
   // Null when the toggle is off - the typed value stays in the box, it just isn't applied.
@@ -97,8 +103,40 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
 
   const sortedJobs = useMemo(() => {
     if (!jobs) return jobs;
-    return filterByMinSalary(sortJobsBy(jobs, sort), effectiveMinSalary);
-  }, [jobs, sort, effectiveMinSalary]);
+    const byBucket =
+      bucket === "all"
+        ? jobs
+        : jobs.filter((j) =>
+            bucket === "recommended" ? j.aiRecommended === true : j.aiRecommended === false,
+          );
+    return filterByMinSalary(sortJobsBy(byBucket, sort), effectiveMinSalary);
+  }, [jobs, sort, effectiveMinSalary, bucket]);
+
+  // Counts come from the unfiltered list so the bucket tabs keep showing totals even while a
+  // bucket is selected.
+  const bucketCounts = useMemo(() => {
+    const recommended = jobs?.filter((j) => j.aiRecommended === true).length ?? 0;
+    const notRecommended = jobs?.filter((j) => j.aiRecommended === false).length ?? 0;
+    return { recommended, notRecommended, unscanned: (jobs?.length ?? 0) - recommended - notRecommended };
+  }, [jobs]);
+
+  async function handleRescan() {
+    setScanning(true);
+    setScanNote(null);
+    try {
+      const result = await scanMatches({});
+      setScanNote(
+        result.errorMessage
+          ? result.errorMessage
+          : `Scanned ${result.scanned} — ${result.recommended} recommended, ${result.notRecommended} not.`,
+      );
+      await load();
+    } catch (err) {
+      setScanNote(err instanceof ApiError ? err.message : "Scan failed.");
+    } finally {
+      setScanning(false);
+    }
+  }
   const handleSort = useCallback((column: Parameters<typeof nextSortState>[1]) => {
     setSort((current) => nextSortState(current, column));
   }, []);
@@ -216,6 +254,48 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
           </button>
         ))}
       </div>
+
+      {/* The AI buckets. Shown only when something has actually been scanned, so a LinkedIn-only
+          workflow (which can never be scanned) never sees a control that would do nothing. */}
+      {(bucketCounts.recommended > 0 || bucketCounts.notRecommended > 0) && (
+        <div className="bucket-bar" role="tablist" aria-label="AI match buckets">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={bucket === "all"}
+            className={bucket === "all" ? "bucket-tab active" : "bucket-tab"}
+            onClick={() => setBucket("all")}
+          >
+            All <span className="bucket-count">{jobs?.length ?? 0}</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={bucket === "recommended"}
+            className={bucket === "recommended" ? "bucket-tab active recommended" : "bucket-tab recommended"}
+            onClick={() => setBucket("recommended")}
+          >
+            Recommended match <span className="bucket-count">{bucketCounts.recommended}</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={bucket === "not_recommended"}
+            className={bucket === "not_recommended" ? "bucket-tab active not-recommended" : "bucket-tab not-recommended"}
+            onClick={() => setBucket("not_recommended")}
+          >
+            Not recommended <span className="bucket-count">{bucketCounts.notRecommended}</span>
+          </button>
+          {bucketCounts.unscanned > 0 && (
+            <span className="bucket-unscanned">{bucketCounts.unscanned} not scanned</span>
+          )}
+          <button type="button" className="bucket-rescan" onClick={handleRescan} disabled={scanning}>
+            {scanning ? "Scanning…" : "Re-scan"}
+          </button>
+        </div>
+      )}
+
+      {scanNote && <p className="scan-note">{scanNote}</p>}
 
       {/* One horizontal toolbar rather than three stacked rows - the vertical space it saves
           goes to the table, which is what the tab is actually for. */}

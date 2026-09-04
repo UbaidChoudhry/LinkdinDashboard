@@ -13,10 +13,21 @@ export const RUN_STATUS_INFO: Record<string, RunStatusInfo> = {
     message: "The sweep is in progress.",
     kind: "info",
   },
+  scanning: {
+    label: "Scanning with AI",
+    message: "All sources have been fetched; Claude is now comparing each job description against your resume.",
+    kind: "info",
+  },
   ok: {
     label: "Completed",
     message: "The run finished normally.",
     kind: "success",
+  },
+  no_sources: {
+    label: "Stopped: no companies enabled",
+    message:
+      "No enabled companies matched the selected sources. Enable some in the Sources tab, or import a catalog with ./import-slugs.sh",
+    kind: "warning",
   },
   capped: {
     label: "Stopped: request cap",
