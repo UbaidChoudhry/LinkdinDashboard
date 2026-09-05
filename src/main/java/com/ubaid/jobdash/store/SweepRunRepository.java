@@ -137,6 +137,19 @@ public class SweepRunRepository {
                 .optional();
     }
 
+    /**
+     * Marks every unfinished run as terminated with {@code status}, and returns how many were
+     * affected. Called once at startup: a run only exists on a thread inside the process that
+     * started it, so any row still open when the application boots was orphaned by a crash,
+     * a kill, or a restart, and can never make progress again.
+     */
+    public int finishAllUnfinished(Instant finishedAt, String status) {
+        return client.sql("update sweep_run set status = :status, finished_at = :finishedAt where finished_at is null")
+                .param("status", status)
+                .param("finishedAt", Timestamps.toText(finishedAt))
+                .update();
+    }
+
     /** The most recently started run that hasn't finished yet, if any — used to refuse a second concurrent run. */
     public Optional<SweepRun> findRunning() {
         return client.sql("select * from sweep_run where finished_at is null order by id desc limit 1")
@@ -145,6 +158,14 @@ public class SweepRunRepository {
     }
 
     static SweepRun mapRow(ResultSet rs, int rowNum) throws SQLException {
+        // resume_id must be read via getLong + wasNull, NOT `(Long) rs.getObject(...)`. SQLite's
+        // JDBC driver hands back the narrowest type that fits, so a small resume_id arrives as an
+        // Integer and the cast throws ClassCastException at runtime. It only blows up once a run
+        // actually HAS a resume attached — a null column casts fine — which is why this survived
+        // a green test suite and only failed against real UI traffic. wasNull() reports on the
+        // most recent read, so it is checked immediately, before any other column is touched.
+        long resumeIdValue = rs.getLong("resume_id");
+        Long resumeId = rs.wasNull() ? null : resumeIdValue;
         return new SweepRun(
                 rs.getLong("id"),
                 Timestamps.parse(rs.getString("started_at")),
@@ -162,7 +183,7 @@ public class SweepRunRepository {
                 rs.getInt("jobs_new"),
                 rs.getInt("saturated") != 0,
                 rs.getString("sources"),
-                (Long) rs.getObject("resume_id"),
+                resumeId,
                 rs.getInt("companies_done"),
                 rs.getInt("companies_total")
         );

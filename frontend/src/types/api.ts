@@ -48,7 +48,8 @@ export type RunStatus =
   | "budget_exhausted"
   | "blocked"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "interrupted";
 
 export interface RunResponse {
   id: number;

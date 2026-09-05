@@ -515,3 +515,32 @@ both mutates real data and makes the test fail for reasons unrelated to the code
 migration history in that file fails Flyway validation even though a fresh clone migrates
 perfectly. It now points at a `@TempDir`, like every other full-context test here. **Keep it that
 way.**
+
+### Two failures found only in real use (2026-09-08)
+
+Both shipped past a fully green 307-test suite, and both are §1's signature failure again.
+
+**1. `(Long) rs.getObject("resume_id")` threw `ClassCastException` at runtime.**
+SQLite's JDBC driver returns the *narrowest* type a value fits in, so a small `resume_id` comes
+back as an `Integer` and the cast to `Long` blows up. The trap is that **a NULL column casts
+fine** — so it only failed once a run actually had a resume attached. Every end-to-end check I
+had run used `curl` without `resumeId`; the UI always sends one. It broke `GET /api/runs`, which
+is the first call the dashboard makes, so the whole app looked dead.
+Read nullable numerics as `getLong(...)` followed *immediately* by `wasNull()`, never
+`(Long) getObject(...)`. `SweepRunRepositoryTest` covers both the null and non-null cases, and
+was confirmed to fail against the old code before the fix landed.
+The same file had a second instance of the pattern: `AiMatchRepository.mapRow` called
+`wasNull()` five columns after the `getLong` it referred to. **`wasNull()` reports on the most
+recent read**, so it was really asking "was `model` null?" and would have turned a null `run_id`
+into `0`.
+
+**2. An interrupted run wedged the application permanently.**
+A run lives on a virtual thread inside one process. Kill that process — a crash, a Ctrl-C, an
+ordinary restart — and the thread dies while its `sweep_run` row keeps `status='running'` and a
+null `finished_at` forever. After that, `POST /api/runs` refuses to start anything ("a run is
+already in progress") **and** `POST /api/runs/{id}/cancel` refuses too, because the run isn't in
+the new process's registry. There was no way out but editing the database by hand.
+`sweep/OrphanedRunReaper` now closes out every unfinished run at startup with the terminal status
+`interrupted`. This is safe precisely because of the single-process rule: nothing can still be
+running when the app has only just booted. **If you add another way for a run to outlive its
+process, this reaper is what keeps the app usable.**

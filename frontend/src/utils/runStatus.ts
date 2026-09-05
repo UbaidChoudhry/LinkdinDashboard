@@ -55,6 +55,12 @@ export const RUN_STATUS_INFO: Record<string, RunStatusInfo> = {
     message: "The run was cancelled before it finished.",
     kind: "neutral",
   },
+  interrupted: {
+    label: "Interrupted",
+    message:
+      "The app stopped while this run was in flight, so it was closed out on the next start. Anything it had already collected was saved - just start a new run.",
+    kind: "neutral",
+  },
 };
 
 export function runStatusInfo(status: string | null | undefined): RunStatusInfo {

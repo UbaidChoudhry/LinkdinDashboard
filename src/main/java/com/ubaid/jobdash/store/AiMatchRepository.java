@@ -116,14 +116,18 @@ public class AiMatchRepository {
     }
 
     static AiMatch mapRow(ResultSet rs, int rowNum) throws SQLException {
-        long runId = rs.getLong("run_id");
+        // wasNull() reports on the MOST RECENT column read, so it has to be checked immediately
+        // after the getLong it refers to. Checking it further down (after the getString calls
+        // below) would be asking "was `model` null?" and would turn a null run_id into 0.
+        long runIdValue = rs.getLong("run_id");
+        Long runId = rs.wasNull() ? null : runIdValue;
         return new AiMatch(
                 rs.getLong("job_id"),
                 rs.getLong("resume_id"),
                 rs.getInt("recommended") != 0,
                 rs.getString("reason"),
                 rs.getString("model"),
-                rs.wasNull() ? null : runId,
+                runId,
                 Timestamps.parse(rs.getString("scanned_at"))
         );
     }

@@ -218,6 +218,10 @@ must switch exhaustively. Implementations **never throw** — same discipline as
 | `source/workday/` | two-phase: a server-side-filtered search page, then one detail request per job for the description and real date. `WorkdaySiteResolver` discovers the site id from the tenant's `robots.txt` |
 | `source/ats/` | `AtsRateLimiter` (pacing + per-source daily cap off `external_request_log` — **never** LinkedIn's `request_log`), `AtsProperties`, and `SlugCatalogImportService` / `SlugImportRunner` behind `./import-slugs.sh` |
 
+`sweep/OrphanedRunReaper` runs once at startup and closes out any run left `running` by a killed
+process. Without it a single interrupted run blocks every future run **and** cannot be cancelled
+(cancel only works for runs in the current process's registry) — see HANDOFF.md §9.
+
 ### `resume/` — turning an upload into text
 `ResumeService` stores the original under `data/resumes/` and the extracted text in the `resume`
 table; `ResumeTextExtractor` handles PDF (Apache PDFBox 3 — `Loader.loadPDF`, the 2.x
