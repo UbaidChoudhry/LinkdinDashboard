@@ -1206,3 +1206,95 @@ tr.source-dead {
 .ai-reason.not-recommended {
   opacity: 0.75;
 }
+
+/* ---------------------------------------------------------------------------
+   AI scan progress panel
+   --------------------------------------------------------------------------- */
+
+.scan-panel {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  background: var(--accent-bg);
+}
+
+.scan-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 14px;
+  color: var(--text-h);
+}
+
+.scan-counts {
+  font-size: 13px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.scan-elapsed {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.scan-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.scan-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+.scan-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin: 10px 0 0;
+}
+
+.scan-stats dt {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text);
+}
+
+.scan-stats dd {
+  margin: 2px 0 0;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-h);
+}
+
+.scan-stats .scan-rec {
+  color: var(--accent);
+}
+
+.scan-stats .scan-fail {
+  color: #c0392b;
+}
+
+.scan-hint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.scan-hint code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--code-bg);
+  font-family: var(--mono);
+}

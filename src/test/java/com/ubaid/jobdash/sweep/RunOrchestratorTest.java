@@ -1,6 +1,7 @@
 package com.ubaid.jobdash.sweep;
 
 import com.ubaid.jobdash.ai.ResumeMatchService;
+import com.ubaid.jobdash.ai.ScanProgressListener;
 import com.ubaid.jobdash.domain.Resume;
 import com.ubaid.jobdash.store.ResumeRepository;
 import com.ubaid.jobdash.store.SweepRunRepository;
@@ -88,7 +89,8 @@ class RunOrchestratorTest {
         long runId = orchestrator.startRun(SWEEP_REQUEST, List.of("greenhouse"), null);
 
         assertThat(runId).isEqualTo(RUN_ID);
-        verify(resumeMatchService, timeout(2000)).scan(eq(RUN_ID), eq(3L), any(BooleanSupplier.class));
+        verify(resumeMatchService, timeout(2000))
+                .scan(eq(RUN_ID), eq(3L), any(BooleanSupplier.class), any(ScanProgressListener.class));
         verify(sweepRunRepository, timeout(2000)).finish(eq(RUN_ID), any(), eq("ok"));
         verifyNoInteractions(sweepService);
     }
@@ -112,7 +114,7 @@ class RunOrchestratorTest {
                 .thenReturn(RUN_ID);
         when(atsSweepService.run(eq(RUN_ID), any(), any())).thenReturn("ok");
         when(resumeRepository.findDefault()).thenReturn(Optional.of(resume(9L)));
-        when(resumeMatchService.scan(eq(RUN_ID), eq(9L), any())).thenThrow(new RuntimeException("boom"));
+        when(resumeMatchService.scan(eq(RUN_ID), eq(9L), any(), any())).thenThrow(new RuntimeException("boom"));
 
         orchestrator.startRun(SWEEP_REQUEST, List.of("workday"), null);
 

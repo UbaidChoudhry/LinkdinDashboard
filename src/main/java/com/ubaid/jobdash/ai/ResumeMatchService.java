@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -21,6 +22,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 
 /**
@@ -37,6 +40,14 @@ import java.util.function.BooleanSupplier;
 public class ResumeMatchService {
 
     private static final Logger log = LoggerFactory.getLogger(ResumeMatchService.class);
+
+    /**
+     * Human-readable scan activity, routed to its own {@code logs/ai-scan.log} by
+     * logback-spring.xml so it can be followed with {@code tail -f} without the rest of Spring's
+     * output on top of it. <b>Never log the prompt or the resume through this</b> - it carries
+     * the user's CV. Job titles, counts, timings and verdicts only.
+     */
+    private static final Logger scanLog = LoggerFactory.getLogger("jobdash.ai.scan");
 
     private final ResumeRepository resumeRepository;
     private final JobListingRepository jobListingRepository;
@@ -60,15 +71,27 @@ public class ResumeMatchService {
 
     /** Scans every scannable, not-yet-cached job of run {@code runId} against {@code resumeId}. */
     public ScanResult scan(long runId, long resumeId, BooleanSupplier cancelled) {
-        return scanInternal(jobListingRepository.findScannableByRun(runId), resumeId, runId, cancelled);
+        return scan(runId, resumeId, cancelled, ScanProgressListener.NONE);
+    }
+
+    /** As {@link #scan(long, long, BooleanSupplier)}, reporting live progress to {@code listener}. */
+    public ScanResult scan(long runId, long resumeId, BooleanSupplier cancelled, ScanProgressListener listener) {
+        return scanInternal(jobListingRepository.findScannableByRun(runId), resumeId, runId, cancelled, listener);
     }
 
     /** Re-scans a specific set of jobs (e.g. after a filter or resume change) against {@code resumeId}. */
     public ScanResult rescan(List<Long> jobIds, long resumeId, BooleanSupplier cancelled) {
-        return scanInternal(jobListingRepository.findScannableByIds(jobIds), resumeId, null, cancelled);
+        return rescan(jobIds, resumeId, cancelled, ScanProgressListener.NONE);
     }
 
-    private ScanResult scanInternal(List<JobListing> scannable, long resumeId, Long runId, BooleanSupplier cancelled) {
+    /** As {@link #rescan(List, long, BooleanSupplier)}, reporting live progress to {@code listener}. */
+    public ScanResult rescan(List<Long> jobIds, long resumeId, BooleanSupplier cancelled,
+                              ScanProgressListener listener) {
+        return scanInternal(jobListingRepository.findScannableByIds(jobIds), resumeId, null, cancelled, listener);
+    }
+
+    private ScanResult scanInternal(List<JobListing> scannable, long resumeId, Long runId,
+                                     BooleanSupplier cancelled, ScanProgressListener listener) {
         try {
             if (!properties.enabled()) {
                 return ScanResult.empty();
@@ -85,11 +108,17 @@ public class ResumeMatchService {
                     .toList();
 
             if (toScan.isEmpty()) {
+                scanLog.info("scan run={} resume=\"{}\" - nothing to do, all {} job(s) already scored",
+                        runId, resume.name(), scannable.size());
                 return ScanResult.empty();
             }
 
             List<List<JobListing>> batches = partition(toScan, properties.batchSize());
-            return runBatches(batches, resume.contentText(), resumeId, runId, cancelled);
+            scanLog.info("scan START run={} resume=\"{}\" scannable={} cached={} to-scan={} batches={} "
+                            + "batch-size={} concurrency={} model={}",
+                    runId, resume.name(), scannable.size(), alreadyScanned.size(), toScan.size(),
+                    batches.size(), properties.batchSize(), properties.concurrency(), properties.model());
+            return runBatches(batches, resume.contentText(), resumeId, runId, cancelled, listener);
         } catch (Exception e) {
             log.warn("resume match scan failed for resume {}: {}", resumeId, e.toString());
             return new ScanResult(0, 0, 0, 0, 0, 0.0, "Resume match scan failed: " + e.getMessage());
@@ -98,7 +127,7 @@ public class ResumeMatchService {
 
     /** Runs the batches up to {@code ai.concurrency} at a time, on a bounded pool of virtual threads. */
     private ScanResult runBatches(List<List<JobListing>> batches, String resumeText, long resumeId, Long runId,
-                                   BooleanSupplier cancelled) {
+                                   BooleanSupplier cancelled, ScanProgressListener listener) {
         int recommended = 0;
         int notRecommended = 0;
         int skipped = 0;
@@ -106,14 +135,21 @@ public class ResumeMatchService {
         double totalCostUsd = 0.0;
         String errorMessage = null;
 
+        int jobsTotal = batches.stream().mapToInt(List::size).sum();
+        Instant scanStartedAt = clock.instant();
+        ScanCounters counters = new ScanCounters(batches.size(), jobsTotal, scanStartedAt);
+        publishQuietly(listener, counters.snapshot());
+
         ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
         Semaphore permits = new Semaphore(Math.max(1, properties.concurrency()));
         try {
             List<Future<BatchOutcome>> futures = new ArrayList<>();
+            int batchNumber = 0;
             for (List<JobListing> batch : batches) {
                 if (cancelled.getAsBoolean()) {
                     break;
                 }
+                int number = ++batchNumber;
                 futures.add(executor.submit(() -> {
                     try {
                         permits.acquire();
@@ -122,7 +158,15 @@ public class ResumeMatchService {
                         return new BatchOutcome(List.of(), 0.0, false, null);
                     }
                     try {
-                        return runOneBatch(batch, resumeText, resumeId, runId);
+                        scanLog.info("batch {}/{} START ({} jobs)", number, batches.size(), batch.size());
+                        long startedAt = System.nanoTime();
+                        BatchOutcome outcome = runOneBatch(batch, resumeText, resumeId, runId);
+                        long tookMs = (System.nanoTime() - startedAt) / 1_000_000;
+                        // Counted here, as this batch actually finishes, rather than in the drain
+                        // loop below - that loop reads futures in submission order, so a fast
+                        // later batch would stay invisible behind a slow earlier one.
+                        recordBatch(counters, listener, number, batches.size(), batch.size(), outcome, tookMs);
+                        return outcome;
                     } finally {
                         permits.release();
                     }
@@ -173,8 +217,91 @@ public class ResumeMatchService {
             skipped = 0;
         }
 
-        return new ScanResult(recommended + notRecommended, recommended, notRecommended, skipped, failedBatches,
-                totalCostUsd, errorMessage);
+        ScanResult result = new ScanResult(recommended + notRecommended, recommended, notRecommended, skipped,
+                failedBatches, totalCostUsd, errorMessage);
+        scanLog.info("scan DONE  run={} scanned={} recommended={} not-recommended={} skipped={} failed-batches={} "
+                        + "cost=${} elapsed={}s{}",
+                runId, result.scanned(), result.recommended(), result.notRecommended(), result.skipped(),
+                result.failedBatches(), String.format("%.4f", result.totalCostUsd()),
+                Duration.between(scanStartedAt, clock.instant()).toSeconds(),
+                result.errorMessage() == null ? "" : " error=" + result.errorMessage());
+        return result;
+    }
+
+    /** Updates the shared counters for one finished batch, logs it, and publishes a snapshot. */
+    private void recordBatch(ScanCounters counters, ScanProgressListener listener, int number, int total,
+                              int batchSize, BatchOutcome outcome, long tookMs) {
+        int recommended = 0;
+        int notRecommended = 0;
+        for (AiMatch match : outcome.matches()) {
+            if (match.recommended()) {
+                recommended++;
+            } else {
+                notRecommended++;
+            }
+        }
+        boolean failed = outcome.matches().isEmpty() && outcome.errorMessage() != null;
+        counters.record(recommended, notRecommended, outcome.costUsd(), failed);
+
+        if (failed) {
+            scanLog.warn("batch {}/{} FAILED after {}ms - {}", number, total, tookMs, outcome.errorMessage());
+        } else {
+            scanLog.info("batch {}/{} done  {}ms  cost=${}  recommended={} not-recommended={}{}",
+                    number, total, tookMs, String.format("%.4f", outcome.costUsd()), recommended, notRecommended,
+                    recommended + notRecommended < batchSize
+                            ? "  (" + (batchSize - recommended - notRecommended) + " job(s) got no verdict)"
+                            : "");
+        }
+        publishQuietly(listener, counters.snapshot());
+    }
+
+    /**
+     * A listener is UI plumbing, not part of the scan. If one throws, that must not be able to
+     * take down a batch that otherwise succeeded.
+     */
+    private static void publishQuietly(ScanProgressListener listener, ScanProgress progress) {
+        try {
+            listener.onProgress(progress);
+        } catch (RuntimeException e) {
+            log.debug("scan progress listener threw: {}", e.toString());
+        }
+    }
+
+    /** Thread-safe tallies shared by the in-flight batches. */
+    private static final class ScanCounters {
+        private final int batchesTotal;
+        private final int jobsTotal;
+        private final Instant startedAt;
+        private final AtomicInteger batchesDone = new AtomicInteger();
+        private final AtomicInteger recommended = new AtomicInteger();
+        private final AtomicInteger notRecommended = new AtomicInteger();
+        private final AtomicInteger failedBatches = new AtomicInteger();
+        private final AtomicLong costMicros = new AtomicLong();
+
+        ScanCounters(int batchesTotal, int jobsTotal, Instant startedAt) {
+            this.batchesTotal = batchesTotal;
+            this.jobsTotal = jobsTotal;
+            this.startedAt = startedAt;
+        }
+
+        void record(int recommendedDelta, int notRecommendedDelta, double costUsd, boolean failed) {
+            batchesDone.incrementAndGet();
+            recommended.addAndGet(recommendedDelta);
+            notRecommended.addAndGet(notRecommendedDelta);
+            if (failed) {
+                failedBatches.incrementAndGet();
+            }
+            // Accumulated in integer micros: repeatedly adding doubles from several threads would
+            // drift, and there is no atomic double add that is also cheap to read consistently.
+            costMicros.addAndGet(Math.round(costUsd * 1_000_000d));
+        }
+
+        ScanProgress snapshot() {
+            int rec = recommended.get();
+            int notRec = notRecommended.get();
+            return new ScanProgress(batchesDone.get(), batchesTotal, rec + notRec, jobsTotal, rec, notRec,
+                    failedBatches.get(), costMicros.get() / 1_000_000d, startedAt);
+        }
     }
 
     /** Runs one batch against the CLI and correlates the returned verdicts back to jobs by ref (the job id). */

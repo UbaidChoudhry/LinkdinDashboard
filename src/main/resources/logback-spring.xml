@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Routes AI-scan activity to its own file so it can be followed with `tail -f logs/ai-scan.log`
+  (or ./watch-scan.sh) without Spring's own output on top of it.
+
+  Everything else keeps Spring Boot's stock console behaviour - the two includes below ARE those
+  defaults, and dropping them would silently turn off normal logging.
+
+  The "jobdash.ai.scan" logger has additivity="false" on purpose: without it every scan line
+  would ALSO appear on the console and in logs/backend.log, which is exactly the noise this file
+  exists to avoid.
+-->
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+
+    <property name="AI_SCAN_LOG" value="${AI_SCAN_LOG:-logs/ai-scan.log}"/>
+
+    <appender name="AI_SCAN" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${AI_SCAN_LOG}</file>
+        <encoder>
+            <!-- Deliberately terse: this is meant to be read live in a terminal, so no thread
+                 names, no logger names, no stack-trace noise competing with the numbers. -->
+            <pattern>%d{HH:mm:ss} %-5level %msg%n</pattern>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>logs/ai-scan.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>10MB</maxFileSize>
+            <maxHistory>7</maxHistory>
+            <totalSizeCap>100MB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <logger name="jobdash.ai.scan" level="INFO" additivity="false">
+        <appender-ref ref="AI_SCAN"/>
+    </logger>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>

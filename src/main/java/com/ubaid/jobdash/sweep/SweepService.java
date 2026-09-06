@@ -104,7 +104,7 @@ public class SweepService {
         long runId = sweepRunRepository.create(clock.instant(), request.keywords(), location,
                 request.hours(), request.testMode(), pageCap);
         progressRegistry.start(runId, new SweepProgress(runId, "running", null, 0, 0, 0, 0, false,
-                0, 0, "linkedin"));
+                0, 0, "linkedin", null));
         return runId;
     }
 
@@ -256,7 +256,7 @@ public class SweepService {
                 acc.cardsSeen, acc.jobsNew, acc.saturated);
         progressRegistry.publish(runId, new SweepProgress(runId, status, currentShard,
                 acc.pagesFetched, acc.requestsMade, acc.cardsSeen, acc.jobsNew, acc.saturated,
-                0, 0, "linkedin"));
+                0, 0, "linkedin", null));
     }
 
     private static JobCardInsert toInsert(JobCard card) {

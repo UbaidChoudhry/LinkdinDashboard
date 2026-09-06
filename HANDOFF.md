@@ -544,3 +544,49 @@ the new process's registry. There was no way out but editing the database by han
 `interrupted`. This is safe precisely because of the single-process rule: nothing can still be
 running when the app has only just booted. **If you add another way for a run to outlive its
 process, this reaper is what keeps the app usable.**
+
+### Watching an AI scan (added 2026-09-08)
+
+The scan was the one phase with no feedback: status flipped to `scanning` and the UI sat there
+for however long it took. Two surfaces now report it, both fed from the same counters.
+
+**In the dashboard.** `ai/ScanProgress` snapshots ride on the existing SSE stream — `SweepProgress`
+carries a nullable `scan` field, and `RunController` already treated `scanning` as non-terminal so
+the stream stays open. `RunProgress.tsx` renders batches done/total, jobs scored/total, the
+running recommended/not split, failed batches, cost, and an elapsed clock.
+
+**Two details that would otherwise be silently wrong:**
+- **Progress is counted where a batch actually finishes, not in the drain loop.** `runBatches`
+  reads its futures in *submission* order, so with `ai.concurrency` batches in flight a fast
+  batch 3 would stay invisible behind a slow batch 1 and progress would move in lurches.
+- **Cost is accumulated as integer micros in an `AtomicLong`**, not by adding doubles from several
+  threads. There is no cheap atomic double-add, and repeated concurrent addition drifts.
+
+A listener is UI plumbing, so `publishQuietly` swallows anything it throws —
+`aListenerThatThrowsDoesNotBreakTheScan` guards that a rendering bug can never cost real scan
+results.
+
+**In a terminal.** `logback-spring.xml` routes the `jobdash.ai.scan` logger to `logs/ai-scan.log`
+with `additivity="false"`, so scan lines do **not** also land in the console or `backend.log` —
+that separation is the point of the file. Follow it with `tail -f logs/ai-scan.log`:
+
+```
+17:10:32 INFO  scan START run=13 resume="Backend - senior" scannable=4 cached=0 to-scan=4 batches=1 ...
+17:10:32 INFO  batch 1/1 START (4 jobs)
+17:10:52 INFO  batch 1/1 done  20504ms  cost=$0.0743  recommended=2 not-recommended=2
+17:10:52 INFO  scan DONE  run=13 scanned=4 recommended=2 not-recommended=2 skipped=0 ... elapsed=20s
+```
+
+**Never log the prompt or the resume through `scanLog`** — it carries the user's CV. Titles,
+counts, timings and verdicts only. `logback-spring.xml` also re-includes Spring Boot's
+`defaults.xml` and `console-appender.xml`; dropping those includes silently turns off normal
+logging everywhere else.
+
+**Granularity is bounded by `ai.batch-size`** (default 9): a 4-job scan is a single batch and so
+only ever reports 0/1 then 1/1. Lower the batch size for finer-grained progress, at the cost of
+more CLI invocations — each one carries the ~25k-token fixed overhead described above.
+
+**Deliberately not built: streaming Claude's own output.** It works (`--output-format stream-json
+--include-partial-messages`), but because we pass `--json-schema` the deltas are raw JSON typing
+itself out — `'{"results": [{"ref":"a","recommended":true,"reason":"An 8-year...'` — and with
+`ai.concurrency: 3` you get three interleaved JSON streams. Measured, then rejected as noise.

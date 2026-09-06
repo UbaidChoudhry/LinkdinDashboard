@@ -236,6 +236,10 @@ Lever's raw form) and owns the `--json-schema`. `ClaudeCliClient` runs the binar
 **stdin**, stdout and stderr drained on separate threads — and returns a sealed
 `ClaudeCliResult`. **Neither class ever throws**; an AI failure must not fail a run.
 
+`ScanProgress` / `ScanProgressListener` report the scan live: snapshots ride the existing SSE
+stream into `RunProgress.tsx`, and the `jobdash.ai.scan` logger writes `logs/ai-scan.log` for
+`tail -f` (configured in `logback-spring.xml`). See HANDOFF.md §9.
+
 ### `store/` — all SQL lives here
 One `@Repository` per table, all built on Spring's `JdbcClient` (hand-written SQL, no JPA — see
 HANDOFF.md §3 for why). If you need a new query, it goes in the matching repository, not

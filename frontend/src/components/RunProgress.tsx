@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ApiError, cancelRun } from "../api/client";
-import type { RunResponse } from "../types/api";
+import type { RunResponse, ScanProgress } from "../types/api";
 import { runStatusInfo } from "../utils/runStatus";
 
 interface RunProgressProps {
@@ -69,6 +69,8 @@ export function RunProgress({ run, streamError, onCancelled }: RunProgressProps)
         </div>
       </dl>
 
+      {run.scan && <ScanPanel scan={run.scan} live={run.status === "scanning"} />}
+
       {streamError && (
         <p className="form-error" role="alert">
           {streamError}
@@ -86,5 +88,69 @@ export function RunProgress({ run, streamError, onCancelled }: RunProgressProps)
         </button>
       )}
     </section>
+  );
+}
+
+/** Formats a duration in whole seconds as m:ss. */
+function elapsed(fromIso: string | null): string {
+  if (!fromIso) return "-";
+  const seconds = Math.max(0, Math.floor((Date.now() - new Date(fromIso).getTime()) / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+/**
+ * Live numbers for the AI scan. The scan is the one phase with no per-item feedback of its own -
+ * a batch takes seconds and several run at once - so without this the UI sits on "Scanning with
+ * AI" and looks hung.
+ */
+function ScanPanel({ scan, live }: { scan: ScanProgress; live: boolean }) {
+  // The elapsed clock has to advance between server updates, which only arrive when a batch
+  // finishes; without a local tick it would freeze for seconds at a time and read as a stall.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!live) return;
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [live]);
+
+  const pct = scan.jobsTotal > 0 ? Math.round((scan.jobsScanned / scan.jobsTotal) * 100) : 0;
+
+  return (
+    <div className="scan-panel">
+      <div className="scan-head">
+        <strong>AI scan</strong>
+        <span className="scan-counts">
+          batch {scan.batchesDone}/{scan.batchesTotal} · {scan.jobsScanned}/{scan.jobsTotal} jobs
+        </span>
+        {live && <span className="scan-elapsed">{elapsed(scan.startedAt)}</span>}
+      </div>
+
+      <div className="scan-bar" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
+        <div className="scan-bar-fill" style={{ width: `${pct}%` }} />
+      </div>
+
+      <dl className="scan-stats">
+        <div>
+          <dt>Recommended</dt>
+          <dd className="scan-rec">{scan.recommended}</dd>
+        </div>
+        <div>
+          <dt>Not recommended</dt>
+          <dd>{scan.notRecommended}</dd>
+        </div>
+        <div>
+          <dt>Failed batches</dt>
+          <dd className={scan.failedBatches > 0 ? "scan-fail" : undefined}>{scan.failedBatches}</dd>
+        </div>
+        <div>
+          <dt>Cost</dt>
+          <dd>${scan.costUsd.toFixed(4)}</dd>
+        </div>
+      </dl>
+
+      <p className="scan-hint">
+        Live detail: <code>tail -f logs/ai-scan.log</code>
+      </p>
+    </div>
   );
 }

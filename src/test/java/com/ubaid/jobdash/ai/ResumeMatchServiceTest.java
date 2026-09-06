@@ -17,12 +17,14 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * Exercises {@link ResumeMatchService} against a real (temp-file) database via
@@ -251,5 +253,93 @@ class ResumeMatchServiceTest extends AbstractStoreTest {
 
         assertThat(cli.invocationCount()).isEqualTo(3); // ceil(25 / 9)
         assertThat(result.scanned()).isEqualTo(25);
+    }
+
+    // ---- live scan progress ------------------------------------------------------------------
+
+    @Test
+    void reportsProgressAsEachBatchCompletes() {
+        long resumeId = insertResume();
+        long runId = newRun();
+        for (int i = 0; i < 20; i++) {
+            insertJob(runId, 100 + i, "Backend role requiring Java " + i);
+        }
+
+        FakeCliClient cli = new FakeCliClient(refs -> new ClaudeCliResult.Ok(
+                refs.stream().map(r -> new MatchVerdict(r, Long.parseLong(r) % 2 == 0, "because")).toList(),
+                0.02, 100));
+        // batch size 5 over 20 jobs = 4 batches.
+        ResumeMatchService service = service(props(5, 1), cli);
+
+        List<ScanProgress> seen = Collections.synchronizedList(new ArrayList<>());
+        ResumeMatchService.ScanResult result = service.scan(runId, resumeId, () -> false, seen::add);
+
+        // One snapshot up front carrying the totals, then one per finished batch.
+        assertThat(seen).hasSize(5);
+        assertThat(seen.get(0).batchesTotal()).isEqualTo(4);
+        assertThat(seen.get(0).jobsTotal()).isEqualTo(20);
+        assertThat(seen.get(0).batchesDone()).isZero();
+
+        ScanProgress last = seen.get(seen.size() - 1);
+        assertThat(last.batchesDone()).isEqualTo(4);
+        assertThat(last.jobsScanned()).isEqualTo(20);
+        assertThat(last.recommended() + last.notRecommended()).isEqualTo(20);
+        assertThat(last.recommended()).isEqualTo(result.recommended());
+        assertThat(last.notRecommended()).isEqualTo(result.notRecommended());
+        assertThat(last.costUsd()).isEqualTo(0.08, within(1e-9));
+        assertThat(last.startedAt()).isNotNull();
+
+        // batchesDone must never go backwards - the UI renders it as forward progress.
+        for (int i = 1; i < seen.size(); i++) {
+            assertThat(seen.get(i).batchesDone()).isGreaterThanOrEqualTo(seen.get(i - 1).batchesDone());
+        }
+    }
+
+    @Test
+    void countsAFailedBatchInProgressWithoutLosingTheOthers() {
+        long resumeId = insertResume();
+        long runId = newRun();
+        List<Long> ids = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            ids.add(insertJob(runId, 200 + i, "Backend role " + i));
+        }
+        // refs are the surrogate job_id, not the source id, so capture the real one to key on.
+        String failingRef = String.valueOf(ids.get(0));
+
+        // The batch containing the first job fails; the other must still be counted.
+        FakeCliClient cli = new FakeCliClient(refs -> refs.contains(failingRef)
+                ? new ClaudeCliResult.Failed("boom", 1)
+                : new ClaudeCliResult.Ok(refs.stream().map(r -> new MatchVerdict(r, true, "fits")).toList(), 0.01, 50));
+        ResumeMatchService service = service(props(5, 1), cli);
+
+        List<ScanProgress> seen = Collections.synchronizedList(new ArrayList<>());
+        service.scan(runId, resumeId, () -> false, seen::add);
+
+        ScanProgress last = seen.get(seen.size() - 1);
+        assertThat(last.failedBatches()).isEqualTo(1);
+        assertThat(last.batchesDone()).isEqualTo(2);
+        assertThat(last.jobsScanned()).as("the surviving batch's verdicts still count").isEqualTo(5);
+    }
+
+    /**
+     * A listener is UI plumbing. If it throws, the scan itself must still complete and persist -
+     * otherwise a rendering bug in the dashboard could silently cost real scan results.
+     */
+    @Test
+    void aListenerThatThrowsDoesNotBreakTheScan() {
+        long resumeId = insertResume();
+        long runId = newRun();
+        long jobId = insertJob(runId, 300, "Backend role requiring Java.");
+
+        FakeCliClient cli = new FakeCliClient(refs ->
+                new ClaudeCliResult.Ok(refs.stream().map(r -> new MatchVerdict(r, true, "fits")).toList(), 0.01, 50));
+        ResumeMatchService service = service(props(9, 1), cli);
+
+        ResumeMatchService.ScanResult result = service.scan(runId, resumeId, () -> false, p -> {
+            throw new IllegalStateException("listener blew up");
+        });
+
+        assertThat(result.scanned()).isEqualTo(1);
+        assertThat(aiMatchRepository.findByJobIds(List.of(jobId), resumeId)).hasSize(1);
     }
 }

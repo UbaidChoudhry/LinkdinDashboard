@@ -71,7 +71,7 @@ public class RunOrchestrator {
                 String.join(",", sources), resumeId);
         String sourcesText = String.join(",", sources);
         progressRegistry.start(runId, new SweepProgress(runId, "running", null, 0, 0, 0, 0, false,
-                0, 0, sourcesText));
+                0, 0, sourcesText, null));
 
         Thread thread = Thread.ofVirtual().name("ats-run-" + runId)
                 .unstarted(() -> executeAtsRun(runId, sweepRequest, sources, resumeId));
@@ -100,11 +100,11 @@ public class RunOrchestrator {
 
         sweepRunRepository.finish(runId, clock.instant(), status);
         SweepProgress finalProgress = progressRegistry.progress(runId).orElse(
-                new SweepProgress(runId, status, null, 0, 0, 0, 0, false, 0, 0, String.join(",", sources)));
+                new SweepProgress(runId, status, null, 0, 0, 0, 0, false, 0, 0, String.join(",", sources), null));
         progressRegistry.publish(runId, new SweepProgress(runId, status, finalProgress.currentShard(),
                 finalProgress.pagesFetched(), finalProgress.requestsMade(), finalProgress.cardsSeen(),
                 finalProgress.jobsNew(), finalProgress.saturated(), finalProgress.companiesDone(),
-                finalProgress.companiesTotal(), finalProgress.sources()));
+                finalProgress.companiesTotal(), finalProgress.sources(), finalProgress.scan()));
         progressRegistry.finish(runId);
     }
 
@@ -125,7 +125,13 @@ public class RunOrchestrator {
 
         progressRegistry.publish(runId, scanningProgress(runId, sources));
         try {
-            resumeMatchService.scan(runId, effectiveResumeId, () -> cancelledNow(cancelFlag));
+            // Republish the whole snapshot with each scan update attached, so the existing SSE
+            // stream carries live scan numbers without needing a second channel. The listener is
+            // called from the scan's worker threads; publish() is on a ConcurrentHashMap, and
+            // ResumeMatchService swallows anything this throws.
+            resumeMatchService.scan(runId, effectiveResumeId, () -> cancelledNow(cancelFlag),
+                    scanProgress -> progressRegistry.progress(runId)
+                            .ifPresent(current -> progressRegistry.publish(runId, current.withScan(scanProgress))));
         } catch (Exception e) {
             log.warn("resume scan for run {} threw unexpectedly (ResumeMatchService should never throw): {}",
                     runId, e.toString());
@@ -135,10 +141,10 @@ public class RunOrchestrator {
 
     private SweepProgress scanningProgress(long runId, List<String> sources) {
         SweepProgress current = progressRegistry.progress(runId).orElse(
-                new SweepProgress(runId, "scanning", null, 0, 0, 0, 0, false, 0, 0, String.join(",", sources)));
+                new SweepProgress(runId, "scanning", null, 0, 0, 0, 0, false, 0, 0, String.join(",", sources), null));
         return new SweepProgress(runId, "scanning", current.currentShard(), current.pagesFetched(),
                 current.requestsMade(), current.cardsSeen(), current.jobsNew(), current.saturated(),
-                current.companiesDone(), current.companiesTotal(), current.sources());
+                current.companiesDone(), current.companiesTotal(), current.sources(), current.scan());
     }
 
     private static boolean cancelledNow(AtomicBoolean cancelFlag) {

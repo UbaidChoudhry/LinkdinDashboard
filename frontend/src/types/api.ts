@@ -73,6 +73,21 @@ export interface RunResponse {
   /** Companies visited so far (ATS runs); null for LinkedIn runs. */
   companiesDone?: number | null;
   companiesTotal?: number | null;
+  /** Live AI-scan progress while status is "scanning"; null before the scan phase. */
+  scan?: ScanProgress | null;
+}
+
+/** Live progress of the AI match scan. Mirrors ai/ScanProgress.java. */
+export interface ScanProgress {
+  batchesDone: number;
+  batchesTotal: number;
+  jobsScanned: number;
+  jobsTotal: number;
+  recommended: number;
+  notRecommended: number;
+  failedBatches: number;
+  costUsd: number;
+  startedAt: string | null;
 }
 
 export interface CreateRunRequest {

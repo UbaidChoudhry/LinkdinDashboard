@@ -172,7 +172,7 @@ public class AtsSweepService {
     private void publish(long runId, String status, String sources, int companiesDone, int companiesTotal, Counters acc) {
         sweepRunRepository.updateAtsProgress(runId, companiesDone, companiesTotal, acc.requestsMade, acc.cardsSeen, acc.jobsNew);
         progressRegistry.publish(runId, new SweepProgress(runId, status, null, 0, acc.requestsMade,
-                acc.cardsSeen, acc.jobsNew, false, companiesDone, companiesTotal, sources));
+                acc.cardsSeen, acc.jobsNew, false, companiesDone, companiesTotal, sources, null));
     }
 
     private static JobCardInsert toInsert(SourcedJob job) {

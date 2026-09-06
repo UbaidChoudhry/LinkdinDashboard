@@ -309,6 +309,25 @@ The scan runs automatically as the last step of any non-LinkedIn run, and the **
 in the Results tab re-runs it (after switching resumes, say). Results are cached per
 (job, resume), so re-scanning already-scored jobs costs nothing.
 
+**Watching a scan.** The run panel shows live numbers while it works — batches done, jobs
+scored, the running recommended/not split, failed batches, cost and elapsed time. For the full
+detail in a terminal:
+
+```bash
+tail -f logs/ai-scan.log
+```
+
+```
+17:10:32 INFO  scan START run=13 resume="Backend - senior" scannable=4 cached=0 to-scan=4 batches=1
+17:10:32 INFO  batch 1/1 START (4 jobs)
+17:10:52 INFO  batch 1/1 done  20504ms  cost=$0.0743  recommended=2 not-recommended=2
+17:10:52 INFO  scan DONE  run=13 scanned=4 recommended=2 not-recommended=2 skipped=0 elapsed=20s
+```
+
+That file gets scan activity only — Spring's own output stays in `logs/backend.log`. Progress is
+reported per batch, so with the default `ai.batch-size: 9` a small scan is a single batch and
+jumps straight from 0 to done; lower the batch size if you want finer movement.
+
 It shells out to the `claude` binary on your PATH. If it isn't installed, `./run.sh` says so and
 everything else still works — you just don't get scored results. Set `CLAUDE_CLI_PATH` if it
 lives somewhere unusual.
