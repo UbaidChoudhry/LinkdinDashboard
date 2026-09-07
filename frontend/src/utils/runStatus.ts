@@ -75,3 +75,18 @@ export function runStatusInfo(status: string | null | undefined): RunStatusInfo 
     }
   );
 }
+
+/**
+ * Statuses that mean the run is still working. `scanning` is deliberately included: the AI scan
+ * is the last phase of a run, and the server keeps the SSE stream open through it.
+ *
+ * Treating anything that isn't `"running"` as finished is the bug this exists to prevent - it
+ * made the browser hang up the moment the scan began, so the scan's progress never arrived and
+ * the page had to be reloaded by hand to see any result.
+ */
+export const IN_FLIGHT_STATUSES: ReadonlySet<string> = new Set(["running", "scanning"]);
+
+/** True while a run is still working (collecting or scanning). */
+export function isRunInFlight(status: string | null | undefined): boolean {
+  return status != null && IN_FLIGHT_STATUSES.has(status);
+}

@@ -72,7 +72,7 @@ public class RunController {
     @PostMapping("/api/runs")
     public ResponseEntity<RunIdResponse> createRun(@RequestBody(required = false) CreateRunRequest body) {
         CreateRunRequest request = body == null
-                ? new CreateRunRequest(null, null, null, null, null, null, null, null, null)
+                ? new CreateRunRequest(null, null, null, null, null, null, null, null, null, null)
                 : body;
 
         if (request.keywords() == null || request.keywords().isBlank()) {
@@ -109,7 +109,8 @@ public class RunController {
                 request.testModeOrDefault(), request.useShardsOrDefault(), request.shards(),
                 request.pageCap());
 
-        long runId = runOrchestrator.startRun(sweepRunRequest, sources, request.resumeId());
+        long runId = runOrchestrator.startRun(sweepRunRequest, sources, request.resumeId(),
+                request.usOnlyOrDefault());
         return ResponseEntity.status(HttpStatus.CREATED).body(new RunIdResponse(runId));
     }
 

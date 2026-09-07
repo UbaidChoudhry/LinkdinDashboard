@@ -20,6 +20,9 @@ import java.util.List;
  *                   {@code "lever"}, {@code "workday"}. Null/empty means {@code ["linkedin"]},
  *                   preserving today's behaviour for any existing caller. {@code "linkedin"}
  *                   cannot be combined with any other source (see {@code RunController}).
+ * @param usOnly     restricts ATS results to postings identifiably in the United States.
+ *                   <b>Defaults to true</b> when absent - the boards are worldwide, so the
+ *                   useful default for this tool is US-only; pass false explicitly to widen it.
  * @param resumeId   an explicit resume to scan collected jobs against; null falls back to the
  *                   default resume, or skips the AI scan entirely if none exists. Ignored for a
  *                   LinkedIn-only run (LinkedIn's guest search carries no job description).
@@ -33,7 +36,8 @@ public record CreateRunRequest(
         Boolean useShards,
         List<String> shards,
         List<String> sources,
-        Long resumeId
+        Long resumeId,
+        Boolean usOnly
 ) {
 
     public boolean testModeOrDefault() {
@@ -47,5 +51,10 @@ public record CreateRunRequest(
     /** {@code sources}, or {@code ["linkedin"]} when null/empty. */
     public List<String> sourcesOrDefault() {
         return sources == null || sources.isEmpty() ? List.of("linkedin") : sources;
+    }
+
+    /** Absent means true: US-only is the default, and must be opted OUT of explicitly. */
+    public boolean usOnlyOrDefault() {
+        return !Boolean.FALSE.equals(usOnly);
     }
 }

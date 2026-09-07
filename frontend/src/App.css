@@ -455,6 +455,16 @@ td {
   text-overflow: ellipsis;
 }
 
+/* The link keeps the old single-line ellipsis behaviour; the AI reason below it wraps. Without
+   this the whole cell would either wrap the title too, or refuse to wrap the reason. */
+.col-title a {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+
 .col-company {
   max-width: clamp(160px, 12vw, 320px);
   overflow: hidden;
@@ -1185,14 +1195,25 @@ tr.source-dead {
   vertical-align: middle;
 }
 
-/* Clamped to two lines: the reason is a full sentence and an unclamped cell would make row
-   heights wildly uneven. The full text stays available via the title attribute. */
+/*
+  Clamped to two lines: the reason is a full sentence and an unclamped cell would make row heights
+  wildly uneven. The full text stays available via the title attribute.
+
+  `white-space: normal` is load-bearing and must not be removed. Every `.job-table td` is
+  `white-space: nowrap` (so the other columns stay on one line), and this span inherits that -
+  without the override the sentence renders as one unbroken line that runs straight out of the
+  column instead of wrapping. `overflow-wrap: anywhere` covers the long unbroken tokens that turn
+  up in job descriptions (URLs, "C++/Python/Kubernetes" runs).
+*/
 .ai-reason {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  max-width: 100%;
   margin-top: 3px;
   font-size: 12px;
   line-height: 1.4;

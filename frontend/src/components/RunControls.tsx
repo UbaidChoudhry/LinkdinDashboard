@@ -26,6 +26,8 @@ export function RunControls({ disabled, onRunStarted, resumeToken = 0 }: RunCont
   const [testMode, setTestMode] = useState(false);
   const [pageCap, setPageCap] = useState<string>("");
   const [useShards, setUseShards] = useState(false);
+  // ATS boards are worldwide; US-only is the useful default and must be opted out of.
+  const [usOnly, setUsOnly] = useState(true);
   const [shardWarningAck, setShardWarningAck] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -85,6 +87,9 @@ export function RunControls({ disabled, onRunStarted, resumeToken = 0 }: RunCont
     if (!linkedInOnly && resumeId != null) {
       body.resumeId = resumeId;
     }
+    if (!linkedInOnly) {
+      body.usOnly = usOnly;
+    }
     if (pageCap.trim()) {
       const parsed = Number(pageCap);
       if (!Number.isNaN(parsed)) {
@@ -132,6 +137,19 @@ export function RunControls({ disabled, onRunStarted, resumeToken = 0 }: RunCont
               ))
             )}
           </select>
+        </div>
+      )}
+
+      {!linkedInOnly && (
+        <div className="field-row checkbox-row">
+          <input
+            id="rc-usonly"
+            type="checkbox"
+            checked={usOnly}
+            onChange={(e) => setUsOnly(e.target.checked)}
+            disabled={disabled || submitting}
+          />
+          <label htmlFor="rc-usonly">United States only (company boards list jobs worldwide)</label>
         </div>
       )}
 

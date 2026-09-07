@@ -590,3 +590,91 @@ more CLI invocations — each one carries the ~25k-token fixed overhead describe
 --include-partial-messages`), but because we pass `--json-schema` the deltas are raw JSON typing
 itself out — `'{"results": [{"ref":"a","recommended":true,"reason":"An 8-year...'` — and with
 `ai.concurrency: 3` you get three interleaved JSON streams. Measured, then rejected as noise.
+
+### Three fixes from real use (2026-09-08, later)
+
+**1. The page went dead during the AI scan.** The server was streaming scan progress correctly;
+the *browser* was hanging up. `useRunStream` closed the `EventSource` on
+`data.status !== "running"`, and `scanning` is not `"running"` — so the client disconnected at the
+first scan event and nothing arrived until a manual reload. `App.tsx` had the same shape and so
+fired its "run finished" refresh when the scan *started*, loading the results list before a single
+verdict existed and then never refreshing again.
+
+Both now go through `isRunInFlight()` in `utils/runStatus.ts`, which owns the one definition of
+"still working" (`running` + `scanning`). **Never compare a status to `"running"` directly** —
+that is what broke, in three separate places, and a fourth (`RunProgress`'s cancel button) was
+about to.
+
+**2. Foreign postings were flooding the results.** Two independent causes:
+- **Workday applied no location filtering at all.** It filters keywords server-side and nothing
+  else, and `LocalFilter` was only ever wired into Greenhouse and Lever. The fix is applied
+  centrally in `AtsSweepService`, not inside the individual sources, so it covers every source
+  including any added later.
+- **`matchesLocation` was a naive substring**, so a request for `"United States"` failed to match
+  `"New York, NY"` — it would have discarded nearly every genuine US posting while claiming to
+  filter for them.
+
+`source/UsLocation` now decides this, and **order matters**: a named foreign country is rejected
+*before* any US signal is considered, because two-letter country codes collide with USPS state
+codes — `DE` is Germany and Delaware, `CA` is Canada and California, `IN` is India and Indiana.
+Checking for a state first classifies Munich and Bangalore as American.
+
+**Validate this class against real data, not invented strings.** Running it over the 61 distinct
+location strings actually in `job_listing` caught four false negatives the hand-written tests
+missed: `"California - Remote"` and `"Virginia - Mclean"` (single-word state names with no comma
+boundary, which `UsState.fromLocation` does not find), `"US, Remote"` (a padded-space check misses
+`us,`), and bare `"San Francisco"`. Those exact strings are now pinned in `UsLocationTest`.
+
+Two documented trade-offs: a short list of major US cities is consulted last, which accepts that
+San Jose also exists in Costa Rica; and Workday's `"11 Locations"` multi-site placeholder names no
+country, so a *hard* filter excludes it. On the user's real data the filter removed **147 of 228**
+collected ATS postings (64%).
+
+`usOnly` defaults to **true** and is opt-out (`usOnlyOrDefault()`), with a checkbox on the run
+form. Note that a company returning only foreign roles is still recorded `active` — liveness is
+whether the board answered, not how many postings survived our filters.
+
+**3. The AI reason ran out of its column.** Every `.job-table td` is `white-space: nowrap` so the
+other columns stay on one line, and the reason `<span>` inherited it, rendering one unbroken line.
+`.ai-reason` now sets `white-space: normal` plus `overflow-wrap: anywhere`, with the title link
+keeping its own single-line ellipsis. Reasons run to ~300 characters, so the two-line clamp still
+bites — the full text is in the `title` attribute on hover.
+
+### Where the scan's "cost" number comes from (2026-09-08)
+
+**We do not calculate it.** `ClaudeCliClient` reads `total_cost_usd` verbatim out of the CLI's own
+JSON result for each invocation (`ClaudeCliClient.parse`), and `ResumeMatchService` sums those
+per-batch values — twice, on purpose: `ScanResult.totalCostUsd` for the final summary, and
+`ScanCounters.costMicros` for live progress. The live one accumulates **integer micros in an
+`AtomicLong`**, because there is no cheap atomic double-add and repeated concurrent addition of
+doubles drifts.
+
+Measured on this machine, and the reason `ai.batch-size` matters more than anything else:
+
+| Batch | Jobs | Cost |
+|---|---|---|
+| trivial 2-job probe | 2 | $0.1007 |
+| real scan | 9 | $0.1315 |
+| real scan | 9 | $0.1268 |
+| real scan | 9 | $0.1466 |
+
+A 2-job call and a 9-job call cost almost the same, because the per-invocation overhead dominates:
+that probe reported **24,391 `cache_creation_input_tokens`** against 2 input and 205 output tokens.
+The job descriptions are a rounding error next to the fixed cost of standing the session up.
+
+So 27 jobs in 3 batches came to **$0.40**. One job per call would have been 27 × ~$0.10 ≈ **$2.70** —
+roughly 7× more for the same work. Raising `ai.batch-size` lowers cost and reduces progress
+granularity; lowering it does the reverse.
+
+Note this figure is what the CLI reports for the tokens used, not necessarily an incremental charge:
+these runs go through the user's Claude subscription rather than a metered API key.
+
+### A second US check at scan time (`ai.us-only`, default true)
+
+`AtsSweepService` filters non-US postings at collection, but that only covers rows arriving from a
+run with `usOnly` on. Anything collected before the filter existed, or by a run with it off, would
+still have been sent to Claude and surfaced as a match. `ResumeMatchService` now re-checks
+`UsLocation.isUnitedStates` immediately before batching, logs what it drops, and
+`nonUsJobsAreNeverSentToTheCliWhenUsOnlyIsOn` asserts on the **CLI invocation count** — proving the
+posting never left the machine, not merely that no verdict was stored. Verified live by planting an
+`"Israel, Yokneam"` row and watching the scan skip it.

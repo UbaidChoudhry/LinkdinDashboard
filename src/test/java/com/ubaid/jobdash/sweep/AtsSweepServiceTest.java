@@ -88,7 +88,7 @@ class AtsSweepServiceTest extends AbstractStoreTest {
         long runId = newRun();
 
         // No company in ats_company has this ats name - findForRun legitimately returns empty.
-        String status = service.run(runId, new AtsRunRequest("engineer", "remote", 24, List.of("nonexistent-ats")),
+        String status = service.run(runId, new AtsRunRequest("engineer", "remote", 24, List.of("nonexistent-ats"), false),
                 NEVER_CANCELLED);
 
         assertThat(status).isEqualTo("no_sources");
@@ -107,7 +107,7 @@ class AtsSweepServiceTest extends AbstractStoreTest {
         AtsSweepService service = newService(greenhouse);
         long runId = newRun();
 
-        String status = service.run(runId, new AtsRunRequest("engineer", "remote", 24, List.of("greenhouse")),
+        String status = service.run(runId, new AtsRunRequest("engineer", "remote", 24, List.of("greenhouse"), false),
                 NEVER_CANCELLED);
 
         assertThat(status).isEqualTo("ok");
@@ -131,7 +131,7 @@ class AtsSweepServiceTest extends AbstractStoreTest {
         AtsSweepService service = newService(greenhouse);
         long runId = newRun();
 
-        String status = service.run(runId, new AtsRunRequest("engineer", "remote", 24, List.of("greenhouse")),
+        String status = service.run(runId, new AtsRunRequest("engineer", "remote", 24, List.of("greenhouse"), false),
                 NEVER_CANCELLED);
 
         assertThat(status).isEqualTo("ok");
@@ -151,7 +151,7 @@ class AtsSweepServiceTest extends AbstractStoreTest {
         AtsSweepService service = newService(lever);
         long runId = newRun();
 
-        String status = service.run(runId, new AtsRunRequest("engineer", "remote", 24, List.of("lever")),
+        String status = service.run(runId, new AtsRunRequest("engineer", "remote", 24, List.of("lever"), false),
                 NEVER_CANCELLED);
 
         assertThat(status).isEqualTo("ok");
@@ -170,7 +170,7 @@ class AtsSweepServiceTest extends AbstractStoreTest {
         AtsSweepService service = newService(workday);
         long runId = newRun();
 
-        String status = service.run(runId, new AtsRunRequest("engineer", "remote", 24, List.of("workday")),
+        String status = service.run(runId, new AtsRunRequest("engineer", "remote", 24, List.of("workday"), false),
                 NEVER_CANCELLED);
 
         assertThat(status).isEqualTo("ok");
@@ -188,12 +188,80 @@ class AtsSweepServiceTest extends AbstractStoreTest {
         AtsSweepService service = newService(workday);
         long runId = newRun();
 
-        String status = service.run(runId, new AtsRunRequest("engineer", "remote", 24, List.of("workday")),
+        String status = service.run(runId, new AtsRunRequest("engineer", "remote", 24, List.of("workday"), false),
                 NEVER_CANCELLED);
 
         assertThat(status).isEqualTo("ok");
         assertThat(atsCompanyRepository.findById(companyId).orElseThrow().consecutiveFailures()).isEqualTo(1);
         assertThat(workday.queriesSeen).isEmpty(); // never fetched - failed before any request
+    }
+
+    /**
+     * Workday does no local location filtering of its own - it filters keywords server-side and
+     * nothing else - so a US-only filter living inside the individual sources would have missed
+     * it entirely. That is the exact route foreign postings took into the database, so this
+     * asserts the filter is applied centrally and therefore covers Workday too.
+     */
+    @Test
+    void usOnlyDropsForeignPostingsFromWorkday() {
+        addCompany("workday", "acme", "Acme", "acme.wd5.myworkdayjobs.com", "AcmeCareers");
+
+        SourcedJob us = new SourcedJob("workday", "JR1", "Software Engineer", "Acme", "Austin, TX",
+                Instant.parse("2026-09-01T00:00:00Z"), "https://example.com/1", null, "desc");
+        SourcedJob israel = new SourcedJob("workday", "JR2", "Software Engineer, SONiC", "Acme", "Israel, Yokneam",
+                Instant.parse("2026-09-01T00:00:00Z"), "https://example.com/2", null, "desc");
+        SourcedJob india = new SourcedJob("workday", "JR3", "Software Engineer", "Acme", "India, Bangalore",
+                Instant.parse("2026-09-01T00:00:00Z"), "https://example.com/3", null, "desc");
+
+        FakeJobSource workday = new FakeJobSource("workday",
+                new SourceFetchResult.Ok(List.of(us, israel, india), 1));
+        AtsSweepService service = newService(workday);
+        long runId = newRun();
+
+        String status = service.run(runId, new AtsRunRequest("engineer", "", 24, List.of("workday"), true),
+                NEVER_CANCELLED);
+
+        assertThat(status).isEqualTo("ok");
+        List<String> storedIds = client.sql("select source_job_id from job_listing where last_seen_run_id = :r")
+                .param("r", runId)
+                .query(String.class)
+                .list();
+        assertThat(storedIds).containsExactly("JR1");
+    }
+
+    @Test
+    void usOnlyOffKeepsEverySourcedPosting() {
+        addCompany("workday", "acme", "Acme", "acme.wd5.myworkdayjobs.com", "AcmeCareers");
+        SourcedJob us = new SourcedJob("workday", "JR1", "Engineer", "Acme", "Austin, TX",
+                Instant.parse("2026-09-01T00:00:00Z"), "https://example.com/1", null, "desc");
+        SourcedJob abroad = new SourcedJob("workday", "JR2", "Engineer", "Acme", "Israel, Yokneam",
+                Instant.parse("2026-09-01T00:00:00Z"), "https://example.com/2", null, "desc");
+
+        FakeJobSource workday = new FakeJobSource("workday", new SourceFetchResult.Ok(List.of(us, abroad), 1));
+        AtsSweepService service = newService(workday);
+        long runId = newRun();
+
+        service.run(runId, new AtsRunRequest("engineer", "", 24, List.of("workday"), false), NEVER_CANCELLED);
+
+        assertThat(client.sql("select count(*) from job_listing where last_seen_run_id = :r")
+                .param("r", runId).query(Integer.class).single()).isEqualTo(2);
+    }
+
+    /** A board that answers with only foreign roles is alive, not dead - liveness is not yield. */
+    @Test
+    void aCompanyWhosePostingsAreAllFilteredOutIsStillMarkedActive() {
+        long companyId = addCompany("workday", "acme", "Acme", "acme.wd5.myworkdayjobs.com", "AcmeCareers");
+        SourcedJob abroad = new SourcedJob("workday", "JR2", "Engineer", "Acme", "Israel, Yokneam",
+                Instant.parse("2026-09-01T00:00:00Z"), "https://example.com/2", null, "desc");
+
+        FakeJobSource workday = new FakeJobSource("workday", new SourceFetchResult.Ok(List.of(abroad), 1));
+        AtsSweepService service = newService(workday);
+
+        service.run(newRun(), new AtsRunRequest("engineer", "", 24, List.of("workday"), true), NEVER_CANCELLED);
+
+        var company = atsCompanyRepository.findById(companyId).orElseThrow();
+        assertThat(company.status()).isEqualTo("active");
+        assertThat(company.consecutiveFailures()).isZero();
     }
 
     // --- helpers ----------------------------------------------------------------------------

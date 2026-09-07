@@ -47,7 +47,11 @@ class ResumeMatchServiceTest extends AbstractStoreTest {
     }
 
     private AiProperties props(int batchSize, int concurrency) {
-        return new AiProperties(true, "unused", "sonnet", batchSize, concurrency, Duration.ofSeconds(10), 6000);
+        return props(batchSize, concurrency, false);
+    }
+
+    private AiProperties props(int batchSize, int concurrency, boolean usOnly) {
+        return new AiProperties(true, "unused", "sonnet", batchSize, concurrency, Duration.ofSeconds(10), 6000, usOnly);
     }
 
     private ResumeMatchService service(AiProperties properties, ClaudeCliClient cli) {
@@ -63,8 +67,12 @@ class ResumeMatchServiceTest extends AbstractStoreTest {
 
     /** Inserts a job on {@code runId} with the given description, and marks it filter-pass / untriaged. */
     private long insertJob(long runId, long sourceJobId, String description) {
+        return insertJob(runId, sourceJobId, description, "Remote");
+    }
+
+    private long insertJob(long runId, long sourceJobId, String description, String location) {
         JobCardInsert card = new JobCardInsert("lever", String.valueOf(sourceJobId), "Backend Engineer",
-                "Acme Corp", "Remote", Instant.parse("2026-08-27T00:00:00Z"),
+                "Acme Corp", location, Instant.parse("2026-08-27T00:00:00Z"),
                 "https://acme.com/jobs/" + sourceJobId, "https://acme.com", description);
         jobListingRepository.upsertAll(List.of(card), runId, Instant.now());
         long jobId = client.sql("select job_id from job_listing where source_job_id = :id")
@@ -87,7 +95,7 @@ class ResumeMatchServiceTest extends AbstractStoreTest {
         private final Function<List<String>, ClaudeCliResult> responder;
 
         FakeCliClient(Function<List<String>, ClaudeCliResult> responder) {
-            super(new AiProperties(true, "unused", "sonnet", 9, 3, Duration.ofSeconds(10), 6000),
+            super(new AiProperties(true, "unused", "sonnet", 9, 3, Duration.ofSeconds(10), 6000, false),
                     JsonMapper.builder().build());
             this.responder = responder;
         }
@@ -341,5 +349,70 @@ class ResumeMatchServiceTest extends AbstractStoreTest {
 
         assertThat(result.scanned()).isEqualTo(1);
         assertThat(aiMatchRepository.findByJobIds(List.of(jobId), resumeId)).hasSize(1);
+    }
+
+    // ---- scan-time location guard ------------------------------------------------------------
+
+    /**
+     * Deliberately duplicates the collection-time filter in {@code AtsSweepService}. That one only
+     * covers rows arriving from a run with {@code usOnly} on; a job collected before the filter
+     * existed, or by a run with it off, would otherwise still be sent to Claude and surface as a
+     * match. Asserting on the CLI invocation count is the point - it proves the job never left the
+     * machine, not merely that no verdict was stored.
+     */
+    @Test
+    void nonUsJobsAreNeverSentToTheCliWhenUsOnlyIsOn() {
+        long resumeId = insertResume();
+        long runId = newRun();
+        long austin = insertJob(runId, 400, "Backend role requiring Java.", "US - Austin, TX");
+        insertJob(runId, 401, "Backend role requiring Java.", "Israel, Yokneam");
+        insertJob(runId, 402, "Backend role requiring Java.", "India - Bangalore");
+        insertJob(runId, 403, "Backend role requiring Java.", "11 Locations");
+
+        FakeCliClient cli = new FakeCliClient(refs ->
+                new ClaudeCliResult.Ok(refs.stream().map(r -> new MatchVerdict(r, true, "fits")).toList(), 0.01, 50));
+        ResumeMatchService service = service(props(9, 1, true), cli);
+
+        ResumeMatchService.ScanResult result = service.scan(runId, resumeId, () -> false);
+
+        assertThat(cli.invocationCount()).isEqualTo(1);
+        assertThat(cli.refsPerInvocation().get(0))
+                .as("only the US posting may reach the CLI")
+                .containsExactly(String.valueOf(austin));
+        assertThat(result.scanned()).isEqualTo(1);
+    }
+
+    @Test
+    void everyJobIsScannedWhenUsOnlyIsOff() {
+        long resumeId = insertResume();
+        long runId = newRun();
+        insertJob(runId, 500, "Backend role.", "US - Austin, TX");
+        insertJob(runId, 501, "Backend role.", "Israel, Yokneam");
+
+        FakeCliClient cli = new FakeCliClient(refs ->
+                new ClaudeCliResult.Ok(refs.stream().map(r -> new MatchVerdict(r, true, "fits")).toList(), 0.01, 50));
+        ResumeMatchService service = service(props(9, 1, false), cli);
+
+        ResumeMatchService.ScanResult result = service.scan(runId, resumeId, () -> false);
+
+        assertThat(result.scanned()).isEqualTo(2);
+    }
+
+    /** A scan where every job is filtered out must be a clean no-op, not an error or a CLI call. */
+    @Test
+    void aRunWithNoUsJobsMakesNoCliCallsAtAll() {
+        long resumeId = insertResume();
+        long runId = newRun();
+        insertJob(runId, 600, "Backend role.", "Israel, Yokneam");
+        insertJob(runId, 601, "Backend role.", "Germany - Munich");
+
+        FakeCliClient cli = new FakeCliClient(refs -> new ClaudeCliResult.Ok(List.of(), 0.0, 10));
+        ResumeMatchService service = service(props(9, 1, true), cli);
+
+        ResumeMatchService.ScanResult result = service.scan(runId, resumeId, () -> false);
+
+        assertThat(cli.invocationCount()).isZero();
+        assertThat(result.scanned()).isZero();
+        assertThat(result.errorMessage()).isNull();
     }
 }

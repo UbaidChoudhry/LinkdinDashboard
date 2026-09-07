@@ -4,6 +4,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Locale;
+import java.util.Set;
 
 /**
  * Local keyword/location/recency filtering shared by {@code GreenhouseJobSource} and
@@ -32,10 +33,25 @@ public final class LocalFilter {
         return false;
     }
 
-    /** Case-insensitive substring match; true when {@code location} is blank (no filter). */
+    /** Country-level ways of asking for the US, which a substring match cannot serve. */
+    private static final Set<String> US_COUNTRY_TERMS =
+            Set.of("united states", "united states of america", "usa", "us", "u.s.", "u.s.a.", "america");
+
+    /**
+     * True when {@code jobLocation} satisfies the requested {@code location}; true when the
+     * request is blank (no filter).
+     *
+     * <p>A country-level request is handled by {@link UsLocation}, not by substring: a board
+     * writes "New York, NY", which does <em>not</em> contain the string "United States", so a
+     * naive match would throw away nearly every genuine US posting while claiming to filter for
+     * them. Anything more specific ("New York", "Austin") stays a plain substring match.
+     */
     public static boolean matchesLocation(String jobLocation, String location) {
         if (location == null || location.isBlank()) {
             return true;
+        }
+        if (US_COUNTRY_TERMS.contains(location.toLowerCase(Locale.ROOT).trim())) {
+            return UsLocation.isUnitedStates(jobLocation);
         }
         if (jobLocation == null) {
             return false;

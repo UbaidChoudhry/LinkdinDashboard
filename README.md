@@ -27,6 +27,11 @@ credentials anywhere in the system.
 | **Workday** | per company, server-side keyword search + 1 request per job | yes | ✅ |
 | **LinkedIn** | broad search across all companies | **no** | ❌ |
 
+**Results are restricted to the United States by default.** Company boards are worldwide — on a
+real sample, 64% of collected postings were foreign — so the run form has a **United States only**
+checkbox, ticked by default. Untick it to search globally. Postings whose location names no
+country at all (Workday writes `"11 Locations"` for a multi-site req) are excluded while it's on.
+
 **LinkedIn can't be combined with the others.** Its guest search returns no job description, so
 there is nothing for the scan to compare your resume against. Pick either LinkedIn *or* any mix
 of the ATS boards.
@@ -256,11 +261,15 @@ ai:
   batch-size: 9                # jobs per `claude` invocation
   concurrency: 3               # simultaneous `claude` processes
   max-description-chars: 6000
+  us-only: true                # re-check location before scanning, as well as at collection
 ```
 
-**`batch-size` is the cost lever that matters.** Every CLI invocation carries roughly 25k tokens
-of fixed overhead no matter how small the payload, so nine jobs in one call cost far less than
-nine calls. Raising it trades per-job attention for throughput.
+**`batch-size` is the cost lever that matters.** The cost shown in the UI is whatever the Claude
+CLI reports for each invocation — jobdash sums it, it does not compute it. Every invocation carries
+~24k tokens of fixed overhead no matter how small the payload, so a 2-job call ($0.10 measured) and
+a 9-job call ($0.13 measured) cost almost the same. Scanning 27 jobs in 3 batches cost $0.40; one
+job per call would have been about $2.70 for identical work. Raising `batch-size` lowers cost and
+coarsens progress reporting; lowering it does the reverse.
 
 **The ATS daily caps are not a scarce quota** the way the salary APIs' are — these are public,
 documented JSON endpoints. The caps exist to bound a runaway loop, and they are counted

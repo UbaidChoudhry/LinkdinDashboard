@@ -61,7 +61,7 @@ public class RunOrchestrator {
      * @param resumeId     an explicit resume to scan against, or null to fall back to the default
      *                     resume (or skip the scan entirely if there is no resume at all).
      */
-    public long startRun(SweepRunRequest sweepRequest, List<String> sources, Long resumeId) {
+    public long startRun(SweepRunRequest sweepRequest, List<String> sources, Long resumeId, boolean usOnly) {
         if (isLinkedInOnly(sources)) {
             return sweepService.startRun(sweepRequest);
         }
@@ -74,7 +74,7 @@ public class RunOrchestrator {
                 0, 0, sourcesText, null));
 
         Thread thread = Thread.ofVirtual().name("ats-run-" + runId)
-                .unstarted(() -> executeAtsRun(runId, sweepRequest, sources, resumeId));
+                .unstarted(() -> executeAtsRun(runId, sweepRequest, sources, resumeId, usOnly));
         progressRegistry.registerThread(runId, thread);
         thread.start();
         return runId;
@@ -84,12 +84,13 @@ public class RunOrchestrator {
         return sources.size() == 1 && "linkedin".equals(sources.get(0));
     }
 
-    private void executeAtsRun(long runId, SweepRunRequest sweepRequest, List<String> sources, Long resumeId) {
+    private void executeAtsRun(long runId, SweepRunRequest sweepRequest, List<String> sources, Long resumeId,
+                                boolean usOnly) {
         progressRegistry.registerCurrentThreadIfAbsent(runId);
         AtomicBoolean cancelFlag = progressRegistry.cancelFlag(runId);
 
         AtsRunRequest atsRequest = new AtsRunRequest(sweepRequest.keywords(), sweepRequest.location(),
-                sweepRequest.hours(), sources);
+                sweepRequest.hours(), sources, usOnly);
         String status = atsSweepService.run(runId, atsRequest, () -> cancelledNow(cancelFlag));
 
         // Only a clean collection ("ok") is followed by the AI scan - a stop for cancellation,

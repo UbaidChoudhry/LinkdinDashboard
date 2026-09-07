@@ -71,7 +71,7 @@ class RunOrchestratorTest {
     void linkedInOnlyDelegatesToSweepServiceAndNeverInvokesTheMatchService() {
         when(sweepService.startRun(SWEEP_REQUEST)).thenReturn(RUN_ID);
 
-        long runId = orchestrator.startRun(SWEEP_REQUEST, List.of("linkedin"), null);
+        long runId = orchestrator.startRun(SWEEP_REQUEST, List.of("linkedin"), null, false);
 
         assertThat(runId).isEqualTo(RUN_ID);
         verify(sweepService).startRun(SWEEP_REQUEST);
@@ -86,7 +86,7 @@ class RunOrchestratorTest {
         when(atsSweepService.run(eq(RUN_ID), any(), any())).thenReturn("ok");
         when(resumeRepository.findDefault()).thenReturn(Optional.of(resume(3L)));
 
-        long runId = orchestrator.startRun(SWEEP_REQUEST, List.of("greenhouse"), null);
+        long runId = orchestrator.startRun(SWEEP_REQUEST, List.of("greenhouse"), null, false);
 
         assertThat(runId).isEqualTo(RUN_ID);
         verify(resumeMatchService, timeout(2000))
@@ -102,7 +102,7 @@ class RunOrchestratorTest {
         when(atsSweepService.run(eq(RUN_ID), any(), any())).thenReturn("ok");
         when(resumeRepository.findDefault()).thenReturn(Optional.empty());
 
-        orchestrator.startRun(SWEEP_REQUEST, List.of("lever"), null);
+        orchestrator.startRun(SWEEP_REQUEST, List.of("lever"), null, false);
 
         verify(sweepRunRepository, timeout(2000)).finish(eq(RUN_ID), any(), eq("ok"));
         verify(resumeMatchService, never()).scan(anyLong(), anyLong(), any());
@@ -116,7 +116,7 @@ class RunOrchestratorTest {
         when(resumeRepository.findDefault()).thenReturn(Optional.of(resume(9L)));
         when(resumeMatchService.scan(eq(RUN_ID), eq(9L), any(), any())).thenThrow(new RuntimeException("boom"));
 
-        orchestrator.startRun(SWEEP_REQUEST, List.of("workday"), null);
+        orchestrator.startRun(SWEEP_REQUEST, List.of("workday"), null, false);
 
         verify(sweepRunRepository, timeout(2000)).finish(eq(RUN_ID), any(), eq("ok"));
     }

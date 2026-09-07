@@ -5,6 +5,7 @@ import com.ubaid.jobdash.filter.FilterEngine;
 import com.ubaid.jobdash.salary.SalaryEnrichmentService;
 import com.ubaid.jobdash.source.JobSource;
 import com.ubaid.jobdash.source.SourceFetchResult;
+import com.ubaid.jobdash.source.UsLocation;
 import com.ubaid.jobdash.source.SourceQuery;
 import com.ubaid.jobdash.source.SourcedJob;
 import com.ubaid.jobdash.source.ats.AtsProperties;
@@ -13,6 +14,8 @@ import com.ubaid.jobdash.store.AtsCompanyRepository;
 import com.ubaid.jobdash.store.JobCardInsert;
 import com.ubaid.jobdash.store.JobListingRepository;
 import com.ubaid.jobdash.store.SweepRunRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
@@ -35,6 +38,8 @@ import java.util.stream.Collectors;
  */
 @Service
 public class AtsSweepService {
+
+    private static final Logger log = LoggerFactory.getLogger(AtsSweepService.class);
 
     private final Map<String, JobSource> jobSourcesByName;
     private final AtsCompanyRepository atsCompanyRepository;
@@ -129,8 +134,18 @@ public class AtsSweepService {
                 case SourceFetchResult.Ok ok -> {
                     acc.requestsMade += ok.requestsMade();
                     acc.cardsSeen += ok.jobs().size();
-                    if (!ok.jobs().isEmpty()) {
-                        List<JobCardInsert> inserts = ok.jobs().stream().map(AtsSweepService::toInsert).toList();
+                    // Applied here rather than inside each JobSource so it holds for every source
+                    // uniformly - including Workday, which does no local location filtering at
+                    // all and was the route foreign postings took into the database.
+                    List<SourcedJob> kept = request.usOnly()
+                            ? ok.jobs().stream().filter(j -> UsLocation.isUnitedStates(j.location())).toList()
+                            : ok.jobs();
+                    if (request.usOnly() && kept.size() < ok.jobs().size()) {
+                        log.debug("{}: dropped {} non-US posting(s) of {}", company.slug(),
+                                ok.jobs().size() - kept.size(), ok.jobs().size());
+                    }
+                    if (!kept.isEmpty()) {
+                        List<JobCardInsert> inserts = kept.stream().map(AtsSweepService::toInsert).toList();
                         int newCount = jobListingRepository.upsertAll(inserts, runId, clock.instant());
                         acc.jobsNew += newCount;
                         // Same post-upsert sequence SweepService performs, and for the same
@@ -138,6 +153,8 @@ public class AtsSweepService {
                         filterEngine.evaluateNewRows();
                         salaryEnrichmentService.enrichRun(runId, request.location(), cancelled);
                     }
+                    // Liveness is about the board answering, not about how many postings survived
+                    // our filters - a company with no US roles today is alive, not dead.
                     atsCompanyRepository.recordSuccess(company.id(), clock.instant(), ok.jobs().size());
                 }
                 case SourceFetchResult.DeadSlug deadSlug -> {

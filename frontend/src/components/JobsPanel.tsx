@@ -4,6 +4,7 @@ import { ApiError, listJobs, scanMatches } from "../api/client";
 import type { JobResponse, JobTab, MatchBucket, RunResponse } from "../types/api";
 import { DEFAULT_SORT, filterByMinSalary, nextSortState, sortJobsBy, type SortState } from "../utils/sort";
 import { groupByCompany } from "../utils/group";
+import { isRunInFlight } from "../utils/runStatus";
 import { JobRow } from "./JobRow";
 import { CompanyGroupRow } from "./CompanyGroupRow";
 import { InfoTip } from "./InfoTip";
@@ -219,7 +220,7 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
       if (!latestRun) {
         return "No run has been started yet. Start a run above to see results here.";
       }
-      if (latestRun.status === "running") {
+      if (isRunInFlight(latestRun.status)) {
         return "The current run is still in progress - results will appear as they're found.";
       }
       if (latestRun.cardsSeen === 0) {

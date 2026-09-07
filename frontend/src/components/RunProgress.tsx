@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ApiError, cancelRun } from "../api/client";
 import type { RunResponse, ScanProgress } from "../types/api";
-import { runStatusInfo } from "../utils/runStatus";
+import { isRunInFlight, runStatusInfo } from "../utils/runStatus";
 
 interface RunProgressProps {
   run: RunResponse;
@@ -14,7 +14,8 @@ export function RunProgress({ run, streamError, onCancelled }: RunProgressProps)
   const [cancelError, setCancelError] = useState<string | null>(null);
 
   const info = runStatusInfo(run.status);
-  const isRunning = run.status === "running";
+  // Cancel must stay available during the scan phase too, not just while collecting.
+  const isRunning = isRunInFlight(run.status);
 
   async function handleCancel() {
     setCancelError(null);

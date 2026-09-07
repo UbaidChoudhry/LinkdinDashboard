@@ -10,6 +10,7 @@ import { DataPanel } from "./components/DataPanel";
 import { SourcesPanel } from "./components/SourcesPanel";
 import { ResumesPanel } from "./components/ResumesPanel";
 import { useRunStream } from "./hooks/useRunStream";
+import { isRunInFlight } from "./utils/runStatus";
 import type { RunResponse } from "./types/api";
 
 /** The top-level sections of the dashboard. Each is a tab; only one is visible at a time. */
@@ -52,7 +53,7 @@ function App() {
       .then((runs) => {
         if (runs.length > 0) {
           setLastKnownRun(runs[0]);
-          if (runs[0].status === "running") {
+          if (isRunInFlight(runs[0].status)) {
             setCurrentRunId(runs[0].id);
           }
         }
@@ -69,7 +70,9 @@ function App() {
     setLastKnownRun(streamedRun);
     const prev = prevStatusRef.current;
     prevStatusRef.current = streamedRun.status;
-    if (prev === "running" && streamedRun.status !== "running") {
+    // Only a genuinely terminal status means "finished". Firing this on "scanning" refreshed
+    // the results list before any verdict existed, and then never refreshed again.
+    if (isRunInFlight(prev) && !isRunInFlight(streamedRun.status)) {
       setRefreshToken((t) => t + 1);
       // A finished run's payoff is the result list, so land the user on it - but only if they
       // were still watching the run. If they'd wandered off to Filters or Data, yanking the
@@ -104,7 +107,7 @@ function App() {
   const handleJobCountChange = useCallback((count: number) => setResultCount(count), []);
 
   const displayRun = streamedRun ?? (currentRunId != null ? lastKnownRun : null);
-  const runInFlight = displayRun?.status === "running";
+  const runInFlight = isRunInFlight(displayRun?.status);
 
   return (
     <div className="app-shell">

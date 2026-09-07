@@ -102,6 +102,8 @@ export interface CreateRunRequest {
   sources?: JobSourceName[];
   /** Resume to run the AI match against. Null/omitted uses the default resume. */
   resumeId?: number | null;
+  /** Restrict ATS results to US locations. Omitted means true - it is opt-OUT. */
+  usOnly?: boolean;
 }
 
 export interface RunIdResponse {

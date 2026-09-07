@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { RunResponse } from "../types/api";
+import { isRunInFlight } from "../utils/runStatus";
 
 interface UseRunStreamResult {
   run: RunResponse | null;
@@ -31,7 +32,9 @@ export function useRunStream(runId: number | null): UseRunStreamResult {
       try {
         const data = JSON.parse(event.data) as RunResponse;
         setRun(data);
-        if (data.status !== "running") {
+        // Close only on a genuinely terminal status. "scanning" is still in flight - closing
+        // here was what made the AI scan's progress never reach the page.
+        if (!isRunInFlight(data.status)) {
           source.close();
         }
       } catch {

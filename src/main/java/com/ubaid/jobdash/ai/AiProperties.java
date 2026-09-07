@@ -17,6 +17,7 @@ public record AiProperties(
         int batchSize,
         int concurrency,
         Duration timeout,
-        int maxDescriptionChars
+        int maxDescriptionChars,
+        boolean usOnly
 ) {
 }

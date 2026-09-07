@@ -107,3 +107,7 @@ ai:
   timeout: 5m
   # Job descriptions are truncated to this many characters before being sent.
   max-description-chars: 6000
+  # Second line of defence on location. The run-level `usOnly` flag already drops non-US postings
+  # at collection time; this re-checks immediately before a job is sent to Claude, so anything
+  # collected earlier (or by a run with usOnly off) is never scored or shown as a match.
+  us-only: true

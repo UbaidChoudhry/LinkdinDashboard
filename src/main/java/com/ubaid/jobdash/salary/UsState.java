@@ -60,6 +60,21 @@ public final class UsState {
             Map.entry("greater nashville", "TN"), Map.entry("salt lake city metropolitan area", "UT"));
 
     /**
+     * The full state (and DC) names this parser knows, lowercase. Exposed read-only so callers
+     * that need to recognise a state ANYWHERE in a free-text string - rather than resolve one
+     * specific code - can reuse this list instead of duplicating it. See
+     * {@code source/UsLocation}.
+     */
+    public static java.util.Set<String> stateNames() {
+        return NAMES.keySet();
+    }
+
+    /** The 2-letter USPS codes this parser knows. Read-only; see {@link #stateNames()}. */
+    public static java.util.Set<String> stateCodes() {
+        return CODES;
+    }
+
+    /**
      * Returns the 2-letter USPS code for the state named in {@code location}, or {@code ""} if
      * indeterminate. Comma-separated components are checked first (both full names and 2-letter
      * codes), then the whole string is matched against known metro-area phrases.
