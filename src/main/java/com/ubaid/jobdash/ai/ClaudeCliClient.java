@@ -42,13 +42,51 @@ public class ClaudeCliClient {
         this.objectMapper = objectMapper;
     }
 
+    /**
+     * Scores a batch of jobs against a resume. A thin, job-match-shaped view over
+     * {@link #runStructured}: it supplies the match schema and maps the returned JSON into
+     * {@link MatchVerdict}s. Kept as its own method so existing callers and test doubles that
+     * override it are unaffected by the generic path underneath.
+     */
     public ClaudeCliResult run(String prompt) {
+        CliJsonResult json = runStructured(prompt, MatchPromptBuilder.RESULT_JSON_SCHEMA);
+        return switch (json) {
+            case CliJsonResult.Ok ok -> new ClaudeCliResult.Ok(
+                    toVerdicts(ok.structuredOutput()), ok.costUsd(), ok.durationMs());
+            case CliJsonResult.CliNotFound notFound -> new ClaudeCliResult.CliNotFound(notFound.message());
+            case CliJsonResult.Timeout timeout -> new ClaudeCliResult.Timeout(timeout.afterMs());
+            case CliJsonResult.Failed failed -> new ClaudeCliResult.Failed(failed.message(), failed.exitCode());
+        };
+    }
+
+    private static List<MatchVerdict> toVerdicts(JsonNode structuredOutput) {
+        List<MatchVerdict> verdicts = new ArrayList<>();
+        JsonNode results = structuredOutput.get("results");
+        if (results != null && results.isArray()) {
+            for (JsonNode r : results) {
+                verdicts.add(new MatchVerdict(
+                        r.path("ref").asString(""),
+                        r.path("recommended").asBoolean(false),
+                        r.path("reason").asString("")));
+            }
+        }
+        return verdicts;
+    }
+
+    /**
+     * Runs one CLI invocation constrained to {@code jsonSchema} and hands back the resulting
+     * {@code structured_output} object untouched, so any caller can define its own response shape.
+     *
+     * <p>Never throws: every failure — a missing binary, a timeout, a non-zero exit, unparseable
+     * output, an interrupt — comes back as a {@link CliJsonResult} variant.
+     */
+    public CliJsonResult runStructured(String prompt, String jsonSchema) {
         List<String> command = List.of(
                 properties.cliPath(),
                 "-p",
                 "--model", properties.model(),
                 "--output-format", "json",
-                "--json-schema", MatchPromptBuilder.RESULT_JSON_SCHEMA,
+                "--json-schema", jsonSchema,
                 "--no-session-persistence",
                 "--safe-mode",
                 "--restricted");
@@ -59,12 +97,12 @@ public class ClaudeCliClient {
         } catch (IOException e) {
             String msg = String.valueOf(e.getMessage());
             if (msg.contains("No such file") || msg.contains("error=2")) {
-                return new ClaudeCliResult.CliNotFound(
+                return new CliJsonResult.CliNotFound(
                         "Claude CLI not found at '" + properties.cliPath()
                                 + "'. Install the Claude CLI, or set CLAUDE_CLI_PATH / ai.cli-path.");
             }
             log.debug("failed to start claude CLI: {}", msg);
-            return new ClaudeCliResult.Failed("failed to start claude CLI: " + msg, -1);
+            return new CliJsonResult.Failed("failed to start claude CLI: " + msg, -1);
         }
 
         // Drain stdout and stderr concurrently with the process running, on separate threads,
@@ -90,14 +128,14 @@ public class ClaudeCliClient {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             process.destroyForcibly();
-            return new ClaudeCliResult.Failed("interrupted while waiting for claude CLI", -1);
+            return new CliJsonResult.Failed("interrupted while waiting for claude CLI", -1);
         }
 
         if (!finished) {
             process.destroyForcibly();
             joinQuietly(stdoutThread);
             joinQuietly(stderrThread);
-            return new ClaudeCliResult.Timeout(properties.timeout().toMillis());
+            return new CliJsonResult.Timeout(properties.timeout().toMillis());
         }
 
         joinQuietly(stdoutThread);
@@ -111,7 +149,7 @@ public class ClaudeCliClient {
         return parse(stdout, stderr, exitCode);
     }
 
-    private ClaudeCliResult parse(String stdout, String stderr, int exitCode) {
+    private CliJsonResult parse(String stdout, String stderr, int exitCode) {
         try {
             JsonNode root = objectMapper.readTree(stdout);
             boolean isError = root.path("is_error").asBoolean(false);
@@ -119,25 +157,14 @@ public class ClaudeCliClient {
             if (isError || structured == null || structured.isNull()) {
                 String fallback = stderr.isBlank() ? "claude CLI reported an error" : stderr;
                 String message = root.path("result").asString(fallback);
-                return new ClaudeCliResult.Failed(message, exitCode);
-            }
-
-            List<MatchVerdict> verdicts = new ArrayList<>();
-            JsonNode results = structured.get("results");
-            if (results != null && results.isArray()) {
-                for (JsonNode r : results) {
-                    verdicts.add(new MatchVerdict(
-                            r.path("ref").asString(""),
-                            r.path("recommended").asBoolean(false),
-                            r.path("reason").asString("")));
-                }
+                return new CliJsonResult.Failed(message, exitCode);
             }
             double costUsd = root.path("total_cost_usd").asDouble(0.0);
             long durationMs = root.path("duration_ms").asLong(0L);
-            return new ClaudeCliResult.Ok(verdicts, costUsd, durationMs);
+            return new CliJsonResult.Ok(structured, costUsd, durationMs);
         } catch (RuntimeException e) {
             log.debug("failed to parse claude CLI output: {}", e.toString());
-            return new ClaudeCliResult.Failed("could not parse claude CLI output: " + e.getMessage(), exitCode);
+            return new CliJsonResult.Failed("could not parse claude CLI output: " + e.getMessage(), exitCode);
         }
     }
 

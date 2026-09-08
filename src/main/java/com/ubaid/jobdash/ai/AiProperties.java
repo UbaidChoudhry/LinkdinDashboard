@@ -18,6 +18,7 @@ public record AiProperties(
         int concurrency,
         Duration timeout,
         int maxDescriptionChars,
-        boolean usOnly
+        boolean usOnly,
+        int locationBatchSize
 ) {
 }

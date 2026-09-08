@@ -1,6 +1,7 @@
 package com.ubaid.jobdash.sweep;
 
 import com.ubaid.jobdash.ai.ResumeMatchService;
+import com.ubaid.jobdash.source.location.LocationClassifier;
 import com.ubaid.jobdash.domain.Resume;
 import com.ubaid.jobdash.store.ResumeRepository;
 import com.ubaid.jobdash.store.SweepRunRepository;
@@ -34,18 +35,20 @@ public class RunOrchestrator {
     private final SweepRunRepository sweepRunRepository;
     private final ResumeRepository resumeRepository;
     private final ResumeMatchService resumeMatchService;
+    private final LocationClassifier locationClassifier;
     private final RunProgressRegistry progressRegistry;
     private final Clock clock;
 
     public RunOrchestrator(SweepService sweepService, AtsSweepService atsSweepService,
                             SweepRunRepository sweepRunRepository, ResumeRepository resumeRepository,
-                            ResumeMatchService resumeMatchService, RunProgressRegistry progressRegistry,
-                            Clock clock) {
+                            ResumeMatchService resumeMatchService, LocationClassifier locationClassifier,
+                            RunProgressRegistry progressRegistry, Clock clock) {
         this.sweepService = sweepService;
         this.atsSweepService = atsSweepService;
         this.sweepRunRepository = sweepRunRepository;
         this.resumeRepository = resumeRepository;
         this.resumeMatchService = resumeMatchService;
+        this.locationClassifier = locationClassifier;
         this.progressRegistry = progressRegistry;
         this.clock = clock;
     }
@@ -93,9 +96,11 @@ public class RunOrchestrator {
                 sweepRequest.hours(), sources, usOnly);
         String status = atsSweepService.run(runId, atsRequest, () -> cancelledNow(cancelFlag));
 
-        // Only a clean collection ("ok") is followed by the AI scan - a stop for cancellation,
-        // an empty source selection, or exhausting the source's budget is a terminal state as-is.
+        // Only a clean collection ("ok") is followed by location classification and the AI scan -
+        // a stop for cancellation, an empty source selection, or exhausting the source's budget is
+        // a terminal state as-is.
         if ("ok".equals(status) && !cancelledNow(cancelFlag)) {
+            classifyLocations(runId, usOnly, cancelFlag);
             status = runResumeScanIfPossible(runId, sources, resumeId, cancelFlag, status);
         }
 
@@ -107,6 +112,28 @@ public class RunOrchestrator {
                 finalProgress.jobsNew(), finalProgress.saturated(), finalProgress.companiesDone(),
                 finalProgress.companiesTotal(), finalProgress.sources(), finalProgress.scan()));
         progressRegistry.finish(runId);
+    }
+
+    /**
+     * Asks Claude which of this run's locations are in the United States, so non-US postings can
+     * be hidden. Runs AFTER collection so the whole run costs one batched call rather than one per
+     * company, and BEFORE the scan so a foreign posting is never scored.
+     *
+     * <p>Skipped entirely when the run opted out of US-only, leaving every row unclassified and
+     * therefore visible. {@link LocationClassifier} already guarantees it never throws; this still
+     * wraps the call, because a classification failure must never turn a successful collection run
+     * into a failed one — the same rule the AI scan follows below.
+     */
+    private void classifyLocations(long runId, boolean usOnly, AtomicBoolean cancelFlag) {
+        if (!usOnly) {
+            return;
+        }
+        try {
+            locationClassifier.classifyRun(runId, () -> cancelledNow(cancelFlag));
+        } catch (Exception e) {
+            log.warn("location classification for run {} threw unexpectedly "
+                    + "(LocationClassifier should never throw): {}", runId, e.toString());
+        }
     }
 
     /**

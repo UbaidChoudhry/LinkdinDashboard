@@ -35,6 +35,8 @@ public record JobListing(
         Double salaryMax,
         String salarySource,
         String salarySourceDetail,
-        boolean suppressed
+        boolean suppressed,
+        Boolean locationUs,
+        Boolean locationConfident
 ) {
 }

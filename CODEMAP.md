@@ -217,6 +217,7 @@ must switch exhaustively. Implementations **never throw** — same discipline as
 | `source/lever/` | one request returns the whole board; ids are UUIDs, `createdAt` is epoch ms. **HTTP 200 + `[]` is a live board with no jobs, NOT a dead slug** |
 | `source/workday/` | two-phase: a server-side-filtered search page, then one detail request per job for the description and real date. `WorkdaySiteResolver` discovers the site id from the tenant's `robots.txt` |
 | `source/ats/` | `AtsRateLimiter` (pacing + per-source daily cap off `external_request_log` — **never** LinkedIn's `request_log`), `AtsProperties`, and `SlugCatalogImportService` / `SlugImportRunner` behind `./import-slugs.sh` |
+| `source/location/` | `LocationClassifier` asks Claude whether each free-form location is in the US, once per run and cached forever in `location_verdict`. Non-US rows are hidden by a predicate in `JobListingRepository`'s read queries, **not** by `filter_verdict` (FilterEngine would overwrite it). See HANDOFF.md §9 |
 
 `sweep/OrphanedRunReaper` runs once at startup and closes out any run left `running` by a killed
 process. Without it a single interrupted run blocks every future run **and** cannot be cancelled
@@ -373,6 +374,7 @@ external_request_log  audit + daily-cap source for the salary AND ATS APIs (NOT 
 ats_company          the ATS slug catalog: enabled/status/dead tracking, Workday host+site (V6)
 resume               uploaded resumes + their extracted text                        (V7)
 ai_match             cached AI verdicts, keyed (job_id, resume_id)                  (V7)
+location_verdict     Claude's US/not-US call per distinct location string, no TTL   (V9)
 ```
 
 Two indexes worth knowing about:

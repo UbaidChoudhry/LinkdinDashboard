@@ -130,6 +130,11 @@ public class JobListingRepository {
         return client.sql("""
                         select * from job_listing
                         where last_seen_run_id = :runId and filter_verdict = :verdict and user_status is null
+                        -- Hide only a CONFIDENTLY non-US row. The coalesce is load-bearing:
+                        -- SQLite comparisons against NULL yield NULL, so without it an
+                        -- unclassified row makes the whole NOT(...) NULL and WHERE drops it -
+                        -- silently hiding the very rows meant to stay visible. See V9.
+                        and not (coalesce(location_us, 1) = 0 and coalesce(location_confident, 0) = 1)
                         order by posted_at desc
                         """)
                 .param("runId", runId)
@@ -146,6 +151,11 @@ public class JobListingRepository {
         return client.sql("""
                         select * from job_listing
                         where filter_verdict = :verdict and user_status is null
+                        -- Hide only a CONFIDENTLY non-US row. The coalesce is load-bearing:
+                        -- SQLite comparisons against NULL yield NULL, so without it an
+                        -- unclassified row makes the whole NOT(...) NULL and WHERE drops it -
+                        -- silently hiding the very rows meant to stay visible. See V9.
+                        and not (coalesce(location_us, 1) = 0 and coalesce(location_confident, 0) = 1)
                         order by posted_at desc
                         """)
                 .param("verdict", verdict.toDb())
@@ -217,6 +227,11 @@ public class JobListingRepository {
         return client.sql("""
                         select * from job_listing
                         where last_seen_run_id = :runId and filter_verdict = 'pass' and salary_source is null
+                        -- Hide only a CONFIDENTLY non-US row. The coalesce is load-bearing:
+                        -- SQLite comparisons against NULL yield NULL, so without it an
+                        -- unclassified row makes the whole NOT(...) NULL and WHERE drops it -
+                        -- silently hiding the very rows meant to stay visible. See V9.
+                        and not (coalesce(location_us, 1) = 0 and coalesce(location_confident, 0) = 1)
                         order by posted_at desc
                         """)
                 .param("runId", runId)
@@ -234,6 +249,9 @@ public class JobListingRepository {
                         select * from job_listing
                         where last_seen_run_id = :runId and filter_verdict = 'pass' and user_status is null
                           and description is not null and trim(description) != ''
+                          -- Hide only a CONFIDENTLY non-US row; unclassified and low-confidence
+                          -- rows stay scannable. coalesce is load-bearing - see the note above.
+                          and not (coalesce(location_us, 1) = 0 and coalesce(location_confident, 0) = 1)
                         order by posted_at desc
                         """)
                 .param("runId", runId)
@@ -250,11 +268,52 @@ public class JobListingRepository {
                         select * from job_listing
                         where job_id in (:jobIds) and filter_verdict = 'pass' and user_status is null
                           and description is not null and trim(description) != ''
+                          -- Hide only a CONFIDENTLY non-US row; unclassified and low-confidence
+                          -- rows stay scannable. coalesce is load-bearing - see the note above.
+                          and not (coalesce(location_us, 1) = 0 and coalesce(location_confident, 0) = 1)
                         order by posted_at desc
                         """)
                 .param("jobIds", jobIds)
                 .query(JobListingRepository::mapRow)
                 .list();
+    }
+
+    /**
+     * The distinct, non-blank location strings seen in one run — the input to location
+     * classification. Distinct because these strings repeat heavily across postings, and each
+     * distinct one costs a slot in a Claude batch.
+     */
+    public List<String> findDistinctLocationsByRun(long runId) {
+        return client.sql("""
+                        select distinct location from job_listing
+                        where last_seen_run_id = :runId and location is not null and trim(location) <> ''
+                        order by location
+                        """)
+                .param("runId", runId)
+                .query(String.class)
+                .list();
+    }
+
+    /**
+     * Stamps one location verdict onto every row of {@code runId} carrying that exact raw location
+     * string.
+     *
+     * <p>Scoped to the run deliberately: the same string could appear on rows collected by an
+     * earlier run under different settings, and silently re-judging those is not this run's job.
+     *
+     * @return the number of rows updated
+     */
+    public int applyLocationVerdict(long runId, String rawLocation, boolean inUs, boolean confident) {
+        return client.sql("""
+                        update job_listing
+                        set location_us = :inUs, location_confident = :confident
+                        where last_seen_run_id = :runId and location = :location
+                        """)
+                .param("inUs", inUs ? 1 : 0)
+                .param("confident", confident ? 1 : 0)
+                .param("runId", runId)
+                .param("location", rawLocation)
+                .update();
     }
 
     /** Rows that have never been evaluated by the filter engine yet (freshly inserted). */
@@ -317,6 +376,12 @@ public class JobListingRepository {
                 .update();
     }
 
+    /** Reads a 0/1/NULL column as a tri-state, preserving NULL rather than flattening it to false. */
+    private static Boolean nullableBool(ResultSet rs, String column) throws SQLException {
+        int value = rs.getInt(column);
+        return rs.wasNull() ? null : value != 0;
+    }
+
     static JobListing mapRow(ResultSet rs, int rowNum) throws SQLException {
         return new JobListing(
                 rs.getLong("job_id"),
@@ -346,7 +411,11 @@ public class JobListingRepository {
                 (Double) rs.getObject("salary_max"),
                 rs.getString("salary_source"),
                 rs.getString("salary_source_detail"),
-                rs.getInt("suppressed") != 0
+                rs.getInt("suppressed") != 0,
+                // Tri-state: NULL means "not classified yet", which is NOT the same as "not US".
+                // getBoolean() would flatten NULL to false and hide every unclassified row.
+                nullableBool(rs, "location_us"),
+                nullableBool(rs, "location_confident")
         );
     }
 }

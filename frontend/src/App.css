@@ -1319,3 +1319,12 @@ tr.source-dead {
   background: var(--code-bg);
   font-family: var(--mono);
 }
+
+/* Location Claude answered on but could not confidently place — see JobRow. */
+.location-uncertain {
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--text);
+  opacity: 0.8;
+  cursor: help;
+}

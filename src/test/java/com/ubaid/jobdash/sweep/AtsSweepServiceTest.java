@@ -197,13 +197,14 @@ class AtsSweepServiceTest extends AbstractStoreTest {
     }
 
     /**
-     * Workday does no local location filtering of its own - it filters keywords server-side and
-     * nothing else - so a US-only filter living inside the individual sources would have missed
-     * it entirely. That is the exact route foreign postings took into the database, so this
-     * asserts the filter is applied centrally and therefore covers Workday too.
+     * Collection is deliberately UNFILTERED by location now. Whether a posting is in the US is
+     * decided after collection by {@code LocationClassifier} (one batched Claude call per run
+     * instead of one per company), and non-US rows are then hidden by the {@code location_us}
+     * predicate in the read queries. This asserts the sweep stores what the board returned and
+     * does not try to judge locations itself.
      */
     @Test
-    void usOnlyDropsForeignPostingsFromWorkday() {
+    void collectionStoresEveryPostingAndLeavesLocationUnjudged() {
         addCompany("workday", "acme", "Acme", "acme.wd5.myworkdayjobs.com", "AcmeCareers");
 
         SourcedJob us = new SourcedJob("workday", "JR1", "Software Engineer", "Acme", "Austin, TX",
@@ -226,7 +227,14 @@ class AtsSweepServiceTest extends AbstractStoreTest {
                 .param("r", runId)
                 .query(String.class)
                 .list();
-        assertThat(storedIds).containsExactly("JR1");
+        assertThat(storedIds).containsExactlyInAnyOrder("JR1", "JR2", "JR3");
+
+        Integer unjudged = client.sql("""
+                        select count(*) from job_listing
+                        where last_seen_run_id = :r and location_us is null
+                        """)
+                .param("r", runId).query(Integer.class).single();
+        assertThat(unjudged).as("the sweep must not decide location itself").isEqualTo(3);
     }
 
     @Test

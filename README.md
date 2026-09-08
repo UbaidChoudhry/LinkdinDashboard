@@ -29,8 +29,14 @@ credentials anywhere in the system.
 
 **Results are restricted to the United States by default.** Company boards are worldwide — on a
 real sample, 64% of collected postings were foreign — so the run form has a **United States only**
-checkbox, ticked by default. Untick it to search globally. Postings whose location names no
-country at all (Workday writes `"11 Locations"` for a multi-site req) are excluded while it's on.
+checkbox, ticked by default.
+
+Location strings are free-form and wildly inconsistent (`"US - Austin, TX"`, `"Israel, Yokneam"`,
+`"USA.VA.Reston"`, `"11 Locations"`), so **Claude decides** which are American rather than a list
+of hardcoded patterns. Each distinct string is judged once and cached forever, which keeps this to
+roughly one extra call per run. Where a string genuinely doesn't say where the job is, the posting
+is **kept and marked `⚠ uncertain`** rather than dropped — and if the CLI is unavailable, postings
+stay visible and are re-checked on the next run.
 
 **LinkedIn can't be combined with the others.** Its guest search returns no job description, so
 there is nothing for the scan to compare your resume against. Pick either LinkedIn *or* any mix

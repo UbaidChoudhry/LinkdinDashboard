@@ -13,6 +13,11 @@ import java.time.Instant;
  * <p>{@code aiRecommended}/{@code aiReason} come from the caller's cached {@link AiMatch}
  * verdict against whichever resume the request resolved (explicit or default) - null on both
  * means "not scanned" (no resume, or not yet scanned against this one), never "not recommended".
+ *
+ * <p>{@code locationUs}/{@code locationConfident} carry Claude's judgement of the free-form
+ * location string. Both null means "not classified yet" - which is not the same as "not in the
+ * US". {@code locationConfident == false} means Claude answered but the string genuinely does not
+ * say where the job is; the UI flags those rather than hiding them.
  */
 public record JobResponse(
         long jobId,
@@ -38,7 +43,9 @@ public record JobResponse(
         String salarySource,
         String salarySourceDetail,
         Boolean aiRecommended,
-        String aiReason
+        String aiReason,
+        Boolean locationUs,
+        Boolean locationConfident
 ) {
 
     /** Builds a response with no AI match context - {@code aiRecommended}/{@code aiReason} are null. */
@@ -72,7 +79,9 @@ public record JobResponse(
                 job.salarySource(),
                 job.salarySourceDetail(),
                 aiMatch == null ? null : aiMatch.recommended(),
-                aiMatch == null ? null : aiMatch.reason()
+                aiMatch == null ? null : aiMatch.reason(),
+                job.locationUs(),
+                job.locationConfident()
         );
     }
 }

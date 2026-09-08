@@ -5,7 +5,6 @@ import com.ubaid.jobdash.filter.FilterEngine;
 import com.ubaid.jobdash.salary.SalaryEnrichmentService;
 import com.ubaid.jobdash.source.JobSource;
 import com.ubaid.jobdash.source.SourceFetchResult;
-import com.ubaid.jobdash.source.UsLocation;
 import com.ubaid.jobdash.source.SourceQuery;
 import com.ubaid.jobdash.source.SourcedJob;
 import com.ubaid.jobdash.source.ats.AtsProperties;
@@ -134,18 +133,12 @@ public class AtsSweepService {
                 case SourceFetchResult.Ok ok -> {
                     acc.requestsMade += ok.requestsMade();
                     acc.cardsSeen += ok.jobs().size();
-                    // Applied here rather than inside each JobSource so it holds for every source
-                    // uniformly - including Workday, which does no local location filtering at
-                    // all and was the route foreign postings took into the database.
-                    List<SourcedJob> kept = request.usOnly()
-                            ? ok.jobs().stream().filter(j -> UsLocation.isUnitedStates(j.location())).toList()
-                            : ok.jobs();
-                    if (request.usOnly() && kept.size() < ok.jobs().size()) {
-                        log.debug("{}: dropped {} non-US posting(s) of {}", company.slug(),
-                                ok.jobs().size() - kept.size(), ok.jobs().size());
-                    }
-                    if (!kept.isEmpty()) {
-                        List<JobCardInsert> inserts = kept.stream().map(AtsSweepService::toInsert).toList();
+                    // Everything the board returned is stored. Whether a posting is in the US is
+                    // decided AFTER collection by LocationClassifier (one batched Claude call per
+                    // run instead of one per company), and non-US rows are then hidden by the
+                    // location_us predicate in JobListingRepository's read queries.
+                    if (!ok.jobs().isEmpty()) {
+                        List<JobCardInsert> inserts = ok.jobs().stream().map(AtsSweepService::toInsert).toList();
                         int newCount = jobListingRepository.upsertAll(inserts, runId, clock.instant());
                         acc.jobsNew += newCount;
                         // Same post-upsert sequence SweepService performs, and for the same

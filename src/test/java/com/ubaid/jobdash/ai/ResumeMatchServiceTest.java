@@ -51,7 +51,7 @@ class ResumeMatchServiceTest extends AbstractStoreTest {
     }
 
     private AiProperties props(int batchSize, int concurrency, boolean usOnly) {
-        return new AiProperties(true, "unused", "sonnet", batchSize, concurrency, Duration.ofSeconds(10), 6000, usOnly);
+        return new AiProperties(true, "unused", "sonnet", batchSize, concurrency, Duration.ofSeconds(10), 6000, usOnly, 200);
     }
 
     private ResumeMatchService service(AiProperties properties, ClaudeCliClient cli) {
@@ -95,7 +95,7 @@ class ResumeMatchServiceTest extends AbstractStoreTest {
         private final Function<List<String>, ClaudeCliResult> responder;
 
         FakeCliClient(Function<List<String>, ClaudeCliResult> responder) {
-            super(new AiProperties(true, "unused", "sonnet", 9, 3, Duration.ofSeconds(10), 6000, false),
+            super(new AiProperties(true, "unused", "sonnet", 9, 3, Duration.ofSeconds(10), 6000, false, 200),
                     JsonMapper.builder().build());
             this.responder = responder;
         }
@@ -351,27 +351,35 @@ class ResumeMatchServiceTest extends AbstractStoreTest {
         assertThat(aiMatchRepository.findByJobIds(List.of(jobId), resumeId)).hasSize(1);
     }
 
-    // ---- scan-time location guard ------------------------------------------------------------
+    // ---- location guard, now enforced by the repository query --------------------------------
+
+    /** Sets the classifier's verdict on one row, the way LocationClassifier does after a run. */
+    private void setLocationVerdict(long jobId, boolean inUs, boolean confident) {
+        client.sql("update job_listing set location_us = :us, location_confident = :c where job_id = :id")
+                .param("us", inUs ? 1 : 0)
+                .param("c", confident ? 1 : 0)
+                .param("id", jobId)
+                .update();
+    }
 
     /**
-     * Deliberately duplicates the collection-time filter in {@code AtsSweepService}. That one only
-     * covers rows arriving from a run with {@code usOnly} on; a job collected before the filter
-     * existed, or by a run with it off, would otherwise still be sent to Claude and surface as a
-     * match. Asserting on the CLI invocation count is the point - it proves the job never left the
-     * machine, not merely that no verdict was stored.
+     * A confidently non-US posting must never reach Claude. The guard now lives in
+     * {@code findScannableByRun}'s SQL rather than in this service, so this asserts on the CLI
+     * invocation content — proving the posting never left the machine, not merely that no verdict
+     * was stored.
      */
     @Test
-    void nonUsJobsAreNeverSentToTheCliWhenUsOnlyIsOn() {
+    void confidentlyNonUsJobsAreNeverSentToTheCli() {
         long resumeId = insertResume();
         long runId = newRun();
         long austin = insertJob(runId, 400, "Backend role requiring Java.", "US - Austin, TX");
-        insertJob(runId, 401, "Backend role requiring Java.", "Israel, Yokneam");
-        insertJob(runId, 402, "Backend role requiring Java.", "India - Bangalore");
-        insertJob(runId, 403, "Backend role requiring Java.", "11 Locations");
+        long israel = insertJob(runId, 401, "Backend role requiring Java.", "Israel, Yokneam");
+        setLocationVerdict(austin, true, true);
+        setLocationVerdict(israel, false, true);
 
         FakeCliClient cli = new FakeCliClient(refs ->
                 new ClaudeCliResult.Ok(refs.stream().map(r -> new MatchVerdict(r, true, "fits")).toList(), 0.01, 50));
-        ResumeMatchService service = service(props(9, 1, true), cli);
+        ResumeMatchService service = service(props(9, 1), cli);
 
         ResumeMatchService.ScanResult result = service.scan(runId, resumeId, () -> false);
 
@@ -382,32 +390,41 @@ class ResumeMatchServiceTest extends AbstractStoreTest {
         assertThat(result.scanned()).isEqualTo(1);
     }
 
+    /**
+     * The two states that must stay scannable: a row Claude has not judged yet (the CLI was
+     * unavailable, or the row predates classification), and one it judged with low confidence.
+     * Hiding either would silently shrink the user's results on a guess.
+     */
     @Test
-    void everyJobIsScannedWhenUsOnlyIsOff() {
+    void unclassifiedAndLowConfidenceJobsAreStillScanned() {
         long resumeId = insertResume();
         long runId = newRun();
-        insertJob(runId, 500, "Backend role.", "US - Austin, TX");
-        insertJob(runId, 501, "Backend role.", "Israel, Yokneam");
+        long unclassified = insertJob(runId, 500, "Backend role.", "11 Locations");
+        long lowConfidence = insertJob(runId, 501, "Backend role.", "San Jose");
+        setLocationVerdict(lowConfidence, false, false);
+        // `unclassified` is left with location_us NULL on purpose.
 
         FakeCliClient cli = new FakeCliClient(refs ->
                 new ClaudeCliResult.Ok(refs.stream().map(r -> new MatchVerdict(r, true, "fits")).toList(), 0.01, 50));
-        ResumeMatchService service = service(props(9, 1, false), cli);
+        ResumeMatchService service = service(props(9, 1), cli);
 
         ResumeMatchService.ScanResult result = service.scan(runId, resumeId, () -> false);
 
         assertThat(result.scanned()).isEqualTo(2);
+        assertThat(cli.refsPerInvocation().get(0))
+                .containsExactlyInAnyOrder(String.valueOf(unclassified), String.valueOf(lowConfidence));
     }
 
-    /** A scan where every job is filtered out must be a clean no-op, not an error or a CLI call. */
+    /** A run where every posting is confidently non-US is a clean no-op, not an error. */
     @Test
     void aRunWithNoUsJobsMakesNoCliCallsAtAll() {
         long resumeId = insertResume();
         long runId = newRun();
-        insertJob(runId, 600, "Backend role.", "Israel, Yokneam");
-        insertJob(runId, 601, "Backend role.", "Germany - Munich");
+        setLocationVerdict(insertJob(runId, 600, "Backend role.", "Israel, Yokneam"), false, true);
+        setLocationVerdict(insertJob(runId, 601, "Backend role.", "Germany - Munich"), false, true);
 
         FakeCliClient cli = new FakeCliClient(refs -> new ClaudeCliResult.Ok(List.of(), 0.0, 10));
-        ResumeMatchService service = service(props(9, 1, true), cli);
+        ResumeMatchService service = service(props(9, 1), cli);
 
         ResumeMatchService.ScanResult result = service.scan(runId, resumeId, () -> false);
 

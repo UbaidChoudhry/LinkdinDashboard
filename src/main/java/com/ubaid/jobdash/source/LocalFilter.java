@@ -41,17 +41,20 @@ public final class LocalFilter {
      * True when {@code jobLocation} satisfies the requested {@code location}; true when the
      * request is blank (no filter).
      *
-     * <p>A country-level request is handled by {@link UsLocation}, not by substring: a board
-     * writes "New York, NY", which does <em>not</em> contain the string "United States", so a
-     * naive match would throw away nearly every genuine US posting while claiming to filter for
-     * them. Anything more specific ("New York", "Austin") stays a plain substring match.
+     * <p>A country-level request ("United States", "USA") imposes no filter here at all — that
+     * judgement belongs to {@code source/location/LocationClassifier}, which asks Claude. Anything
+     * more specific ("New York", "Austin") stays a plain substring match.
      */
     public static boolean matchesLocation(String jobLocation, String location) {
         if (location == null || location.isBlank()) {
             return true;
         }
         if (US_COUNTRY_TERMS.contains(location.toLowerCase(Locale.ROOT).trim())) {
-            return UsLocation.isUnitedStates(jobLocation);
+            // A country-level request is not a city filter. Whether a posting is in the US is
+            // decided by LocationClassifier after collection, so asking for "United States" here
+            // means "no location narrowing" rather than a substring test - which would otherwise
+            // discard "New York, NY", since that string does not contain "united states".
+            return true;
         }
         if (jobLocation == null) {
             return false;

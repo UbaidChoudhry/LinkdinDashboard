@@ -23,7 +23,7 @@ class ClaudeCliClientTest {
     Path tempDir;
 
     private AiProperties props(String cliPath, Duration timeout) {
-        return new AiProperties(true, cliPath, "sonnet", 9, 3, timeout, 6000, false);
+        return new AiProperties(true, cliPath, "sonnet", 9, 3, timeout, 6000, false, 200);
     }
 
     private Path stub(String name, String scriptBody) throws IOException {

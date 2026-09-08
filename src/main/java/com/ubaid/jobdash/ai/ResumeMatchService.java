@@ -3,7 +3,6 @@ package com.ubaid.jobdash.ai;
 import com.ubaid.jobdash.domain.AiMatch;
 import com.ubaid.jobdash.domain.JobListing;
 import com.ubaid.jobdash.domain.Resume;
-import com.ubaid.jobdash.source.UsLocation;
 import com.ubaid.jobdash.store.AiMatchRepository;
 import com.ubaid.jobdash.store.JobListingRepository;
 import com.ubaid.jobdash.store.ResumeRepository;
@@ -102,26 +101,9 @@ public class ResumeMatchService {
                 return ScanResult.empty();
             }
 
-            // Second location check, deliberately duplicating the one AtsSweepService applies at
-            // collection time. That one only guards rows arriving from a run with usOnly on;
-            // anything collected before the filter existed, or by a run with it off, would
-            // otherwise still be scored and surface as a match. Cheap to re-check, and it means
-            // no non-US posting can reach Claude by any route.
-            List<JobListing> inScope = scannable;
-            if (properties.usOnly()) {
-                inScope = scannable.stream()
-                        .filter(j -> UsLocation.isUnitedStates(j.location()))
-                        .toList();
-                int dropped = scannable.size() - inScope.size();
-                if (dropped > 0) {
-                    scanLog.info("skipping {} non-US posting(s) of {} before scanning (ai.us-only)",
-                            dropped, scannable.size());
-                }
-            }
-
             Set<Long> alreadyScanned = aiMatchRepository.findScannedJobIds(
-                    inScope.stream().map(JobListing::jobId).toList(), resumeId);
-            List<JobListing> toScan = inScope.stream()
+                    scannable.stream().map(JobListing::jobId).toList(), resumeId);
+            List<JobListing> toScan = scannable.stream()
                     .filter(j -> !alreadyScanned.contains(j.jobId()))
                     .toList();
 

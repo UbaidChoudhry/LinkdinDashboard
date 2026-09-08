@@ -60,10 +60,10 @@ public final class UsState {
             Map.entry("greater nashville", "TN"), Map.entry("salt lake city metropolitan area", "UT"));
 
     /**
-     * The full state (and DC) names this parser knows, lowercase. Exposed read-only so callers
-     * that need to recognise a state ANYWHERE in a free-text string - rather than resolve one
-     * specific code - can reuse this list instead of duplicating it. See
-     * {@code source/UsLocation}.
+     * The full state (and DC) names this parser knows, lowercase. Exposed read-only for callers
+     * that need to recognise a state ANYWHERE in a free-text string rather than resolve one
+     * specific code. Currently unused: the location classifier that once relied on it was replaced
+     * by {@code source/location/LocationClassifier}, which asks Claude instead.
      */
     public static java.util.Set<String> stateNames() {
         return NAMES.keySet();

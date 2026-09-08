@@ -85,7 +85,22 @@ export function JobRow({ job, tab, onChanged, onError, grouped = false }: JobRow
       <td className="col-company" title={job.company}>
         {job.company}
       </td>
-      <td>{job.location}</td>
+      <td>
+        {job.location}
+        {/* Only flagged when Claude answered but could not place the string. A null verdict means
+            "not classified yet" and gets no badge - that would mark almost every older row. */}
+        {job.locationConfident === false && (
+          <span
+            className="location-uncertain"
+            title={`Claude could not confidently place "${job.location}". It guessed ${
+              job.locationUs ? "United States" : "outside the United States"
+            }.`}
+          >
+            {" "}
+            ⚠ uncertain
+          </span>
+        )}
+      </td>
       <td title={absoluteTime(job.postedAt)}>{relativeTime(job.postedAt)}</td>
       <td className="col-salary" title={salaryCellTitle}>
         {formatSalary(job.salaryMin, job.salaryMax)}

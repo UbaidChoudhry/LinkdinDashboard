@@ -614,21 +614,14 @@ about to.
   `"New York, NY"` — it would have discarded nearly every genuine US posting while claiming to
   filter for them.
 
-`source/UsLocation` now decides this, and **order matters**: a named foreign country is rejected
-*before* any US signal is considered, because two-letter country codes collide with USPS state
-codes — `DE` is Germany and Delaware, `CA` is Canada and California, `IN` is India and Indiana.
-Checking for a state first classifies Munich and Bangalore as American.
-
-**Validate this class against real data, not invented strings.** Running it over the 61 distinct
-location strings actually in `job_listing` caught four false negatives the hand-written tests
-missed: `"California - Remote"` and `"Virginia - Mclean"` (single-word state names with no comma
-boundary, which `UsState.fromLocation` does not find), `"US, Remote"` (a padded-space check misses
-`us,`), and bare `"San Francisco"`. Those exact strings are now pinned in `UsLocationTest`.
-
-Two documented trade-offs: a short list of major US cities is consulted last, which accepts that
-San Jose also exists in Costa Rica; and Workday's `"11 Locations"` multi-site placeholder names no
-country, so a *hard* filter excludes it. On the user's real data the filter removed **147 of 228**
-collected ATS postings (64%).
+`source/UsLocation` decided this with hand-written country/state/city lists. **That class is gone
+as of the section below — location is now judged by Claude.** The history is kept because it is
+the argument for why: the matcher needed four corrections just to handle strings already in the
+database (`"California - Remote"`, `"Virginia - Mclean"`, `"US, Remote"`, bare `"San Francisco"`
+were all wrongly rejected), and it still called `"Remote - CA"` American with full confidence when
+the string is just as likely Canada. On the user's real data it removed **147 of 228** collected
+ATS postings (64%) — the right order of magnitude, by a method that could not be trusted at the
+edges.
 
 `usOnly` defaults to **true** and is opt-out (`usOnlyOrDefault()`), with a checkbox on the run
 form. Note that a company returning only foreign roles is still recorded `active` — liveness is
@@ -678,3 +671,62 @@ still have been sent to Claude and surfaced as a match. `ResumeMatchService` now
 `nonUsJobsAreNeverSentToTheCliWhenUsOnlyIsOn` asserts on the **CLI invocation count** — proving the
 posting never left the machine, not merely that no verdict was stored. Verified live by planting an
 `"Israel, Yokneam"` row and watching the scan skip it.
+
+
+### Claude decides the location, not a pattern matcher (2026-09-08)
+
+`UsLocation` is deleted. `source/location/LocationClassifier` asks the `claude` CLI whether each
+free-form location string refers to the United States.
+
+**Measured before building it**, over the 73 distinct real location strings then in the database:
+one batched call, **73/73 correct, $0.15, 27 seconds**. The same call also returns a `confident`
+flag, which isolated exactly the 11 genuinely ambiguous strings — the eight Workday
+`"N Locations"` placeholders, `"Hamburg"`, `"San Jose"`, and `"Remote - CA"`. The matcher had no
+way to express "I cannot tell", which is why it failed silently rather than visibly.
+
+**Three states, and the difference between them is the whole design.**
+
+| `location_us` | `location_confident` | Meaning | Visible? |
+|---|---|---|---|
+| NULL | NULL | not classified yet | **yes**, retried next run |
+| 1 | 1 or 0 | in the US | yes |
+| 0 | 0 | probably not US, but Claude could not tell | **yes**, flagged `⚠ uncertain` in the UI |
+| 0 | 1 | confidently not US | no |
+
+So the reading rule everywhere is *hide only a confidently non-US row*. A missing CLI must never
+silently shrink the user's results.
+
+**The SQL trap that cost a debugging cycle.** Written the obvious way —
+`not (location_us = 0 and location_confident = 1)` — an unclassified row makes `location_us = 0`
+NULL, so the whole `NOT(...)` is NULL, and `WHERE` drops it. That hid *every* row the classifier
+had not reached: the exact opposite of the intent, with no error. The live form is
+`not (coalesce(location_us, 1) = 0 and coalesce(location_confident, 0) = 1)` and
+`JobListingRepositoryTest.onlyConfidentlyNonUsRowsAreHiddenFromEveryReadPath` is the guard.
+**Do not remove the coalesce.** This is §1's signature failure again.
+
+**Why it is not stored in `filter_verdict`,** despite that being the single column that already
+hides rows from the search tab, the AI scan and salary enrichment:
+`FilterEngine.reevaluateStale()` rewrites that column wholesale from title/company rules, so a
+location decision parked there would be silently reverted the next time an exclude word changed.
+
+**Why classification runs after collection, not during it.** `AtsSweepService` now stores whatever
+a board returns and judges nothing. `RunOrchestrator` then runs one batched call for the whole run
+before the AI scan. Classifying inside the per-company loop would have cost up to one call per
+company (150 per run); this costs one, and often zero.
+
+**The cache is the cost argument.** Every decision is kept in `location_verdict`, keyed on a
+normalised string (`LocationKey`: lowercase, collapse whitespace — but **not** strip punctuation,
+because `"USA.VA.Reston"` and `"US, Remote"` depend on their separators). **No TTL**: which country
+a string names does not change. Measured live: a first run classified 5 strings for $0.1440; the
+next run over the same boards reported `distinct=7 cached=5 to-classify=2` and cost **$0.0395**.
+29 rows of "San Francisco Bay Area" spelling variants collapsed to one cache key.
+
+`ClaudeCliClient` gained `runStructured(prompt, jsonSchema)` returning a payload-agnostic
+`CliJsonResult`, so a second caller can define its own response shape. `run(prompt)` is now a thin
+job-match-shaped delegate over it and kept its signature, so `FakeCliClient` and the stub-script
+tests were untouched by the refactor.
+
+**Build note learned the hard way here:** `./mvnw compile` and `./mvnw test` can report BUILD
+SUCCESS against stale classes — a record with 26 components and a 24-argument constructor call
+"compiled" cleanly, and a broken predicate produced 21 phantom failures that vanished on a clean
+build. **Verify with `./mvnw clean test`.**

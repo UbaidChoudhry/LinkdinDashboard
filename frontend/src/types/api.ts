@@ -37,6 +37,15 @@ export interface JobResponse {
    */
   aiRecommended?: boolean | null;
   aiReason?: string | null;
+  /**
+   * Claude's judgement of the free-form location string. Both null means "not classified yet",
+   * which is NOT the same as "not in the US" - such rows stay visible and are retried next run.
+   * `locationConfident === false` means Claude answered but the string does not actually say
+   * where the job is (a "11 Locations" placeholder, a bare "San Jose"); those are flagged, not
+   * hidden. A confidently non-US row never reaches the client at all.
+   */
+  locationUs?: boolean | null;
+  locationConfident?: boolean | null;
 }
 
 export type RunStatus =

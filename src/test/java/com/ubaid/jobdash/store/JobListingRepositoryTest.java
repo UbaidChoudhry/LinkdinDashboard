@@ -196,4 +196,106 @@ class JobListingRepositoryTest extends AbstractStoreTest {
 
         assertThat(jobListingRepository.findByUserStatus(UserStatus.NOT_INTERESTED)).isEmpty();
     }
+
+    // ---- the location-visibility rule --------------------------------------------------------
+
+    private long insertPassingJob(long runId, String sourceJobId, Integer locationUs, Integer confident) {
+        jobListingRepository.upsertAll(List.of(new JobCardInsert("workday", sourceJobId, "Engineer", "Acme Corp",
+                "Somewhere", Instant.parse("2026-08-27T00:00:00Z"), "https://x/" + sourceJobId, null, "a description")),
+                runId, Instant.parse("2026-08-28T00:00:00Z"));
+        long jobId = jobIdFor(sourceJobId);
+        client.sql("""
+                        update job_listing
+                        set filter_verdict = 'pass', filter_version = 1,
+                            location_us = :us, location_confident = :c
+                        where job_id = :id
+                        """)
+                .param("us", locationUs)
+                .param("c", confident)
+                .param("id", jobId)
+                .update();
+        return jobId;
+    }
+
+    /**
+     * The visibility rule, asserted across every query that enforces it.
+     *
+     * <p>The NULL case is the one that matters most. SQLite comparisons against NULL yield NULL,
+     * so a predicate written as {@code not (location_us = 0 and location_confident = 1)} evaluates
+     * to NULL for an unclassified row — and {@code WHERE} drops it. That silently hid every row
+     * the classifier had not reached yet, which is the precise opposite of the intent. The
+     * {@code coalesce} in those queries is what makes this test pass; do not remove it.
+     */
+    @Test
+    void onlyConfidentlyNonUsRowsAreHiddenFromEveryReadPath() {
+        long runId = sweepRunRepository.create(Instant.parse("2026-08-28T00:00:00Z"), "engineer", "", 24,
+                false, null, "workday", null);
+
+        long unclassified = insertPassingJob(runId, "JR-null", null, null);
+        long confidentUs = insertPassingJob(runId, "JR-us", 1, 1);
+        long lowConfidence = insertPassingJob(runId, "JR-lowconf", 0, 0);
+        long confidentForeign = insertPassingJob(runId, "JR-foreign", 0, 1);
+
+        assertThat(jobListingRepository.findByRunAndVerdictAndNullUserStatus(runId, FilterVerdict.PASS))
+                .extracting(JobListing::jobId)
+                .as("search tab")
+                .containsExactlyInAnyOrder(unclassified, confidentUs, lowConfidence)
+                .doesNotContain(confidentForeign);
+
+        assertThat(jobListingRepository.findByVerdictAndNullUserStatus(FilterVerdict.PASS))
+                .extracting(JobListing::jobId)
+                .as("search tab, all runs")
+                .containsExactlyInAnyOrder(unclassified, confidentUs, lowConfidence);
+
+        assertThat(jobListingRepository.findScannableByRun(runId))
+                .extracting(JobListing::jobId)
+                .as("AI scan")
+                .containsExactlyInAnyOrder(unclassified, confidentUs, lowConfidence);
+
+        assertThat(jobListingRepository.findScannableByIds(
+                        List.of(unclassified, confidentUs, lowConfidence, confidentForeign)))
+                .extracting(JobListing::jobId)
+                .as("AI re-scan by id")
+                .containsExactlyInAnyOrder(unclassified, confidentUs, lowConfidence);
+
+        assertThat(jobListingRepository.findPassingWithoutSalaryByRun(runId))
+                .extracting(JobListing::jobId)
+                .as("salary enrichment")
+                .containsExactlyInAnyOrder(unclassified, confidentUs, lowConfidence);
+    }
+
+    @Test
+    void applyLocationVerdictStampsOnlyTheMatchingRowsOfThatRun() {
+        long runA = sweepRunRepository.create(Instant.parse("2026-08-28T00:00:00Z"), "e", "", 24,
+                false, null, "workday", null);
+        long runB = sweepRunRepository.create(Instant.parse("2026-08-28T00:00:00Z"), "e", "", 24,
+                false, null, "workday", null);
+        jobListingRepository.upsertAll(List.of(new JobCardInsert("workday", "A1", "Engineer", "Acme",
+                "Israel, Yokneam", Instant.parse("2026-08-27T00:00:00Z"), "https://x/A1", null, "d")),
+                runA, Instant.parse("2026-08-28T00:00:00Z"));
+        jobListingRepository.upsertAll(List.of(new JobCardInsert("workday", "B1", "Engineer", "Acme",
+                "Israel, Yokneam", Instant.parse("2026-08-27T00:00:00Z"), "https://x/B1", null, "d")),
+                runB, Instant.parse("2026-08-28T00:00:00Z"));
+
+        int updated = jobListingRepository.applyLocationVerdict(runA, "Israel, Yokneam", false, true);
+
+        assertThat(updated).isEqualTo(1);
+        assertThat(jobListingRepository.findById(jobIdFor("A1")).orElseThrow().locationUs()).isFalse();
+        assertThat(jobListingRepository.findById(jobIdFor("B1")).orElseThrow().locationUs())
+                .as("another run's identical location must not be judged by this run")
+                .isNull();
+    }
+
+    @Test
+    void findDistinctLocationsByRunDeduplicatesAndSkipsBlanks() {
+        long runId = sweepRunRepository.create(Instant.parse("2026-08-28T00:00:00Z"), "e", "", 24,
+                false, null, "workday", null);
+        for (String[] pair : new String[][]{{"D1", "Austin, TX"}, {"D2", "Austin, TX"}, {"D3", "  "}}) {
+            jobListingRepository.upsertAll(List.of(new JobCardInsert("workday", pair[0], "Engineer", "Acme",
+                    pair[1], Instant.parse("2026-08-27T00:00:00Z"), "https://x/" + pair[0], null, "d")),
+                    runId, Instant.parse("2026-08-28T00:00:00Z"));
+        }
+
+        assertThat(jobListingRepository.findDistinctLocationsByRun(runId)).containsExactly("Austin, TX");
+    }
 }
