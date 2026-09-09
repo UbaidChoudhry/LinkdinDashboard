@@ -116,7 +116,8 @@ class SweepServiceTest {
         SweepProperties sweepProperties = new SweepProperties(
                 new SweepProperties.Pacing(Duration.ofSeconds(6), Duration.ofSeconds(12)),
                 new SweepProperties.Budget(150, 300, testModePageCap),
-                new SweepProperties.Breaker(Duration.ofMinutes(30), Duration.ofMinutes(60), 2));
+                new SweepProperties.Breaker(Duration.ofMinutes(30), Duration.ofMinutes(60), 2),
+                new SweepProperties.Detail(true, 60));
 
         RecordingEnrichment enrichment = new RecordingEnrichment();
         SweepService service = new SweepService(pacedHttpClient, new CardParser(), filterEngine,

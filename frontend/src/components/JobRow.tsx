@@ -32,9 +32,12 @@ interface JobRowProps {
   onError: (message: string) => void;
   /** True when this row sits inside an expanded company group, which indents it. */
   grouped?: boolean;
+  /** Whether this row's checkbox is checked, for the multi-select bulk actions. */
+  selected: boolean;
+  onToggleSelect: (jobId: number) => void;
 }
 
-export function JobRow({ job, tab, onChanged, onError, grouped = false }: JobRowProps) {
+export function JobRow({ job, tab, onChanged, onError, grouped = false, selected, onToggleSelect }: JobRowProps) {
   const [busy, setBusy] = useState(false);
   const sourceLabel = salarySourceLabel(job.salarySource);
 
@@ -64,6 +67,14 @@ export function JobRow({ job, tab, onChanged, onError, grouped = false }: JobRow
 
   return (
     <tr className={grouped ? "grouped-job" : undefined}>
+      <td className="col-select">
+        <input
+          type="checkbox"
+          aria-label={`Select ${job.title}`}
+          checked={selected}
+          onChange={() => onToggleSelect(job.jobId)}
+        />
+      </td>
       <td className="col-title" title={job.title}>
         <a href={job.jobUrl} target="_blank" rel="noopener noreferrer">
           {job.title}

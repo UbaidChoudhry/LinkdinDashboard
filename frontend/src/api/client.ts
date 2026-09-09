@@ -7,6 +7,7 @@ import type {
   CreateRunRequest,
   DataStatsResponse,
   ErrorResponse,
+  JobBulkActionResponse,
   JobResponse,
   JobTab,
   JobSourceName,
@@ -114,6 +115,25 @@ export function setJobStatus(id: number, status: "applied" | "not_interested" | 
   return request<JobResponse>(`/api/jobs/${id}/status`, {
     method: "POST",
     body: JSON.stringify({ status }),
+  });
+}
+
+/** Bulk counterpart to {@link setJobStatus}: applies one status to every id in one call. */
+export function bulkSetJobStatus(
+  jobIds: number[],
+  status: "applied" | "not_interested" | null,
+): Promise<JobBulkActionResponse> {
+  return request<JobBulkActionResponse>("/api/jobs/bulk-status", {
+    method: "POST",
+    body: JSON.stringify({ jobIds, status }),
+  });
+}
+
+/** Permanently deletes every job in `jobIds`. Cannot be undone. */
+export function bulkDeleteJobs(jobIds: number[]): Promise<JobBulkActionResponse> {
+  return request<JobBulkActionResponse>("/api/jobs/bulk-delete", {
+    method: "POST",
+    body: JSON.stringify({ jobIds }),
   });
 }
 

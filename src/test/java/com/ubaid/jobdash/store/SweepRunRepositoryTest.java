@@ -70,4 +70,20 @@ class SweepRunRepositoryTest extends AbstractStoreTest {
         assertThat(run.sources()).isEqualTo("linkedin");
         assertThat(run.resumeId()).isNull();
     }
+
+    @Test
+    void detailProgressRoundTripsAndDefaultsToZero() {
+        long runId = sweepRunRepository.create(Instant.parse("2026-09-09T10:00:00Z"), "java", "remote",
+                24, false, null, "linkedin", null);
+        SweepRun fresh = sweepRunRepository.findById(runId).orElseThrow();
+        assertThat(fresh.detailsDone()).isZero();
+        assertThat(fresh.detailsTotal()).isZero();
+
+        sweepRunRepository.updateDetailProgress(runId, 4, 9, 57);
+
+        SweepRun run = sweepRunRepository.findById(runId).orElseThrow();
+        assertThat(run.detailsDone()).isEqualTo(4);
+        assertThat(run.detailsTotal()).isEqualTo(9);
+        assertThat(run.requestsMade()).isEqualTo(57);
+    }
 }

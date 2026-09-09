@@ -5,7 +5,8 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Classifies a raw LinkedIn job-search response into one of five {@link ResponseOutcome}s.
+ * Classifies a raw LinkedIn job-search response into one of five {@link ResponseOutcome}s, and
+ * (via {@link #classifyDetail}) a job-detail fragment into one of three.
  * <p>
  * Deliberately takes {@code cardCount} and {@code page1Titles} as parameters rather than
  * parsing the body itself, so it stays decoupled from the HTML parser and is trivially
@@ -82,6 +83,38 @@ public final class ResponseOutcomeDetector {
         }
 
         return new Classification(ResponseOutcome.OK, false, false);
+    }
+
+    /**
+     * Classifies a job-detail fragment response ({@code /jobs-guest/jobs/api/jobPosting/{id}}).
+     * Far simpler than a search page - there is no pagination, no sentinel and no relevance
+     * question - so only three outcomes exist:
+     * <ul>
+     *     <li>429 / 999 → {@link ResponseOutcome#BLOCKED}, a hard block signal;</li>
+     *     <li>404 → {@link ResponseOutcome#GONE}, the posting was taken down - a normal answer
+     *     from LinkedIn, not a failure;</li>
+     *     <li>200 with a parsed description → {@link ResponseOutcome#OK};</li>
+     *     <li>anything else (200 with no description, an empty body, 5xx) →
+     *     {@link ResponseOutcome#BLOCKED} with {@code unparseable} set, so the caller can treat it
+     *     as a soft failure rather than a definite block.</li>
+     * </ul>
+     *
+     * @param statusCode        the HTTP status code of the response.
+     * @param body              the raw response body (possibly null or blank).
+     * @param descriptionParsed whether the caller's parser extracted a non-blank description.
+     */
+    public Classification classifyDetail(int statusCode, String body, boolean descriptionParsed) {
+        if (statusCode == 429 || statusCode == 999) {
+            return new Classification(ResponseOutcome.BLOCKED, false, false);
+        }
+        if (statusCode == 404) {
+            return new Classification(ResponseOutcome.GONE, false, false);
+        }
+        boolean bodyBlank = body == null || body.isBlank();
+        if (statusCode == 200 && !bodyBlank && descriptionParsed) {
+            return new Classification(ResponseOutcome.OK, false, false);
+        }
+        return new Classification(ResponseOutcome.BLOCKED, false, true);
     }
 
     private boolean isSentinel(String body) {

@@ -114,6 +114,26 @@ public class SweepRunRepository {
                 .update();
     }
 
+    /**
+     * Updates the counters of a LinkedIn run's post-collection detail-fetch phase. {@code requestsMade}
+     * is the run's running total (search pages plus detail fragments), so the budget a run spent is
+     * readable from one column.
+     */
+    public int updateDetailProgress(long id, int detailsDone, int detailsTotal, int requestsMade) {
+        return client.sql("""
+                        update sweep_run
+                        set details_done = :detailsDone,
+                            details_total = :detailsTotal,
+                            requests_made = :requestsMade
+                        where id = :id
+                        """)
+                .param("detailsDone", detailsDone)
+                .param("detailsTotal", detailsTotal)
+                .param("requestsMade", requestsMade)
+                .param("id", id)
+                .update();
+    }
+
     /** Marks a run finished with a terminal status (e.g. {@code completed}, {@code failed}). */
     public int finish(long id, Instant finishedAt, String status) {
         return client.sql("update sweep_run set finished_at = :finishedAt, status = :status where id = :id")
@@ -185,7 +205,9 @@ public class SweepRunRepository {
                 rs.getString("sources"),
                 resumeId,
                 rs.getInt("companies_done"),
-                rs.getInt("companies_total")
+                rs.getInt("companies_total"),
+                rs.getInt("details_done"),
+                rs.getInt("details_total")
         );
     }
 }

@@ -68,6 +68,22 @@ export function RunProgress({ run, streamError, onCancelled }: RunProgressProps)
           <dt>Current shard</dt>
           <dd>{run.currentShard ?? "-"}</dd>
         </div>
+        {(run.companiesTotal ?? 0) > 0 && (
+          <div>
+            <dt>Companies visited</dt>
+            <dd>
+              {run.companiesDone ?? 0}/{run.companiesTotal}
+            </dd>
+          </div>
+        )}
+        {(run.detailsTotal ?? 0) > 0 && (
+          <div>
+            <dt>Descriptions fetched</dt>
+            <dd>
+              {run.detailsDone ?? 0}/{run.detailsTotal}
+            </dd>
+          </div>
+        )}
       </dl>
 
       {run.scan && <ScanPanel scan={run.scan} live={run.status === "scanning"} />}

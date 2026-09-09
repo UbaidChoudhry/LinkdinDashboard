@@ -12,7 +12,7 @@ frontend/  React + TypeScript dashboard (Vite dev server, :5173)
 src/       Spring Boot backend (Java 21, :8080)
              ├─ main/java/com/ubaid/jobdash/   application code, by package (below)
              ├─ main/resources/                application.yml, Flyway migrations
-             └─ test/                          mirrors main/java/, 305 tests
+             └─ test/                          mirrors main/java/, 386 tests
 data/      the SQLite database file (gitignored, created on first boot)
 ```
 
@@ -38,13 +38,16 @@ just detail.
 
 ```
 POST /api/runs { sources: [...] }            [RunController -> RunOrchestrator]
-   sources == ["linkedin"]  → SweepService     (Flow A below — unchanged)
-   otherwise                → AtsSweepService  (Flow A' — one pass per enabled company)
-                              then, as the LAST step, ResumeMatchService (the AI scan)
+   one sweep_run row, one virtual thread, phases in this order, each skipped if not selected:
+   1. "linkedin" selected   → SweepService.collect     (Flow A — the shard/pagination loop)
+   2. any board selected    → AtsSweepService.run      (Flow A' — one pass per enabled company)
+   3. if 1 ended "ok"       → DetailFetchService       (Flow A phase 2 — LinkedIn descriptions)
+   4. if 2 ended "ok"       → LocationClassifier
+   5. unless cancelled      → ResumeMatchService       (the AI scan, over everything collected)
 ```
-LinkedIn cannot be combined with the ATS sources: its guest search returns no job description
-(HANDOFF.md §2), so the scan would have nothing to read. The API rejects the combination with a
-400. Flow A below describes the LinkedIn path and is unchanged by any of this.
+Any mix is valid (since 2026-09-09). Phases 1 and 2 are independent - each has its own budget
+and stop reasons - so LinkedIn's breaker opening never stops the boards, and vice versa. The
+run's status is the first non-"ok" phase outcome in that order; the scan runs regardless.
 
 ### Flow A — starting a sweep (write path, hits LinkedIn)
 
@@ -52,12 +55,12 @@ LinkedIn cannot be combined with the ATS sources: its guest search returns no jo
 User clicks "Start run" in RunControls.tsx
   → POST /api/runs                                    [RunController]
       guards: is a run already in flight? is the circuit breaker open?
-      → SweepService.startRun()                        [sweep/SweepService.java]
-          creates a sweep_run row, status='running'
-          spawns a virtual thread running SweepService.run(runId, request)
+      → RunOrchestrator.startRun()                     [sweep/RunOrchestrator.java]
+          SweepService.createRun(): a sweep_run row, status='running', sources='linkedin'
+          spawns a virtual thread: SweepService.collect → DetailFetchService → ResumeMatchService
       ← returns { runId } immediately (HTTP 201)
 
-  Meanwhile, on the virtual thread, SweepService.run() loops:
+  Meanwhile, on the virtual thread, SweepService.collect() loops:
     for each shard (or once, if sharding is off):
       loop, start = 0, 10, 20, …
         SweepQueryBuilder.buildUri(keywords, location, hours, start)
@@ -79,6 +82,24 @@ User clicks "Start run" in RunControls.tsx
           IRRELEVANT      → stop the WHOLE run, status='failed', nothing from this page is stored
         after each page: SweepRunRepository.updateProgress(...) persists counters,
                           an in-memory ConcurrentHashMap<runId, SweepProgress> is updated too
+
+  Phase 2, only after a LinkedIn collection that ended "ok" (and after the ATS phase, if any):
+                                                        [sweep/DetailFetchService.java]
+    status='fetching_details'
+    JobListingRepository.findDetailQueue(cap)          (cap = sweep.detail.max-per-run, 0 = all)
+        ← EVERY LinkedIn row with filter_verdict='pass', user_status null, detail_fetched_at null
+          (the job_detail_queue partial index), newest posting first, across all runs
+    for each row:
+      SweepQueryBuilder.buildDetailUri(sourceJobId)
+        → https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{id}
+      PacedHttpClient.fetchDetail(uri)   — SAME pacing gate, per-run cap, 24h budget, breaker
+      outcome OK    → DetailParser.parse → applyDetail(description, md5 hash, detail_status='ok')
+              GONE  → (HTTP 404) markDetailGone: detail_status='gone', never retried
+              BLOCKED (429/999) or budget/breaker refusal → stop the phase; rows stay queued
+              unusable 200 / 5xx / transport error → skip that row, continue
+      publish detailsDone/detailsTotal
+    then status='scanning' → ResumeMatchService.scan(runId, resumeId) — same as Flow A'
+    (the scan only sees rows with a description, so it is exactly the rows this phase filled)
 
   Meanwhile, the browser is watching:
     GET /api/runs/{id}/stream  (Server-Sent Events)      [RunController]
@@ -161,8 +182,8 @@ This package is the safety layer and nothing else — it does not know what a "j
 |---|---|
 | `RateLimiter` | 3 layers: inter-request pacing (6-12s, global single-permit gate), per-run request cap, rolling-24h budget (reads `RequestBudgetStore`, never an in-memory count — must survive a restart) |
 | `CircuitBreaker` | CLOSED → OPEN → HALF_OPEN state machine. Trips immediately on 429/999, after 2 soft failures otherwise. **Must be a Spring singleton** — half-open's "exactly one probe" guarantee is an in-memory flag |
-| `ResponseOutcomeDetector` | Classifies a raw HTTP response into one of 5 `ResponseOutcome` values. The positional empty-body rule (start=0 → BLOCKED, start>0 → END_OF_RESULTS) lives here |
-| `PacedHttpClient` | Wires the three above together into one `fetch(uri, start, keyword) -> FetchResult` call. Everything else in the app calls this, never raw `HttpClient` |
+| `ResponseOutcomeDetector` | `classify(...)` sorts a search page into one of 5 `ResponseOutcome` values - the positional empty-body rule (start=0 → BLOCKED, start>0 → END_OF_RESULTS) lives here. `classifyDetail(...)` sorts a job-detail fragment into OK / GONE (404) / BLOCKED |
+| `PacedHttpClient` | Wires the three above together into `fetch(uri, start, keyword)` (a search page) and `fetchDetail(uri)` (a job-detail fragment), both `-> FetchResult` and both through the same gates. `beginRun()` resets the per-run counter. Everything else in the app calls this, never raw `HttpClient` |
 | `SweepProperties` | typed binding of the `sweep:` block in `application.yml` |
 | `HttpClientConfiguration` | the `@Bean` wiring — **read the comments here before touching singleton scope** |
 
@@ -183,6 +204,12 @@ LinkedIn search URL (and is the one place that would need to change if LinkedIn'
 parameters ever change). `SweepRunRequest` / `SweepProgress` are the input/output shapes.
 `SweepShardsProperties` holds the configured metro shard list. After each page's filter pass it
 calls `salary.SalaryEnrichmentService.enrichRun(...)` inline (see below).
+
+`DetailFetchService` is phase 2 of Flow A: it drains the `job_detail_queue` for the run through
+`PacedHttpClient.fetchDetail` and `source/linkedin/DetailParser`, applying the three-outcome rule
+(ok / gone / leave queued). `RunOrchestrator` is what strings collect → details → scan together on
+one virtual thread and owns the run's terminal status; `SweepService.run()` (collect-and-finish in
+one call) survives for the tests that drive the loop synchronously.
 
 ### `salary/` — attaching a pay range to each job
 Runs inside the sweep, right after filtering. `SalaryEnrichmentService` walks the run's passing,
@@ -215,7 +242,7 @@ must switch exhaustively. Implementations **never throw** — same discipline as
 | `source/linkedin/` | the original HTML card parser (unchanged) |
 | `source/greenhouse/` | one request returns the whole board; `content` is entity-escaped HTML |
 | `source/lever/` | one request returns the whole board; ids are UUIDs, `createdAt` is epoch ms. **HTTP 200 + `[]` is a live board with no jobs, NOT a dead slug** |
-| `source/workday/` | two-phase: a server-side-filtered search page, then one detail request per job for the description and real date. `WorkdaySiteResolver` discovers the site id from the tenant's `robots.txt` |
+| `source/workday/` | two-phase: a server-side-filtered search page, then one detail request per job for the description and real date; the run's hours window is enforced on that date (and the prose `postedOn` skips obviously stale jobs before a detail request). `WorkdaySiteResolver` discovers the site id from the tenant's `robots.txt` |
 | `source/ats/` | `AtsRateLimiter` (pacing + per-source daily cap off `external_request_log` — **never** LinkedIn's `request_log`), `AtsProperties`, and `SlugCatalogImportService` / `SlugImportRunner` behind `./import-slugs.sh` |
 | `source/location/` | `LocationClassifier` asks Claude whether each free-form location is in the US, once per run and cached forever in `location_verdict`. Non-US rows are hidden by a predicate in `JobListingRepository`'s read queries, **not** by `filter_verdict` (FilterEngine would overwrite it). See HANDOFF.md §9 |
 
@@ -379,8 +406,8 @@ location_verdict     Claude's US/not-US call per distinct location string, no TT
 
 Two indexes worth knowing about:
 - `job_detail_queue` — a **partial** index (`where detail_fetched_at is null and
-  filter_verdict = 'pass'`). Nothing reads it yet (detail fetching isn't built), but it's the
-  seam for it, and it's *why* verdicts must be stored lowercase.
+  filter_verdict = 'pass'`). `JobListingRepository.findDetailQueue` reads it for the
+  detail-fetch phase, and it's *why* verdicts must be stored lowercase.
 - `job_browse` — supports the tab queries in `JobController`.
 
 ---
@@ -403,7 +430,7 @@ Test packages mirror `main/java` exactly — if you're looking for tests of
   file names for what each fixture represents (the two 26-byte files are the real end-of-results
   sentinel, not corrupt captures).
 
-Current count: **305 tests**. Run `./mvnw test`. Salary tests follow the same rules — the
+Current count: **386 tests**. Run `./mvnw test`. Salary tests follow the same rules — the
 Adzuna / h1bapi sources are driven through `StubHttpClient`, `SalaryRateLimiter` through
 `FakeClock`/`FakeSleeper`, and `LcaImportServiceTest` generates a tiny `.xlsx` in memory.
 
@@ -418,6 +445,8 @@ Adzuna / h1bapi sources are driven through `StubHttpClient`, `SalaryRateLimiter`
 | Understand why a run stopped early | `sweep/SweepService.java`, the `switch` on `ResponseOutcome` in `runShard()` — cross-reference with `sweep_run.status` in the DB |
 | Add a new REST endpoint | a method on the matching `web/*Controller.java`, backed by a repository method in `store/` |
 | Change LinkedIn query parameters | `sweep/SweepQueryBuilder.java` only |
+| Change how many job descriptions a LinkedIn run fetches | all of them by default. `application.yml` → `sweep.detail.max-per-run` (0 = no cap) and `sweep.budget.*`, which it draws on. Turning the phase off entirely: `sweep.detail.enabled: false` |
+| Work out why a LinkedIn row has no AI verdict | its `job_listing.detail_status`: null = never reached in the run's detail cap or the phase was blocked (retried next run); `gone` = LinkedIn 404'd it; `ok` but no `ai_match` row = the scan hadn't a resume or was cancelled |
 | Work on salary data / add a salary source | `salary/` package, `SalaryEnrichmentService` is the orchestrator; `SALARY_SETUP.md` + HANDOFF.md §8 |
 | Import DOL LCA wage data | `./import-lca.sh <xlsx>` → `salary/LcaImportService.java` |
 | Understand the rate limiter's math | `http/RateLimiter.java`, tests in `http/RateLimiterTest.java` use `FakeClock` to assert timing without waiting |

@@ -5,7 +5,8 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Builds LinkedIn guest job-search URLs for the sweep's pagination loop.
+ * Builds LinkedIn guest URLs: the job-search pages the sweep's pagination loop walks, and the
+ * per-posting detail fragment the detail-fetch phase reads afterwards.
  * <p>
  * Deliberately omits {@code spellCorrectionEnabled} and {@code currentJobId} — both broaden or
  * leak UI state rather than narrow the query — and never encodes a boolean NOT clause into
@@ -17,6 +18,8 @@ public final class SweepQueryBuilder {
 
     private static final String BASE_URL =
             "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search";
+    private static final String DETAIL_BASE_URL =
+            "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/";
 
     private SweepQueryBuilder() {
     }
@@ -35,6 +38,15 @@ public final class SweepQueryBuilder {
         appendParam(query, "sortBy", "DD");
         appendParam(query, "start", String.valueOf(start));
         return URI.create(BASE_URL + "?" + query);
+    }
+
+    /**
+     * The guest job-detail fragment for one posting: the only anonymous endpoint that carries the
+     * description (HANDOFF.md §2). {@code jobId} is LinkedIn's numeric posting id, i.e. the row's
+     * {@code source_job_id}.
+     */
+    public static URI buildDetailUri(String jobId) {
+        return URI.create(DETAIL_BASE_URL + encode(jobId));
     }
 
     private static void appendParam(StringBuilder sb, String key, String value) {

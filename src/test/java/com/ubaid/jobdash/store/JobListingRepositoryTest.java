@@ -298,4 +298,71 @@ class JobListingRepositoryTest extends AbstractStoreTest {
 
         assertThat(jobListingRepository.findDistinctLocationsByRun(runId)).containsExactly("Austin, TX");
     }
+
+    // --- detail-fetch queue ---------------------------------------------------
+
+    @Test
+    void detailQueueReturnsUnfetchedPassingUntriagedLinkedInRowsAcrossRuns_newestFirst() {
+        long runId = sweepRunRepository.create(Instant.now(), "java", "remote", 24, false, null);
+        long otherRun = sweepRunRepository.create(Instant.now(), "java", "remote", 24, false, null);
+        Instant older = Instant.parse("2026-09-01T00:00:00Z");
+        Instant newer = Instant.parse("2026-09-08T00:00:00Z");
+        jobListingRepository.upsertAll(List.of(
+                new JobCardInsert("linkedin", "1", "Older", "Acme", "NY", older, "u1", null, null),
+                new JobCardInsert("linkedin", "2", "Newer", "Acme", "NY", newer, "u2", null, null),
+                new JobCardInsert("linkedin", "3", "Rejected", "Acme", "NY", newer, "u3", null, null),
+                new JobCardInsert("linkedin", "4", "Applied", "Acme", "NY", newer, "u4", null, null),
+                new JobCardInsert("linkedin", "5", "Fetched", "Acme", "NY", newer, "u5", null, null),
+                new JobCardInsert("lever", "6", "Lever", "Acme", "NY", newer, "u6", null, "has one")),
+                runId, Instant.now());
+        jobListingRepository.upsertAll(List.of(
+                new JobCardInsert("linkedin", "7", "Other run", "Acme", "NY", newer, "u7", null, null)),
+                otherRun, Instant.now());
+        jobListingRepository.applyVerdicts(List.of(
+                new JobListingRepository.VerdictUpdate(jobIdFor("1"), FilterVerdict.PASS, null),
+                new JobListingRepository.VerdictUpdate(jobIdFor("2"), FilterVerdict.PASS, null),
+                new JobListingRepository.VerdictUpdate(jobIdFor("3"), FilterVerdict.REJECT, "senior"),
+                new JobListingRepository.VerdictUpdate(jobIdFor("4"), FilterVerdict.PASS, null),
+                new JobListingRepository.VerdictUpdate(jobIdFor("5"), FilterVerdict.PASS, null),
+                new JobListingRepository.VerdictUpdate(jobIdFor("6"), FilterVerdict.PASS, null),
+                new JobListingRepository.VerdictUpdate(jobIdFor("7"), FilterVerdict.PASS, null)), 1);
+        jobListingRepository.setUserStatus(jobIdFor("4"), UserStatus.APPLIED, Instant.now());
+        jobListingRepository.applyDetail(jobIdFor("5"), "already have it", "hash5", Instant.now());
+
+        List<JobListing> queue = jobListingRepository.findDetailQueue(10);
+
+        // Row 7 belongs to another run and is still queued: leftovers are never stranded.
+        assertThat(queue).extracting(JobListing::sourceJobId).containsExactly("7", "2", "1");
+        assertThat(jobListingRepository.findDetailQueue(1))
+                .extracting(JobListing::sourceJobId).containsExactly("7");
+    }
+
+    @Test
+    void applyDetailPopulatesTheRowAndDequeuesIt_markGoneDequeuesWithoutADescription() {
+        long runId = sweepRunRepository.create(Instant.now(), "java", "remote", 24, false, null);
+        jobListingRepository.upsertAll(List.of(card(10, "A"), card(11, "B")), runId, Instant.now());
+        jobListingRepository.applyVerdicts(List.of(
+                new JobListingRepository.VerdictUpdate(jobIdFor("10"), FilterVerdict.PASS, null),
+                new JobListingRepository.VerdictUpdate(jobIdFor("11"), FilterVerdict.PASS, null)), 1);
+        Instant at = Instant.parse("2026-09-09T12:00:00Z");
+
+        assertThat(jobListingRepository.applyDetail(jobIdFor("10"), "Full text", "abc123", at)).isEqualTo(1);
+        assertThat(jobListingRepository.markDetailGone(jobIdFor("11"), at)).isEqualTo(1);
+
+        JobListing fetched = jobListingRepository.findById(jobIdFor("10")).orElseThrow();
+        assertThat(fetched.description()).isEqualTo("Full text");
+        assertThat(fetched.descriptionHash()).isEqualTo("abc123");
+        assertThat(fetched.detailStatus()).isEqualTo("ok");
+        assertThat(fetched.detailFetchedAt()).isEqualTo(at);
+
+        JobListing gone = jobListingRepository.findById(jobIdFor("11")).orElseThrow();
+        assertThat(gone.description()).isNull();
+        assertThat(gone.detailStatus()).isEqualTo("gone");
+        assertThat(gone.detailFetchedAt()).isEqualTo(at);
+
+        assertThat(jobListingRepository.findDetailQueue(10)).isEmpty();
+        // Only the fetched row is now scannable - the gone row still has no description.
+        assertThat(jobListingRepository.findScannableByRun(runId))
+                .extracting(JobListing::sourceJobId).containsExactly("10");
+    }
 }

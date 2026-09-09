@@ -1,6 +1,7 @@
 package com.ubaid.jobdash.http;
 
 import com.ubaid.jobdash.source.linkedin.CardParser;
+import com.ubaid.jobdash.source.linkedin.DetailParser;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -39,6 +40,12 @@ public class HttpClientConfiguration {
     @Bean
     public CardParser cardParser() {
         return new CardParser();
+    }
+
+    /** Same convention as {@link #cardParser()}: the job-detail fragment parser is a plain class. */
+    @Bean
+    public DetailParser detailParser() {
+        return new DetailParser();
     }
 
     /**
@@ -84,8 +91,8 @@ public class HttpClientConfiguration {
     public PacedHttpClient pacedHttpClient(HttpClient linkedInHttpClient, RateLimiter rateLimiter,
                                             CircuitBreaker circuitBreaker, RequestBudgetStore requestBudgetStore,
                                             ResponseOutcomeDetector responseOutcomeDetector, CardParser cardParser,
-                                            Clock clock) {
+                                            DetailParser detailParser, Clock clock) {
         return new PacedHttpClient(linkedInHttpClient, rateLimiter, circuitBreaker, requestBudgetStore,
-                responseOutcomeDetector, cardParser, clock);
+                responseOutcomeDetector, cardParser, detailParser, clock);
     }
 }

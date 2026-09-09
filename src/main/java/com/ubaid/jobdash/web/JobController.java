@@ -11,6 +11,9 @@ import com.ubaid.jobdash.store.AiMatchRepository;
 import com.ubaid.jobdash.store.JobListingRepository;
 import com.ubaid.jobdash.store.ResumeRepository;
 import com.ubaid.jobdash.store.SweepRunRepository;
+import com.ubaid.jobdash.web.dto.JobBulkActionResponse;
+import com.ubaid.jobdash.web.dto.JobBulkDeleteRequest;
+import com.ubaid.jobdash.web.dto.JobBulkStatusUpdateRequest;
 import com.ubaid.jobdash.web.dto.JobResponse;
 import com.ubaid.jobdash.web.dto.JobStatusUpdateRequest;
 import org.springframework.http.HttpStatus;
@@ -109,6 +112,33 @@ public class JobController {
         return jobListingRepository.findById(id)
                 .map(JobResponse::from)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "No job found with id " + id + "."));
+    }
+
+    /**
+     * Bulk counterpart to {@link #setStatus}: applies the same status to every id in the request
+     * body in one call, backing the Results tab's multi-select "mark all as Not interested".
+     */
+    @PostMapping("/api/jobs/bulk-status")
+    public JobBulkActionResponse bulkSetStatus(@RequestBody(required = false) JobBulkStatusUpdateRequest body) {
+        List<Long> jobIds = requireJobIds(body == null ? null : body.jobIds());
+        UserStatus status = parseStatus(body.status());
+        int updated = jobListingRepository.bulkSetUserStatus(jobIds, status, clock.instant());
+        return new JobBulkActionResponse(updated);
+    }
+
+    /** Permanently deletes every job in the request body, backing the Results tab's "Delete selected". */
+    @PostMapping("/api/jobs/bulk-delete")
+    public JobBulkActionResponse bulkDelete(@RequestBody(required = false) JobBulkDeleteRequest body) {
+        List<Long> jobIds = requireJobIds(body == null ? null : body.jobIds());
+        int deleted = jobListingRepository.deleteByIds(jobIds);
+        return new JobBulkActionResponse(deleted);
+    }
+
+    private static List<Long> requireJobIds(List<Long> jobIds) {
+        if (jobIds == null || jobIds.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "jobIds must be a non-empty list.");
+        }
+        return jobIds;
     }
 
     private static UserStatus parseStatus(String raw) {

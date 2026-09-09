@@ -497,6 +497,12 @@ td {
   margin-left: 8px;
 }
 
+.col-select {
+  width: 1%;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
 .col-salary {
   font-variant-numeric: tabular-nums;
 }
@@ -1181,6 +1187,48 @@ tr.source-dead {
   margin: 0 0 10px;
   font-size: 13px;
   color: var(--text);
+}
+
+/* ---- Multi-select bulk actions (Results tab) --------------------------------------------- */
+
+.selection-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--accent-border);
+  border-radius: 6px;
+  background: var(--accent-bg);
+  transition: opacity 120ms ease;
+}
+
+/* Nothing selected: stays on screen (so the row of buttons doesn't jump the layout underneath
+   it as soon as a checkbox is clicked) but reads as inactive. The buttons are also individually
+   disabled, so this is a visual cue on top of real disabled state, not instead of it. */
+.selection-bar.empty {
+  border-color: var(--border);
+  background: transparent;
+  opacity: 0.55;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .selection-bar { transition: none; }
+}
+
+.selection-count {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.selection-delete-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-h);
 }
 
 .job-source-tag {

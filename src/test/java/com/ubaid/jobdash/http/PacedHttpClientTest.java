@@ -156,4 +156,78 @@ class PacedHttpClientTest {
         // A transport failure counts as a soft failure against the breaker.
         assertEquals(1, f.circuitStore.load().softFailureCount());
     }
+
+    // --- job-detail fragments -----------------------------------------------
+
+    private static final URI DETAIL_URI = URI.create("https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/4239977994");
+    private static final String DETAIL_BODY = """
+            <section class="top-card-layout"><h2 class="top-card-layout__title">Engineer</h2></section>
+            <div class="show-more-less-html__markup">We build distributed systems. Requirements: Java.</div>
+            """;
+
+    @Test
+    void detailFetchIsClassifiedOkAndSpendsTheSharedBudget() {
+        Fixture f = newFixture(150, 300);
+        f.http.enqueue(new StubHttpResponse(200, DETAIL_BODY, DETAIL_URI));
+
+        FetchResult result = f.client.fetchDetail(DETAIL_URI);
+
+        FetchResult.Completed completed = assertInstanceOf(FetchResult.Completed.class, result);
+        assertEquals(ResponseOutcome.OK, completed.outcome());
+        assertEquals(1, f.budgetStore.all().size(), "a detail fetch must be counted in request_log like a search page");
+        assertEquals(ResponseOutcome.OK, f.budgetStore.all().get(0).outcome());
+        assertEquals(CircuitState.CLOSED, f.circuitStore.load().state());
+    }
+
+    @Test
+    void detail404IsGoneAndDoesNotTouchTheBreaker() {
+        Fixture f = newFixture(150, 300);
+        f.http.enqueue(new StubHttpResponse(404, "", DETAIL_URI));
+
+        FetchResult result = f.client.fetchDetail(DETAIL_URI);
+
+        assertEquals(ResponseOutcome.GONE, assertInstanceOf(FetchResult.Completed.class, result).outcome());
+        assertEquals(0, f.circuitStore.load().softFailureCount());
+        assertEquals(CircuitState.CLOSED, f.circuitStore.load().state());
+    }
+
+    @Test
+    void detail429TripsBreakerAndNextDetailFetchIsRefused() {
+        Fixture f = newFixture(150, 300);
+        f.http.enqueue(new StubHttpResponse(429, "", DETAIL_URI));
+
+        FetchResult first = f.client.fetchDetail(DETAIL_URI);
+        assertEquals(ResponseOutcome.BLOCKED, assertInstanceOf(FetchResult.Completed.class, first).outcome());
+        assertEquals(CircuitState.OPEN, f.circuitStore.load().state());
+
+        assertInstanceOf(FetchResult.BlockedByCircuit.class, f.client.fetchDetail(DETAIL_URI));
+        assertEquals(1, f.http.requestsSeen().size());
+    }
+
+    @Test
+    void detailWithoutADescriptionIsASoftFailure() {
+        Fixture f = newFixture(150, 300);
+        f.http.enqueue(new StubHttpResponse(200, "<html>please sign in</html>", DETAIL_URI));
+
+        FetchResult result = f.client.fetchDetail(DETAIL_URI);
+
+        assertEquals(ResponseOutcome.BLOCKED, assertInstanceOf(FetchResult.Completed.class, result).outcome());
+        assertEquals(1, f.circuitStore.load().softFailureCount());
+    }
+
+    @Test
+    void searchAndDetailFetchesShareOnePerRunCapUntilBeginRunResetsIt() {
+        Fixture f = newFixture(2, 300);
+        f.http.enqueue(new StubHttpResponse(200, bodyWithCards(10), URI_UNDER_TEST));
+        f.http.enqueue(new StubHttpResponse(200, DETAIL_BODY, DETAIL_URI));
+
+        assertInstanceOf(FetchResult.Completed.class, f.client.fetch(URI_UNDER_TEST, 0, "software engineer"));
+        assertInstanceOf(FetchResult.Completed.class, f.client.fetchDetail(DETAIL_URI));
+        assertInstanceOf(FetchResult.BlockedByRunCap.class, f.client.fetchDetail(DETAIL_URI));
+
+        // Without this reset the "per-run" cap would carry over into the next run.
+        f.client.beginRun();
+        f.http.enqueue(new StubHttpResponse(200, DETAIL_BODY, DETAIL_URI));
+        assertInstanceOf(FetchResult.Completed.class, f.client.fetchDetail(DETAIL_URI));
+    }
 }

@@ -1,6 +1,7 @@
 package com.ubaid.jobdash.source.workday;
 
 import com.ubaid.jobdash.source.JobSource;
+import com.ubaid.jobdash.source.LocalFilter;
 import com.ubaid.jobdash.source.SourceFetchResult;
 import com.ubaid.jobdash.source.SourceQuery;
 import com.ubaid.jobdash.source.SourcedJob;
@@ -26,7 +27,10 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * {@link JobSource} for Workday's two-phase job-board API. Unlike Greenhouse/Lever, a single
@@ -37,12 +41,20 @@ import java.util.Optional;
  *     the three ATS sources where the provider does the keyword filtering). Each result carries
  *     only {@code title}/{@code externalPath}/{@code locationsText}/{@code bulletFields} and a
  *     <b>prose</b> {@code postedOn} (literally {@code "Posted 30+ Days Ago"}) — this is never
- *     parsed as a date.</li>
+ *     parsed as a date, but when the run has a recency window it is used as a <em>lower bound
+ *     on age</em> to skip obviously stale postings before spending a detail request on them
+ *     (see {@link #minimumAgeHours}).</li>
  *     <li>Detail: {@code GET https://{host}/wday/cxs/{tenant}/{site}{externalPath}} — the only
  *     place {@code jobDescription} and the real {@code startDate} (ISO local date) exist. Costs
- *     one extra request per job, so it's capped at {@code ats.workday.max-details-per-run}; jobs
- *     beyond the cap are still returned, with a null {@code postedAt} and null description.</li>
+ *     one extra request per job, so it's capped at {@code ats.workday.max-details-per-run}.</li>
  * </ol>
+ * The run's recency window ({@code SourceQuery.hours}) is enforced here on the real date, the
+ * same rule Greenhouse and Lever apply through {@link LocalFilter}, at day granularity because
+ * {@code startDate} has no time. With a window set, a job that never got a detail request (past
+ * the cap, or its detail failed) is dropped rather than kept undated: only a date can prove it
+ * is inside the window, and an undated row would silently reintroduce months-old postings.
+ * Without a window ({@code hours <= 0}) such jobs are still returned with a null
+ * {@code postedAt} and description, as before.
  */
 @Component
 public class WorkdayJobSource implements JobSource {
@@ -165,11 +177,21 @@ public class WorkdayJobSource implements JobSource {
             offset += pageSize;
         }
 
-        // Phase 2: fetch details up to the run's cap. Jobs beyond it keep a null postedAt/description.
+        // Phase 2: fetch details up to the run's cap, then enforce the recency window on the real
+        // date. The prose postedOn is consulted first so a "Posted 30+ Days Ago" posting never
+        // costs a detail request on a 24-hour run.
         int maxDetails = Math.max(0, properties.workday().maxDetailsPerRun());
+        boolean windowed = q.hours() > 0;
         List<SourcedJob> jobs = new ArrayList<>();
         int detailsFetched = 0;
+        int skippedByProse = 0;
+        int droppedByDate = 0;
+        int droppedUndated = 0;
         for (Postings p : collected) {
+            if (windowed && minimumAgeHours(p.postedOn()) > q.hours()) {
+                skippedByProse++;
+                continue;
+            }
             Instant postedAt = null;
             String description = null;
             if (detailsFetched < maxDetails) {
@@ -190,6 +212,17 @@ public class WorkdayJobSource implements JobSource {
                 detailsFetched++;
             }
 
+            if (windowed) {
+                if (postedAt == null) {
+                    droppedUndated++;
+                    continue;
+                }
+                if (!LocalFilter.postedDayWithinRecency(postedAt, q.hours(), clock)) {
+                    droppedByDate++;
+                    continue;
+                }
+            }
+
             jobs.add(new SourcedJob(
                     SOURCE,
                     p.reqId(),
@@ -202,7 +235,34 @@ public class WorkdayJobSource implements JobSource {
                     description));
         }
 
+        if (windowed) {
+            log.info("workday {}: {} of {} search hits kept within {}h ({} skipped by postedOn prose, "
+                            + "{} outside window by startDate, {} undated past the detail cap)",
+                    host, jobs.size(), collected.size(), q.hours(), skippedByProse, droppedByDate, droppedUndated);
+        }
         return new SourceFetchResult.Ok(jobs, requestsMade);
+    }
+
+    private static final Pattern DAYS_AGO = Pattern.compile("posted\\s+(\\d+)(\\+?)\\s+days?\\s+ago");
+
+    /**
+     * The least a posting can be old, in hours, given Workday's prose {@code postedOn} - never a
+     * date, only a floor. {@code "Posted 30+ Days Ago"} → 30 days. {@code "Posted N Days Ago"} →
+     * N-1 days, conservatively, since "3 Days Ago" can mean just over two. {@code "Posted Today"},
+     * {@code "Posted Yesterday"}, or anything unrecognised → 0, i.e. never skipped on this alone.
+     */
+    static long minimumAgeHours(String postedOn) {
+        if (postedOn == null) {
+            return 0;
+        }
+        Matcher m = DAYS_AGO.matcher(postedOn.toLowerCase(Locale.ROOT).trim());
+        if (!m.matches()) {
+            return 0;
+        }
+        long days = Long.parseLong(m.group(1));
+        boolean orMore = !m.group(2).isEmpty();
+        long floorDays = orMore ? days : Math.max(0, days - 1);
+        return floorDays * 24;
     }
 
     private DetailResult fetchDetail(String host, String tenant, String site, String externalPath) {
@@ -253,13 +313,14 @@ public class WorkdayJobSource implements JobSource {
         String title = textOrNull(p, "title");
         String externalPath = textOrNull(p, "externalPath");
         String locationsText = textOrNull(p, "locationsText");
+        String postedOn = textOrNull(p, "postedOn");
         String reqId = null;
         JsonNode bulletFields = p.get("bulletFields");
         if (bulletFields != null && bulletFields.isArray() && !bulletFields.isEmpty()) {
             JsonNode first = bulletFields.get(0);
             reqId = first == null ? null : first.asString();
         }
-        return new Postings(title, externalPath, locationsText, reqId);
+        return new Postings(title, externalPath, locationsText, reqId, postedOn);
     }
 
     private static Instant parseLocalDate(String iso) {
@@ -291,7 +352,7 @@ public class WorkdayJobSource implements JobSource {
         return sb.append('"').toString();
     }
 
-    private record Postings(String title, String externalPath, String locationsText, String reqId) {
+    private record Postings(String title, String externalPath, String locationsText, String reqId, String postedOn) {
     }
 
     private record DetailResult(Instant postedAt, String description) {

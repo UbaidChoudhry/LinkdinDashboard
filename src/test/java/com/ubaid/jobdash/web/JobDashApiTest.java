@@ -304,14 +304,18 @@ class JobDashApiTest {
     }
 
     @Test
-    void createRunReturns400WhenLinkedInIsCombinedWithAnotherSource() throws Exception {
-        // Validation happens before the running-run / circuit-breaker guards and before any run
-        // is dispatched, so this is safe to exercise directly - no real HTTP call is made.
+    void createRunAcceptsLinkedInCombinedWithAnotherSource() throws Exception {
+        // Mixed runs are valid since 2026-09-09. Proving validation passed without dispatching a
+        // real run: with the breaker open, a request that clears validation gets the 503 cooldown
+        // (the guard that runs AFTER validation), not a 400. No real HTTP call is made.
+        Instant now = clock.instant();
+        circuitStateStore.save(new CircuitSnapshot(CircuitState.OPEN, 1, 0, now, now.plusSeconds(600)));
+
         mockMvc.perform(post("/api/runs")
                         .contentType("application/json")
                         .content("{\"keywords\":\"java\",\"location\":\"USA\",\"sources\":[\"linkedin\",\"greenhouse\"]}"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message", containsString("cannot be combined")));
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.message", containsString("cooldown")));
     }
 
     @Test
@@ -380,6 +384,76 @@ class JobDashApiTest {
     @Test
     void jobsEndpointRejectsUnknownTab() throws Exception {
         mockMvc.perform(get("/api/jobs").param("tab", "bogus"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").exists());
+    }
+
+    // ---- bulk status / delete (multi-select) -------------------------------------------------
+
+    @Test
+    void bulkStatusMovesEveryIdAndLeavesOthersUntouched() throws Exception {
+        long run = createRunRow(Instant.now());
+        long jobA = insertJob(31, run, "A", "Acme", Instant.now());
+        long jobB = insertJob(32, run, "B", "Acme", Instant.now());
+        long jobC = insertJob(33, run, "C", "Acme", Instant.now());
+        setVerdictPass(jobA);
+        setVerdictPass(jobB);
+        setVerdictPass(jobC);
+
+        mockMvc.perform(post("/api/jobs/bulk-status")
+                        .contentType("application/json")
+                        .content("{\"jobIds\":[" + jobA + "," + jobB + "],\"status\":\"not_interested\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.count").value(2));
+
+        mockMvc.perform(get("/api/jobs").param("tab", "not_interested"))
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[*].jobId").value(
+                        org.hamcrest.Matchers.containsInAnyOrder((int) jobA, (int) jobB)));
+
+        // jobC was never in the request, so it must still be untriaged.
+        mockMvc.perform(get("/api/jobs").param("tab", "search"))
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].jobId").value((int) jobC));
+    }
+
+    @Test
+    void bulkStatusRejectsAnEmptyJobIdsList() throws Exception {
+        mockMvc.perform(post("/api/jobs/bulk-status")
+                        .contentType("application/json")
+                        .content("{\"jobIds\":[],\"status\":\"not_interested\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").exists());
+    }
+
+    @Test
+    void bulkDeleteRemovesOnlyTheGivenIds() throws Exception {
+        long run = createRunRow(Instant.now());
+        long jobA = insertJob(41, run, "A", "Acme", Instant.now());
+        long jobB = insertJob(42, run, "B", "Acme", Instant.now());
+        setVerdictPass(jobA);
+        setVerdictPass(jobB);
+
+        mockMvc.perform(post("/api/jobs/bulk-delete")
+                        .contentType("application/json")
+                        .content("{\"jobIds\":[" + jobA + "]}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.count").value(1));
+
+        mockMvc.perform(get("/api/jobs").param("tab", "search"))
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].jobId").value((int) jobB));
+
+        long remaining = client.sql("select count(*) from job_listing where job_id = :id")
+                .param("id", jobA).query(Long.class).single();
+        org.junit.jupiter.api.Assertions.assertEquals(0, remaining);
+    }
+
+    @Test
+    void bulkDeleteRejectsAnEmptyJobIdsList() throws Exception {
+        mockMvc.perform(post("/api/jobs/bulk-delete")
+                        .contentType("application/json")
+                        .content("{\"jobIds\":[]}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").exists());
     }

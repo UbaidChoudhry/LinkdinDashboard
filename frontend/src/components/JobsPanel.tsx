@@ -1,9 +1,9 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { ApiError, listJobs, scanMatches } from "../api/client";
+import { ApiError, bulkDeleteJobs, bulkSetJobStatus, listJobs, scanMatches } from "../api/client";
 import type { JobResponse, JobTab, MatchBucket, RunResponse } from "../types/api";
 import { DEFAULT_SORT, filterByMinSalary, nextSortState, sortJobsBy, type SortState } from "../utils/sort";
-import { groupByCompany } from "../utils/group";
+import { groupByCompany, type CompanyGroup } from "../utils/group";
 import { isRunInFlight } from "../utils/runStatus";
 import { JobRow } from "./JobRow";
 import { CompanyGroupRow } from "./CompanyGroupRow";
@@ -64,17 +64,24 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
   const [minSalaryOn, setMinSalaryOn] = useState(true);
   const [groupByCompanyOn, setGroupByCompanyOn] = useState(false);
   // Which AI bucket to show. "all" keeps every row, including rows that were never scanned
-  // (LinkedIn rows never can be - they have no description).
+  // (a row with no description - e.g. a LinkedIn row outside its run's detail-fetch cap).
   const [bucket, setBucket] = useState<MatchBucket | "all">("all");
   const [scanning, setScanning] = useState(false);
   const [scanNote, setScanNote] = useState<string | null>(null);
   // Groups start collapsed - the point of grouping is to stop one prolific company flooding
   // the list, so expanding is opt-in per company.
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(new Set());
+  // Multi-select for the bulk "Not interested" / "Delete" actions below the table. Cleared
+  // whenever the underlying list changes (tab switch, reload) so it never points at rows that
+  // are no longer on screen.
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<number>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [deleteConfirming, setDeleteConfirming] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
     setJobs(null);
+    setSelectedIds(new Set());
     try {
       const includePrev = activeTab === "search" ? includePreviousRuns : true;
       const data = await listJobs(activeTab, includePrev);
@@ -97,6 +104,8 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
     setMinSalaryOn(true);
     setExpandedGroups(new Set());
     setBucket("all");
+    setSelectedIds(new Set());
+    setDeleteConfirming(false);
   }, [activeTab]);
 
   // Null when the toggle is off - the typed value stays in the box, it just isn't applied.
@@ -208,6 +217,88 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
       // it from the current view immediately and let the row disappear.
       return prev.filter((j) => j.jobId !== updated.jobId);
     });
+    setSelectedIds((prev) => {
+      if (!prev.has(updated.jobId)) return prev;
+      const next = new Set(prev);
+      next.delete(updated.jobId);
+      return next;
+    });
+  }
+
+  // ---- multi-select ---------------------------------------------------------------------
+
+  // Selection is tracked against sortedJobs (the visible, filtered/sorted set), never the raw
+  // grouping - "select all" and the bulk actions always act on real job ids, independent of
+  // whether "Group by company" happens to be collapsing some of them right now.
+  const selectableIds = useMemo(() => sortedJobs?.map((j) => j.jobId) ?? [], [sortedJobs]);
+  const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id));
+  const someSelected = selectedIds.size > 0 && !allSelected;
+  const selectAllRef = useRef<HTMLInputElement>(null);
+
+  useLayoutEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = someSelected;
+    }
+  }, [someSelected]);
+
+  // The bar stays on screen at 0 selected (greyed out) rather than disappearing, so this is
+  // derived rather than stored: if the selection is cleared out from under an open delete
+  // confirmation, it reads as closed rather than showing "Delete 0 jobs permanently?".
+  const confirmingDelete = deleteConfirming && selectedIds.size > 0;
+
+  const toggleSelect = useCallback((jobId: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(jobId)) {
+        next.add(jobId);
+      }
+      return next;
+    });
+  }, []);
+
+  function toggleSelectAll() {
+    setSelectedIds(allSelected ? new Set() : new Set(selectableIds));
+  }
+
+  const toggleSelectGroup = useCallback((group: CompanyGroup, select: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const job of group.jobs) {
+        if (select) {
+          next.add(job.jobId);
+        } else {
+          next.delete(job.jobId);
+        }
+      }
+      return next;
+    });
+  }, []);
+
+  async function handleBulkNotInterested() {
+    setBulkBusy(true);
+    setActionError(null);
+    try {
+      await bulkSetJobStatus([...selectedIds], "not_interested");
+      await load();
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : "Failed to update the selected jobs.");
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function handleBulkDelete() {
+    setBulkBusy(true);
+    setActionError(null);
+    try {
+      await bulkDeleteJobs([...selectedIds]);
+      setDeleteConfirming(false);
+      await load();
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : "Failed to delete the selected jobs.");
+    } finally {
+      setBulkBusy(false);
+    }
   }
 
   // Same money formatting as JobRow's formatSalary, for the "filter hid everything" hint.
@@ -364,6 +455,54 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
         </div>
       </div>
 
+      {/* Bulk actions for the multi-select checkboxes in the table below. Always shown (rather
+          than popping in on first selection) so it doesn't shift the layout underneath it -
+          greyed out via disabled buttons when nothing is selected. Delete is permanent, so it
+          gets the same two-step confirm as the Data tab's "Clear job data". */}
+      <div
+        className={selectedIds.size === 0 ? "selection-bar empty" : "selection-bar"}
+        role="toolbar"
+        aria-label="Bulk actions for selected jobs"
+      >
+        <span className="selection-count">{selectedIds.size} selected</span>
+        <button
+          type="button"
+          className="secondary"
+          onClick={() => setSelectedIds(new Set())}
+          disabled={bulkBusy || selectedIds.size === 0}
+        >
+          Clear selection
+        </button>
+        <button type="button" onClick={handleBulkNotInterested} disabled={bulkBusy || selectedIds.size === 0}>
+          Mark as Not interested
+        </button>
+        {!confirmingDelete ? (
+          <button
+            type="button"
+            className="danger"
+            onClick={() => setDeleteConfirming(true)}
+            disabled={bulkBusy || selectedIds.size === 0}
+          >
+            Delete selected...
+          </button>
+        ) : (
+          <span className="selection-delete-confirm">
+            Delete {selectedIds.size} job{selectedIds.size === 1 ? "" : "s"} permanently?
+            <button type="button" className="danger" onClick={handleBulkDelete} disabled={bulkBusy}>
+              {bulkBusy ? "Deleting…" : "Yes, delete"}
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => setDeleteConfirming(false)}
+              disabled={bulkBusy}
+            >
+              Cancel
+            </button>
+          </span>
+        )}
+      </div>
+
       {actionError && (
         <p className="form-error" role="alert">
           {actionError}
@@ -397,6 +536,15 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
             <table className="job-table">
             <thead>
               <tr>
+                <th className="col-select">
+                  <input
+                    ref={selectAllRef}
+                    type="checkbox"
+                    aria-label="Select all"
+                    checked={allSelected}
+                    onChange={toggleSelectAll}
+                  />
+                </th>
                 <SortableHeader column="title" label="Title" sort={sort} onSort={handleSort} />
                 <SortableHeader column="company" label="Company" sort={sort} onSort={handleSort} />
                 <SortableHeader column="location" label="Location" sort={sort} onSort={handleSort} />
@@ -417,6 +565,8 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
                         tab={activeTab}
                         onChanged={handleChanged}
                         onError={setActionError}
+                        selected={selectedIds.has(group.jobs[0].jobId)}
+                        onToggleSelect={toggleSelect}
                       />
                     ) : (
                       <Fragment key={group.key}>
@@ -424,6 +574,8 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
                           group={group}
                           expanded={expandedGroups.has(group.key)}
                           onToggle={toggleGroup}
+                          selectedCount={group.jobs.filter((j) => selectedIds.has(j.jobId)).length}
+                          onToggleSelectGroup={toggleSelectGroup}
                         />
                         {expandedGroups.has(group.key) &&
                           group.jobs.map((job) => (
@@ -434,6 +586,8 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
                               onChanged={handleChanged}
                               onError={setActionError}
                               grouped
+                              selected={selectedIds.has(job.jobId)}
+                              onToggleSelect={toggleSelect}
                             />
                           ))}
                       </Fragment>
@@ -446,6 +600,8 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
                       tab={activeTab}
                       onChanged={handleChanged}
                       onError={setActionError}
+                      selected={selectedIds.has(job.jobId)}
+                      onToggleSelect={toggleSelect}
                     />
                   ))}
             </tbody>

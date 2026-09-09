@@ -11,13 +11,8 @@ interface SourceSelectProps {
 const ALL: JobSourceName[] = ["linkedin", ...ATS_SOURCES];
 
 /**
- * Multi-select dropdown for a run's job sources.
- *
- * LinkedIn is mutually exclusive with the ATS boards, and the exclusivity is enforced here at
- * the point of selection rather than being reported as a validation error afterwards: picking
- * LinkedIn clears the others and vice versa, so an invalid combination can never be assembled.
- * The reason is that LinkedIn's guest search returns no job description, leaving the AI match
- * step with nothing to compare a resume against.
+ * Multi-select dropdown for a run's job sources. Any combination is valid: a run collects
+ * LinkedIn and the boards back to back, each under its own request budget, then scans all of it.
  */
 export function SourceSelect({ value, onChange, disabled }: SourceSelectProps) {
   const [open, setOpen] = useState(false);
@@ -51,11 +46,7 @@ export function SourceSelect({ value, onChange, disabled }: SourceSelectProps) {
       onChange(next.length === 0 ? [source] : next);
       return;
     }
-    if (source === "linkedin") {
-      onChange(["linkedin"]);
-      return;
-    }
-    onChange([...value.filter((s) => s !== "linkedin"), source]);
+    onChange([...value, source]);
   }
 
   const summary =
@@ -85,11 +76,8 @@ export function SourceSelect({ value, onChange, disabled }: SourceSelectProps) {
         <div className="source-select-menu" role="listbox" aria-multiselectable="true">
           {ALL.map((s) => {
             const checked = value.includes(s);
-            const blocked =
-              (s === "linkedin" && value.some((v) => v !== "linkedin")) ||
-              (s !== "linkedin" && value.includes("linkedin"));
             return (
-              <label key={s} className={blocked ? "source-option blocked" : "source-option"}>
+              <label key={s} className="source-option">
                 <input
                   type="checkbox"
                   checked={checked}
@@ -97,13 +85,13 @@ export function SourceSelect({ value, onChange, disabled }: SourceSelectProps) {
                   disabled={disabled}
                 />
                 <span>{SOURCE_LABELS[s]}</span>
-                {s === "linkedin" && <span className="source-option-note">no AI scan</span>}
+                {s === "linkedin" && <span className="source-option-note">paced, ~6-12s per request</span>}
               </label>
             );
           })}
           <p className="source-select-hint">
-            LinkedIn can't be combined with the ATS boards — its guest search returns no job
-            description, so there is nothing for the AI scan to read.
+            LinkedIn is collected first, then the boards; LinkedIn descriptions are fetched after
+            collection so every source is AI-scanned together.
           </p>
         </div>
       )}

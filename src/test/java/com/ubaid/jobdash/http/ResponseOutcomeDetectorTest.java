@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ResponseOutcomeDetectorTest {
@@ -197,5 +198,41 @@ class ResponseOutcomeDetectorTest {
                 detector.classify(200, "<html>3 real cards</html>", 90, 3, List.of(), "engineer");
         assertEquals(ResponseOutcome.END_OF_RESULTS, c.outcome());
         assertTrue(!c.unparseable());
+    }
+
+    // --- detail fragments ---------------------------------------------------
+
+    @Test
+    void detailWithParsedDescriptionIsOk() {
+        ResponseOutcomeDetector.Classification c = detector.classifyDetail(200, "<div>body</div>", true);
+        assertEquals(ResponseOutcome.OK, c.outcome());
+        assertFalse(c.unparseable());
+    }
+
+    @Test
+    void detail404IsGoneNotAFailure() {
+        ResponseOutcomeDetector.Classification c = detector.classifyDetail(404, "", false);
+        assertEquals(ResponseOutcome.GONE, c.outcome());
+        assertFalse(c.unparseable());
+    }
+
+    @Test
+    void detail429And999AreHardBlocks() {
+        assertEquals(ResponseOutcome.BLOCKED, detector.classifyDetail(429, "", false).outcome());
+        assertEquals(ResponseOutcome.BLOCKED, detector.classifyDetail(999, "", false).outcome());
+        assertFalse(detector.classifyDetail(429, "", false).unparseable());
+    }
+
+    @Test
+    void detail200WithoutADescriptionIsBlockedButFlaggedUnparseable() {
+        ResponseOutcomeDetector.Classification c = detector.classifyDetail(200, "<html>sign in wall</html>", false);
+        assertEquals(ResponseOutcome.BLOCKED, c.outcome());
+        assertTrue(c.unparseable());
+    }
+
+    @Test
+    void detailEmptyBodyAndServerErrorAreSoftBlocks() {
+        assertTrue(detector.classifyDetail(200, "", true).unparseable());
+        assertTrue(detector.classifyDetail(503, "<html>oops</html>", false).unparseable());
     }
 }

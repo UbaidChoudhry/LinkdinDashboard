@@ -13,6 +13,12 @@ export const RUN_STATUS_INFO: Record<string, RunStatusInfo> = {
     message: "The sweep is in progress.",
     kind: "info",
   },
+  fetching_details: {
+    label: "Fetching job descriptions",
+    message:
+      "Search pages are done; LinkedIn's detail page is now being read for each new posting, one paced request at a time, so the AI scan has a description to compare.",
+    kind: "info",
+  },
   scanning: {
     label: "Scanning with AI",
     message: "All sources have been fetched; Claude is now comparing each job description against your resume.",
@@ -77,14 +83,15 @@ export function runStatusInfo(status: string | null | undefined): RunStatusInfo 
 }
 
 /**
- * Statuses that mean the run is still working. `scanning` is deliberately included: the AI scan
- * is the last phase of a run, and the server keeps the SSE stream open through it.
+ * Statuses that mean the run is still working. `fetching_details` and `scanning` are deliberately
+ * included: they are the phases after collection, and the server keeps the SSE stream open
+ * through them (RunController's IN_FLIGHT_STATUSES is the mirror of this set).
  *
  * Treating anything that isn't `"running"` as finished is the bug this exists to prevent - it
  * made the browser hang up the moment the scan began, so the scan's progress never arrived and
  * the page had to be reloaded by hand to see any result.
  */
-export const IN_FLIGHT_STATUSES: ReadonlySet<string> = new Set(["running", "scanning"]);
+export const IN_FLIGHT_STATUSES: ReadonlySet<string> = new Set(["running", "fetching_details", "scanning"]);
 
 /** True while a run is still working (collecting or scanning). */
 export function isRunInFlight(status: string | null | undefined): boolean {

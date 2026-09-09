@@ -31,6 +31,8 @@ public record RunResponse(
         String sources,
         int companiesDone,
         int companiesTotal,
+        int detailsDone,
+        int detailsTotal,
         ScanProgress scan
 ) {
 
@@ -39,7 +41,7 @@ public record RunResponse(
         return new RunResponse(run.id(), run.startedAt(), run.finishedAt(), run.status(), run.keywords(),
                 run.location(), run.hours(), run.testMode(), run.pageCap(), run.shardsUsed(), null,
                 run.pagesFetched(), run.requestsMade(), run.cardsSeen(), run.jobsNew(), run.saturated(),
-                run.sources(), run.companiesDone(), run.companiesTotal(), null);
+                run.sources(), run.companiesDone(), run.companiesTotal(), run.detailsDone(), run.detailsTotal(), null);
     }
 
     /** Builds a response from the persisted row's static fields plus a live progress snapshot. */
@@ -48,6 +50,6 @@ public record RunResponse(
                 run.location(), run.hours(), run.testMode(), run.pageCap(), run.shardsUsed(), progress.currentShard(),
                 progress.pagesFetched(), progress.requestsMade(), progress.cardsSeen(), progress.jobsNew(),
                 progress.saturated(), run.sources(), progress.companiesDone(), progress.companiesTotal(),
-                progress.scan());
+                progress.detailsDone(), progress.detailsTotal(), progress.scan());
     }
 }

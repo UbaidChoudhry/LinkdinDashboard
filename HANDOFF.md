@@ -43,7 +43,7 @@ the original project spec claimed. **Trust these over any document.**
 ```
 Search:  https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search
            ?keywords=…&location=…&f_TPR=r86400&sortBy=DD&start=0
-Detail:  https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{jobId}   (not currently used)
+Detail:  https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{jobId}   (detail phase, §10)
 Public:  https://www.linkedin.com/jobs/view/{jobId}                        (link target only)
 ```
 
@@ -230,9 +230,9 @@ preserves:
 | Cut | Why | To add |
 |---|---|---|
 | **Salary** | ~~Cards carry none.~~ **Built 2026-09-06 — see §8.** | — |
-| **Detail fetching** | Removing eager fetch was a user decision; clicks go straight to LinkedIn. | `detail_*` columns and the `job_detail_queue` partial index are in place. Build a worker draining that index newest-first. Respect the three-outcome rule: 404 → `gone`; 429/999/empty → leave `detail_fetched_at` null and open the breaker; success → populate. **Cache permanently — never re-fetch an `ok` row.** |
+| **Detail fetching** | ~~Removing eager fetch was a user decision.~~ **Built 2026-09-09 — see §10.** A capped post-collection phase, not an eager per-card fetch; clicks still go straight to LinkedIn. | — |
 | **ATS adapters** | ~~Deferred.~~ **Built 2026-09-07 — see §9.** Greenhouse, Lever and Workday are implemented behind the `JobSource` seam; the company→slug map is the `ats_company` catalog. Ashby and the other 21 platforms in the catalog file remain unimplemented. | — |
-| **Relay/spam detection** | Its strongest signal is duplicate `description_hash`, which needs descriptions. Its other signal (apply-URL domain) is unavailable — the guest fragment's apply button carries **no href**. | Needs detail fetching first. Then hash `md5(lower(regexp_replace(description,'\s+',' ','g')))` **in Java**, and flag one body appearing under multiple company names. Suppress, never delete. Only the volume report works today. |
+| **Relay/spam detection** | Its strongest signal is duplicate `description_hash`, which needs descriptions. Its other signal (apply-URL domain) is unavailable — the guest fragment's apply button carries **no href**. | `description_hash` is now written for every fetched LinkedIn row (`DetailParser.hashOf`, §10). What's left: flag one hash appearing under multiple company names. Suppress, never delete. Only the volume report works today. |
 | **Scheduling** | User chose on-demand. | `SweepService.startRun()` is already async on a virtual thread. |
 
 ---
@@ -261,7 +261,7 @@ which has zero commits. First commit is yours to make.
 before the first commit** — `data/jobdash.db` may contain real scraped job data you don't want
 in version control.
 
-Test counts by suite are in [CODEMAP.md](CODEMAP.md). Run `./mvnw test` and expect **305
+Test counts by suite are in [CODEMAP.md](CODEMAP.md). Run `./mvnw test` and expect **386
 passing**.
 
 ---
@@ -410,8 +410,15 @@ Measured sizes: Airbnb 167 jobs / 2 MB; Palantir 310 / 6 MB; Veeva 900 / 12 MB. 
   postings. Treating an empty array as death would retire healthy companies permanently. Only a
   404 marks a slug dead.
 - **Workday's `postedOn` is prose**, literally `"Posted 30+ Days Ago"`. It is not a date and must
-  never be parsed as one. The real date exists only on the detail response, which is why jobs
-  past `ats.workday.max-details-per-run` come back with a null `postedAt`.
+  never be parsed as one. The real date exists only on the detail response. **Bug fixed
+  2026-09-09:** Workday never applied the run's recency window at all (Greenhouse and Lever did,
+  via `LocalFilter`), so a 24-hour run showed months-old Workday jobs. It now (a) uses the prose
+  only as a *floor on age* to skip "30+ Days Ago" postings before spending a detail request,
+  (b) enforces the window on the detail's `startDate` at day granularity
+  (`LocalFilter.postedDayWithinRecency` - a job posted "yesterday" has a midnight timestamp
+  older than 24h and must still pass), and (c) with a window set, **drops** jobs past
+  `ats.workday.max-details-per-run` instead of returning them undated, since an undated row
+  cannot be shown to be inside the window. Without a window they are still returned undated.
 - **`job_listing.job_id` had to stop being LinkedIn's id.** It was `integer primary key` holding
   the numeric LinkedIn id; Lever's UUIDs and Workday's `JR…` strings don't fit. V5 rebuilds the
   table so `job_id` is an autoincrement **surrogate** and `(source, source_job_id)` is the
@@ -730,3 +737,77 @@ tests were untouched by the refactor.
 SUCCESS against stale classes — a record with 26 components and a 24-argument constructor call
 "compiled" cleanly, and a broken predicate produced 21 phantom failures that vanished on a clean
 build. **Verify with `./mvnw clean test`.**
+
+---
+
+## 10. LinkedIn job descriptions: the detail-fetch phase (added 2026-09-09)
+
+**What it is.** LinkedIn's search cards carry no description (§2), so until now LinkedIn rows were
+never AI-scanned. A LinkedIn run now has a second phase after collection: `DetailFetchService`
+reads the anonymous detail fragment (`/jobs-guest/jobs/api/jobPosting/{id}`, verified in §2 to
+carry the full 4-7.5k-char description) for the run's newest passing rows, stores the plain text
+and its hash on `job_listing`, and then the same `ResumeMatchService.scan` an ATS run gets runs
+over those rows. `RunOrchestrator` now drives LinkedIn runs too (`SweepService.createRun` +
+`collect`, then details, then scan, on one virtual thread); `SweepService.run()` remains as the
+collect-and-finish shape the sweep tests drive.
+
+**Decisions, and why:**
+
+- **There is no separate "detail budget".** Every detail fetch goes through
+  `PacedHttpClient.fetchDetail`, i.e. the same pacing gate, per-run cap, rolling-24h budget,
+  breaker and `request_log` row as a search page - it is the same host from the same IP, and
+  LinkedIn does not care which URL path tipped it over. **The user's decision, same day: fetch a
+  description for every passing job, no artificial cap.** `sweep.detail.max-per-run` is 0 (only
+  the shared budget bounds the phase) and the shared numbers went from 150/run and 300/day to
+  **500/run and 1000/day** so a 24h sweep (~50 pages + ~330 details) fits with a second run to
+  spare. That is far above the 200-300/day the original spec called safe; the pacing and the
+  breaker are the protection, and if LinkedIn blocks, the run pauses. A first attempt capped the
+  phase at 60/run and was rejected - don't reintroduce a cap without asking.
+- **Newest first, filter-pass only, untriaged only, once ever, across all runs.** The queue is
+  the `job_detail_queue` partial index plus `source='linkedin'` and `user_status is null`,
+  `posted_at desc` - deliberately NOT scoped to the current run, so rows a blocked or budget-
+  exhausted run left behind are drained by the next one instead of being stranded. Anything the
+  user already triaged is not worth a request. An `ok` or `gone` row is never visited again -
+  `detail_fetched_at` is the dequeue flag for both.
+- **Three outcomes, per §5's rule, plus one refinement.** `OK` → store; `GONE` (HTTP 404) →
+  `detail_status='gone'`; `BLOCKED` (429/999), a budget refusal or an open breaker → stop the
+  phase, leave every remaining row untouched so the next run retries it. The refinement: a 200
+  with no description block, a 5xx or a transport error **skips that one row and continues**.
+  It still counts as a soft failure on the breaker, so if it is systemic the breaker trips after
+  two and the next fetch is refused - but one odd page (a sign-in wall on a single posting) must
+  not throw away the other 59.
+- **The scan runs even when the detail phase stopped early.** A budget refusal at 40/60 still
+  leaves 40 real descriptions; skipping the scan would waste them. Only a cancellation skips it.
+  The run's *reported* status is then the detail phase's stop reason (`budget_exhausted`,
+  `blocked`, `capped`), so the user learns why fewer rows got a verdict.
+- **Plain text, not HTML, and the hash is computed in Java.** `DetailParser` renders the
+  `show-more-less-html__markup` block to text with `<br>`/block/`<li>` structure kept as
+  newlines and bullets (Jsoup's `text()` runs every bullet into one line, which reads badly in a
+  prompt). `description_hash = md5(lower(whitespace-collapsed text))` via `DetailParser.hashOf`,
+  the §5 formula, so relay detection can finally be built on it. Seniority / employment type /
+  job function / industries are parsed into `JobDetail` but **not stored** - no column, no
+  consumer yet.
+- **A bug found on the way: the per-run cap was never reset.** `RateLimiter.resetRunCount()`
+  existed but nothing called it, so "per run" was really "per process": the second sweep after a
+  boot would end `capped` about 50 pages in. `PacedHttpClient.beginRun()` now calls it at the
+  start of `SweepService.collect`. There is a test for it.
+- **`fetching_details` is a new in-flight status.** Like `scanning`, it must be treated as
+  in-flight by both `RunController` (the SSE stream stays open - `IN_FLIGHT_STATUSES`) and the
+  frontend (`IN_FLIGHT_STATUSES` in `utils/runStatus.ts`). Miss one and the browser hangs up the
+  moment the phase starts, exactly the bug the `scanning` comment in that file describes.
+- **Mixed runs are allowed** (the user asked for them the same day). One `sweep_run`, one
+  thread: LinkedIn collect → ATS collect → LinkedIn details → location classification → scan.
+  The two collections are independent and each keeps its own stop reason; `SweepService` and
+  `AtsSweepService` now build every progress snapshot on the current one instead of from zero,
+  and the ATS counters start from wherever LinkedIn left them, so a mixed run's totals are
+  cumulative. An ATS `no_sources` is downgraded to `ok` when LinkedIn was part of the run.
+  `SweepService.startRun`/`run` survive only for the tests that drive the loop synchronously.
+- **The run form used to withhold the resume on a LinkedIn-only run** (`RunControls` only sent
+  `resumeId` for ATS runs, from when LinkedIn had no scan). It always sends it now; the default
+  resume would have been used regardless, but an explicit pick was silently ignored.
+
+**Fixtures.** The parser tests use the three live fragments already in
+`src/test/resources/fixtures/frag_*.html` (captured 2026-08-28). No new live traffic was spent
+building this. A hand check in test mode costs 3 search pages plus at most 60 details - set
+`sweep.detail.max-per-run` low first if you want it cheaper.
+

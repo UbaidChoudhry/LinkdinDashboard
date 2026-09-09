@@ -73,4 +73,18 @@ public final class LocalFilter {
         Instant cutoff = clock.instant().minus(Duration.ofHours(hours));
         return !postedAt.isBefore(cutoff);
     }
+
+    /**
+     * {@link #withinRecency} for a source that only knows the calendar <em>day</em> a job was
+     * posted (Workday's {@code startDate}), given as that day's start in UTC. The whole day counts
+     * as inside the window if any part of it is: a job posted "yesterday" must survive a 24-hour
+     * window even though its midnight timestamp is more than 24 hours old.
+     */
+    public static boolean postedDayWithinRecency(Instant postedDayStartUtc, int hours, Clock clock) {
+        if (postedDayStartUtc == null || hours <= 0) {
+            return true;
+        }
+        Instant cutoff = clock.instant().minus(Duration.ofHours(hours));
+        return postedDayStartUtc.plus(Duration.ofDays(1)).isAfter(cutoff);
+    }
 }

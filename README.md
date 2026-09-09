@@ -38,9 +38,10 @@ roughly one extra call per run. Where a string genuinely doesn't say where the j
 is **kept and marked `⚠ uncertain`** rather than dropped — and if the CLI is unavailable, postings
 stay visible and are re-checked on the next run.
 
-**LinkedIn can't be combined with the others.** Its guest search returns no job description, so
-there is nothing for the scan to compare your resume against. Pick either LinkedIn *or* any mix
-of the ATS boards.
+**Any mix of sources is one run.** LinkedIn is collected first under its own paced budget, then
+the boards under theirs, then the run reads each new LinkedIn posting's public detail page for
+its description (LinkedIn's search cards carry none; one paced request per job, capped per run -
+see [Rate limiting](#rate-limiting)), and finally everything collected is AI-scanned together.
 
 ATS boards are **per company** — there is no global search across them — so jobdash keeps a
 catalog of companies and only visits the ones you enable. It ships with **42 companies verified
@@ -66,7 +67,9 @@ logged-out visitor gets. Two rules follow from that, and they are not negotiable
    paced 6–12 seconds apart. Sustained rate matters far more than the daily total. This is
    enforced in code (see [Rate limiting](#rate-limiting)), not left to discipline.
 
-A full US-wide sweep is about **100 requests and ~15 minutes of wall clock**. Budget accordingly.
+A full US-wide sweep is about **50-100 search requests and ~15 minutes of wall clock**, plus one
+detail request per passing job for its description - a few hundred more requests and roughly
+another 45-60 minutes at the paced rate. Budget accordingly.
 
 ---
 
@@ -117,7 +120,7 @@ cd frontend && npm install && npm run dev   # front end (first run needs the ins
 ## Tests
 
 ```bash
-./mvnw test                         # 305 tests, no network access
+./mvnw test                         # 386 tests, no network access
 cd frontend && npm run build        # tsc -b && vite build - type errors fail the build
 cd frontend && npm run lint
 ```
@@ -203,8 +206,12 @@ Three independent layers, all enforced in the sweep loop:
 | Layer | Rule |
 |---|---|
 | Inter-request pacing | 6–12s jitter through a single global gate, measured from the **end** of the previous response |
-| Per-run cap | 150 requests |
-| Rolling 24h budget | 300 requests, counted from the `request_log` table so a restart can't reset it |
+| Per-run cap | 500 requests |
+| Rolling 24h budget | 1000 requests, counted from the `request_log` table so a restart can't reset it |
+| Detail phase | one request per passing LinkedIn job, every one of them, newest first; `sweep.detail.max-per-run` can cap it (0 = no cap) |
+
+A request is a request: a search page and a job-detail fetch each cost one unit of every layer
+above, because both hit the same host from the same IP. There is no separate "detail budget".
 
 Plus a **circuit breaker**: HTTP 429 or 999 (LinkedIn's proprietary block code) opens it
 immediately; a soft failure opens it after 2 consecutive. Cooldown starts at 30 minutes and
@@ -226,9 +233,12 @@ sweep:
     min-delay: 6s          # measured from end of previous response
     max-delay: 12s
   budget:
-    per-run: 150
-    per-rolling-day: 300
+    per-run: 500             # search pages + detail fetches, together
+    per-rolling-day: 1000
     test-mode-page-cap: 3
+  detail:
+    enabled: true
+    max-per-run: 0           # descriptions fetched after collection, newest first; 0 = all of them
   breaker:
     open-duration: 30m
     max-open-duration: 60m
@@ -353,9 +363,10 @@ lives somewhere unusual.
 
 Deliberately out of scope for this version, with the seams left in place:
 
-- **LinkedIn detail fetching** — LinkedIn rows still carry no description, which is why they
-  can't be AI-scanned. The schema columns and the partial-index queue are in place for it.
-  (ATS rows *do* have descriptions — they arrive with the listing.)
+- **Showing descriptions in the UI** — LinkedIn descriptions are fetched (since 2026-09-09) and
+  read by the AI scan, but no tab displays the text itself yet; `JobResponse` doesn't carry it.
+- **Relay/spam detection** — `description_hash` is now populated for fetched LinkedIn rows, so the
+  duplicate-body signal HANDOFF.md §5 describes is finally computable. Nothing reads it yet.
 - **More ATS platforms** — the catalog file already lists 25 (Ashby, Workable, SmartRecruiters,
   Recruitee, …); three are implemented. Adding a fourth means one `JobSource` implementation —
   see the "Add a NEW ATS platform" row in [CODEMAP.md](CODEMAP.md).

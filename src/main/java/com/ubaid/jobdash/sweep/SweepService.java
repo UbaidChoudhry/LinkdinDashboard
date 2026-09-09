@@ -25,12 +25,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * via {@link PacedHttpClient} (which owns rate limiting and circuit breaking), parses and stores
  * new cards, tracks progress, and supports cooperative cancellation.
  * <p>
- * Deliberately has no controller and no SSE endpoint — those belong to task 7. This class only
- * exposes plain methods: {@link #startRun} to kick a run off asynchronously, {@link #progress}
- * to read a snapshot, and {@link #cancel} to request cancellation. {@link #run} is the
- * synchronous core of the pagination loop; it is public so tests can drive it deterministically
- * without coordinating real threads, but {@link #startRun} is the entry point production code
- * should use.
+ * Deliberately has no controller and no SSE endpoint. This class only exposes plain methods:
+ * {@link #createRun} + {@link #collect} for {@link RunOrchestrator} (which chains the detail-fetch
+ * and AI-scan phases after collection on its own thread), {@link #startRun} / {@link #run} as the
+ * self-contained collect-and-finish form tests drive deterministically, {@link #progress} to read
+ * a snapshot, and {@link #cancel} to request cancellation.
  */
 @Service
 public class SweepService {
@@ -74,7 +73,7 @@ public class SweepService {
      * {@link #cancel(long)} to stop it early.
      */
     public long startRun(SweepRunRequest request) {
-        long runId = createRun(request);
+        long runId = createRun(request, "linkedin", null);
         Thread thread = Thread.ofVirtual().name("sweep-run-" + runId).unstarted(() -> run(runId, request));
         progressRegistry.registerThread(runId, thread);
         thread.start();
@@ -98,13 +97,20 @@ public class SweepService {
         return progressRegistry.cancel(runId);
     }
 
-    private long createRun(SweepRunRequest request) {
+    /**
+     * Creates the {@code sweep_run} row (with its source list, e.g. {@code "linkedin"} or
+     * {@code "linkedin,greenhouse"}, and optionally the resume a later AI scan will use) and
+     * registers its initial progress snapshot, without starting any work. {@link RunOrchestrator}
+     * pairs this with {@link #collect} on its own thread so it can chain the ATS collection,
+     * detail-fetch and scan phases after it.
+     */
+    public long createRun(SweepRunRequest request, String sources, Long resumeId) {
         Integer pageCap = effectivePageCap(request);
         String location = request.shardingEnabled() ? "" : nullToEmpty(request.location());
         long runId = sweepRunRepository.create(clock.instant(), request.keywords(), location,
-                request.hours(), request.testMode(), pageCap);
+                request.hours(), request.testMode(), pageCap, sources, resumeId);
         progressRegistry.start(runId, new SweepProgress(runId, "running", null, 0, 0, 0, 0, false,
-                0, 0, "linkedin", null));
+                0, 0, 0, 0, sources, null));
         return runId;
     }
 
@@ -116,8 +122,30 @@ public class SweepService {
      * {@link #startRun} is the async entry point production code uses.
      */
     public void run(long runId, SweepRunRequest request) {
+        String status = "failed";
+        try {
+            status = collect(runId, request);
+        } finally {
+            String finalStatus = status;
+            sweepRunRepository.finish(runId, clock.instant(), finalStatus);
+            progressRegistry.progress(runId).ifPresent(p -> progressRegistry.publish(runId, p.withStatus(finalStatus)));
+            progressRegistry.finish(runId);
+        }
+    }
+
+    /**
+     * The collection phase alone: the shard/pagination loop, publishing {@code "running"} progress
+     * as it goes, returning the terminal status it reached ({@code "ok"}, {@code "capped"},
+     * {@code "budget_exhausted"}, {@code "blocked"}, {@code "failed"} or {@code "cancelled"})
+     * <em>without</em> marking the run finished. The caller decides what follows - {@link #run}
+     * finishes immediately; {@link RunOrchestrator} first fetches job details and runs the AI scan.
+     */
+    public String collect(long runId, SweepRunRequest request) {
         progressRegistry.registerCurrentThreadIfAbsent(runId);
         AtomicBoolean cancelFlag = progressRegistry.cancelFlag(runId);
+        // Layer B of the rate limiter is per RUN; without this reset it would count across runs
+        // for the life of the process and every run after the first would end "capped" early.
+        pacedHttpClient.beginRun();
 
         List<String> shardsToRun = request.shardingEnabled()
                 ? (request.shards() != null && !request.shards().isEmpty() ? request.shards() : shardsProperties.shardsOrDefault())
@@ -126,29 +154,24 @@ public class SweepService {
         RunAccumulator acc = new RunAccumulator();
         String status = "ok";
 
-        try {
-            for (String shard : shardsToRun) {
-                boolean sharding = request.shardingEnabled();
-                String shardLabel = sharding ? shard : null;
-                String location = sharding ? shard : request.location();
+        for (String shard : shardsToRun) {
+            boolean sharding = request.shardingEnabled();
+            String shardLabel = sharding ? shard : null;
+            String location = sharding ? shard : request.location();
 
-                ShardOutcome outcome = runShard(runId, request, location, shardLabel, acc, cancelFlag);
-                if (sharding) {
-                    acc.shardsRun.add(shard);
-                }
-                if (outcome.terminal() != null) {
-                    status = outcome.terminal();
-                    break;
-                }
-                // outcome.terminal() == null means this shard ended normally (END_OF_RESULTS,
-                // PAST_CAP, or the test-mode page cap) - move on to the next shard, if any.
+            ShardOutcome outcome = runShard(runId, request, location, shardLabel, acc, cancelFlag);
+            if (sharding) {
+                acc.shardsRun.add(shard);
             }
-        } finally {
-            String finalStatus = status;
-            sweepRunRepository.finish(runId, clock.instant(), finalStatus);
-            publishProgress(runId, finalStatus, null, acc);
-            progressRegistry.finish(runId);
+            if (outcome.terminal() != null) {
+                status = outcome.terminal();
+                break;
+            }
+            // outcome.terminal() == null means this shard ended normally (END_OF_RESULTS,
+            // PAST_CAP, or the test-mode page cap) - move on to the next shard, if any.
         }
+        publishProgress(runId, status, null, acc);
+        return status;
     }
 
     /** Non-null terminal status if the whole run must stop; null if only this shard is done. */
@@ -254,9 +277,14 @@ public class SweepService {
         String shardsUsed = acc.shardsRun.isEmpty() ? null : String.join(",", acc.shardsRun);
         sweepRunRepository.updateProgress(runId, shardsUsed, acc.pagesFetched, acc.requestsMade,
                 acc.cardsSeen, acc.jobsNew, acc.saturated);
+        // Build on the current snapshot so a mixed run's other counters (companies, details,
+        // the source list) are carried rather than zeroed.
+        SweepProgress current = progressRegistry.progress(runId).orElse(
+                new SweepProgress(runId, status, null, 0, 0, 0, 0, false, 0, 0, 0, 0, "linkedin", null));
         progressRegistry.publish(runId, new SweepProgress(runId, status, currentShard,
                 acc.pagesFetched, acc.requestsMade, acc.cardsSeen, acc.jobsNew, acc.saturated,
-                0, 0, "linkedin", null));
+                current.companiesDone(), current.companiesTotal(), current.detailsDone(), current.detailsTotal(),
+                current.sources(), current.scan()));
     }
 
     private static JobCardInsert toInsert(JobCard card) {

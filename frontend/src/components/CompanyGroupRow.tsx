@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { groupLocations, groupNewestPostedAt, groupTopSalary, type CompanyGroup } from "../utils/group";
 import { absoluteTime, relativeTime } from "../utils/format";
 
@@ -5,6 +6,10 @@ interface CompanyGroupRowProps {
   group: CompanyGroup;
   expanded: boolean;
   onToggle: (key: string) => void;
+  /** How many of this group's jobs are currently selected, to drive the group's own checkbox. */
+  selectedCount: number;
+  /** Selects/deselects every job in the group at once. */
+  onToggleSelectGroup: (group: CompanyGroup, select: boolean) => void;
 }
 
 function formatUsd(n: number): string {
@@ -19,14 +24,32 @@ function formatUsd(n: number): string {
  * The summary deliberately surfaces the distinct-location count: one company posting many jobs
  * across many locations is the same relay/spam signal the company-volume report looks for.
  */
-export function CompanyGroupRow({ group, expanded, onToggle }: CompanyGroupRowProps) {
+export function CompanyGroupRow({ group, expanded, onToggle, selectedCount, onToggleSelectGroup }: CompanyGroupRowProps) {
   const count = group.jobs.length;
   const topSalary = groupTopSalary(group);
   const newest = groupNewestPostedAt(group);
   const locations = groupLocations(group);
+  const allSelected = selectedCount === count;
+  const someSelected = selectedCount > 0 && !allSelected;
+  const checkboxRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (checkboxRef.current) {
+      checkboxRef.current.indeterminate = someSelected;
+    }
+  }, [someSelected]);
 
   return (
     <tr className={expanded ? "company-group expanded" : "company-group"}>
+      <td className="col-select">
+        <input
+          ref={checkboxRef}
+          type="checkbox"
+          aria-label={`Select all ${count} jobs at ${group.company}`}
+          checked={allSelected}
+          onChange={() => onToggleSelectGroup(group, !allSelected)}
+        />
+      </td>
       <td className="col-title">
         <button
           type="button"

@@ -87,6 +87,13 @@ public class AtsSweepService {
         }
 
         Counters acc = new Counters();
+        // In a mixed run the LinkedIn phase has already counted requests/cards/jobs onto this
+        // run; continue from there so the run's totals stay cumulative.
+        progressRegistry.progress(runId).ifPresent(p -> {
+            acc.requestsMade = p.requestsMade();
+            acc.cardsSeen = p.cardsSeen();
+            acc.jobsNew = p.jobsNew();
+        });
         int total = companies.size();
 
         for (AtsCompany company : companies) {
@@ -181,8 +188,13 @@ public class AtsSweepService {
 
     private void publish(long runId, String status, String sources, int companiesDone, int companiesTotal, Counters acc) {
         sweepRunRepository.updateAtsProgress(runId, companiesDone, companiesTotal, acc.requestsMade, acc.cardsSeen, acc.jobsNew);
-        progressRegistry.publish(runId, new SweepProgress(runId, status, null, 0, acc.requestsMade,
-                acc.cardsSeen, acc.jobsNew, false, companiesDone, companiesTotal, sources, null));
+        // Build on the current snapshot so a mixed run keeps the LinkedIn phase's pages/shards/
+        // saturation and the run's full source list.
+        SweepProgress current = progressRegistry.progress(runId).orElse(
+                new SweepProgress(runId, status, null, 0, 0, 0, 0, false, 0, 0, 0, 0, sources, null));
+        progressRegistry.publish(runId, new SweepProgress(runId, status, null, current.pagesFetched(),
+                acc.requestsMade, acc.cardsSeen, acc.jobsNew, current.saturated(), companiesDone, companiesTotal,
+                current.detailsDone(), current.detailsTotal(), current.sources(), current.scan()));
     }
 
     private static JobCardInsert toInsert(SourcedJob job) {

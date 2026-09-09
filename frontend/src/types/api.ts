@@ -32,8 +32,10 @@ export interface JobResponse {
   /** Which job board this row came from: "linkedin" | "greenhouse" | "lever" | "workday". */
   source?: string | null;
   /**
-   * AI match verdict against the resume the request was scoped to. Null means "not scanned" -
-   * which is the permanent state for LinkedIn rows, since they carry no description to compare.
+   * AI match verdict against the resume the request was scoped to. Null means "not scanned":
+   * the row had no description when its run's scan phase ran. For a LinkedIn row that means its
+   * detail fragment was not fetched (outside the run's detail cap, or the fetch was blocked) -
+   * see `detailStatus`.
    */
   aiRecommended?: boolean | null;
   aiReason?: string | null;
@@ -50,6 +52,7 @@ export interface JobResponse {
 
 export type RunStatus =
   | "running"
+  | "fetching_details"
   | "scanning"
   | "no_sources"
   | "ok"
@@ -82,6 +85,10 @@ export interface RunResponse {
   /** Companies visited so far (ATS runs); null for LinkedIn runs. */
   companiesDone?: number | null;
   companiesTotal?: number | null;
+  /** Job-detail fragments fetched so far (LinkedIn runs); 0 for ATS runs. */
+  detailsDone?: number | null;
+  /** Rows queued for detail fetching this run (LinkedIn runs); 0 for ATS runs. */
+  detailsTotal?: number | null;
   /** Live AI-scan progress while status is "scanning"; null before the scan phase. */
   scan?: ScanProgress | null;
 }
@@ -163,11 +170,16 @@ export interface ClearJobDataResponse {
   databaseSizeBytesAfter: number;
 }
 
+/** Result of a bulk job action (status update or delete). Mirrors web/dto/JobBulkActionResponse.java. */
+export interface JobBulkActionResponse {
+  count: number;
+}
+
 // ---------------------------------------------------------------------------
 // Job sources (LinkedIn + ATS boards) and AI resume matching
 // ---------------------------------------------------------------------------
 
-/** Every source a run can pull from. LinkedIn is mutually exclusive with the rest. */
+/** Every source a run can pull from. Any combination is valid in one run. */
 export type JobSourceName = "linkedin" | "greenhouse" | "lever" | "workday";
 
 export const ATS_SOURCES: JobSourceName[] = ["greenhouse", "lever", "workday"];
@@ -179,13 +191,6 @@ export const SOURCE_LABELS: Record<JobSourceName, string> = {
   workday: "Workday",
 };
 
-/**
- * LinkedIn's guest search returns no job description, so there is nothing for the AI scan to
- * compare a resume against - which is why it cannot be combined with the ATS sources.
- */
-export function isLinkedInExclusive(sources: JobSourceName[]): boolean {
-  return sources.includes("linkedin") && sources.length > 1;
-}
 
 /** A company in the ATS slug catalog. Mirrors web/dto/AtsCompanyResponse.java. */
 export interface AtsCompanyResponse {

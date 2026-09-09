@@ -71,7 +71,85 @@ class WorkdayJobSourceTest extends AbstractStoreTest {
     }
 
     private static SourceQuery query(String host, String site) {
-        return new SourceQuery("software engineer", null, 0, null, "NVIDIA", host, site);
+        return query(host, site, 0);
+    }
+
+    private static SourceQuery query(String host, String site, int hours) {
+        return new SourceQuery("software engineer", null, hours, null, "NVIDIA", host, site);
+    }
+
+    private static String detailBody(String startDate) {
+        return "{\"jobPostingInfo\":{\"jobDescription\":\"<p>Some role</p>\",\"startDate\":\"" + startDate + "\"}}";
+    }
+
+    private static final String HOST = "nvidia.wd5.myworkdayjobs.com";
+    private static final String SITE = "NVIDIAExternalCareerSite";
+
+    // --- the recency window ---------------------------------------------------------------
+    // The search fixture has three postings: "Posted 30+ Days Ago", "Posted Yesterday",
+    // "Posted 30+ Days Ago". The clock is 2026-09-07T00:00Z.
+
+    @Test
+    void recencyWindowSkipsProseStalePostingsBeforeSpendingADetailRequest() {
+        http.enqueue(new StubHttpResponse(200, loadFixture("workday_search.json"), null));
+        http.enqueue(new StubHttpResponse(200, detailBody("2026-09-06"), null));
+
+        SourceFetchResult.Ok ok = (SourceFetchResult.Ok) source(props(50)).fetch(query(HOST, SITE, 24));
+
+        // Only the "Posted Yesterday" posting was worth a detail request; its real date is
+        // yesterday, which is inside a 24h window at day granularity.
+        assertThat(ok.jobs()).extracting(SourcedJob::sourceJobId).containsExactly("JR2016510");
+        assertThat(ok.jobs().get(0).postedAt())
+                .isEqualTo(LocalDate.of(2026, 9, 6).atStartOfDay(ZoneOffset.UTC).toInstant());
+        assertThat(http.requestsSeen()).as("1 search page + 1 detail, never a detail for a 30+ day posting").hasSize(2);
+        assertThat(ok.requestsMade()).isEqualTo(2);
+    }
+
+    @Test
+    void recencyWindowDropsAJobWhoseRealDateIsOutsideIt() {
+        http.enqueue(new StubHttpResponse(200, loadFixture("workday_search.json"), null));
+        // The prose said "Yesterday" but the detail's startDate says a month ago: the date wins.
+        http.enqueue(new StubHttpResponse(200, detailBody("2026-08-02"), null));
+
+        SourceFetchResult.Ok ok = (SourceFetchResult.Ok) source(props(50)).fetch(query(HOST, SITE, 24));
+
+        assertThat(ok.jobs()).isEmpty();
+        assertThat(http.requestsSeen()).hasSize(2);
+    }
+
+    @Test
+    void recencyWindowDropsUndatedJobsPastTheDetailCapInsteadOfKeepingThem() {
+        http.enqueue(new StubHttpResponse(200, loadFixture("workday_search.json"), null));
+        http.enqueue(new StubHttpResponse(200, detailBody("2026-08-02"), null));
+
+        // A year-long window so the prose pre-filter skips nothing; a detail cap of 1 so only the
+        // first posting is dated. The other two can't prove they're inside the window: dropped.
+        SourceFetchResult.Ok ok = (SourceFetchResult.Ok) source(props(1)).fetch(query(HOST, SITE, 24 * 365));
+
+        assertThat(ok.jobs()).extracting(SourcedJob::sourceJobId).containsExactly("JR2015623");
+        assertThat(http.requestsSeen()).hasSize(2);
+    }
+
+    @Test
+    void withoutAWindowUndatedJobsPastTheCapAreStillReturned() {
+        http.enqueue(new StubHttpResponse(200, loadFixture("workday_search.json"), null));
+        http.enqueue(new StubHttpResponse(200, detailBody("2026-08-02"), null));
+
+        SourceFetchResult.Ok ok = (SourceFetchResult.Ok) source(props(1)).fetch(query(HOST, SITE, 0));
+
+        assertThat(ok.jobs()).hasSize(3);
+        assertThat(ok.jobs().get(1).postedAt()).isNull();
+    }
+
+    @Test
+    void prosePostedOnIsOnlyEverAFloorOnAge() {
+        assertThat(WorkdayJobSource.minimumAgeHours("Posted 30+ Days Ago")).isEqualTo(30 * 24);
+        assertThat(WorkdayJobSource.minimumAgeHours("Posted 3 Days Ago")).isEqualTo(2 * 24);
+        assertThat(WorkdayJobSource.minimumAgeHours("Posted 2 Days Ago")).isEqualTo(24);
+        assertThat(WorkdayJobSource.minimumAgeHours("Posted Yesterday")).isZero();
+        assertThat(WorkdayJobSource.minimumAgeHours("Posted Today")).isZero();
+        assertThat(WorkdayJobSource.minimumAgeHours("something new")).isZero();
+        assertThat(WorkdayJobSource.minimumAgeHours(null)).isZero();
     }
 
     @Test

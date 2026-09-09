@@ -18,10 +18,23 @@ sweep:
   pacing:
     min-delay: 6s
     max-delay: 12s
+  # One request = one search page OR one job-detail fetch; both count here, because both hit
+  # the same host from the same IP. Sized 2026-09-09 so one sweep can fetch a description for
+  # EVERY passing job it finds (a 24h US sweep: ~50 search pages + ~330 details), plus a second
+  # run the same day. This is well above the 200-300/day the original spec assumed was safe;
+  # the pacing (6-12s) and the circuit breaker are what keep it survivable - if LinkedIn does
+  # block, the breaker opens and the run pauses rather than hammering on.
   budget:
-    per-run: 150
-    per-rolling-day: 300
+    per-run: 500
+    per-rolling-day: 1000
     test-mode-page-cap: 3
+  # After collection, a LinkedIn run fetches the guest detail fragment for every passing,
+  # untriaged row that has never had one - newest first, across all runs, so anything a
+  # previous run left behind is picked up too. Each is one paced request out of the budget
+  # above. max-per-run: 0 means no cap beyond that budget. A row is fetched once, ever.
+  detail:
+    enabled: true
+    max-per-run: 0
   breaker:
     open-duration: 30m
     max-open-duration: 60m

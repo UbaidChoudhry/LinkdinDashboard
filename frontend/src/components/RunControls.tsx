@@ -32,10 +32,12 @@ export function RunControls({ disabled, onRunStarted, resumeToken = 0 }: RunCont
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const linkedInOnly = sources.length === 1 && sources[0] === "linkedin";
+  const withLinkedIn = sources.includes("linkedin");
+  const withBoards = sources.some((s) => s !== "linkedin");
   // Sharding, the page cap and test mode are all LinkedIn pagination concepts; ATS boards
-  // return a company's whole board in one request and have none of them.
-  const shardToggleBlocked = linkedInOnly && useShards && !shardWarningAck;
+  // return a company's whole board in one request and have none of them. They are shown
+  // whenever LinkedIn is part of the run.
+  const shardToggleBlocked = withLinkedIn && useShards && !shardWarningAck;
 
   useEffect(() => {
     listResumes()
@@ -65,7 +67,7 @@ export function RunControls({ disabled, onRunStarted, resumeToken = 0 }: RunCont
       setError("Pick at least one source.");
       return;
     }
-    if (linkedInOnly && !useShards && !location.trim()) {
+    if (withLinkedIn && !useShards && !location.trim()) {
       setError("Location is required unless sharding by metro is enabled.");
       return;
     }
@@ -78,16 +80,17 @@ export function RunControls({ disabled, onRunStarted, resumeToken = 0 }: RunCont
       keywords: keywords.trim(),
       hours,
       testMode,
-      useShards: linkedInOnly && useShards,
+      useShards: withLinkedIn && useShards,
       sources,
     };
-    if (!(linkedInOnly && useShards)) {
+    if (!(withLinkedIn && useShards)) {
       body.location = location.trim();
     }
-    if (!linkedInOnly && resumeId != null) {
+    // Every kind of run ends with the AI scan, so the resume always goes along.
+    if (resumeId != null) {
       body.resumeId = resumeId;
     }
-    if (!linkedInOnly) {
+    if (withBoards) {
       body.usOnly = usOnly;
     }
     if (pageCap.trim()) {
@@ -117,8 +120,7 @@ export function RunControls({ disabled, onRunStarted, resumeToken = 0 }: RunCont
         <SourceSelect value={sources} onChange={setSources} disabled={disabled || submitting} />
       </div>
 
-      {!linkedInOnly && (
-        <div className="field-row">
+      <div className="field-row">
           <label htmlFor="rc-resume">Resume for AI scan</label>
           <select
             id="rc-resume"
@@ -137,10 +139,9 @@ export function RunControls({ disabled, onRunStarted, resumeToken = 0 }: RunCont
               ))
             )}
           </select>
-        </div>
-      )}
+      </div>
 
-      {!linkedInOnly && (
+      {withBoards && (
         <div className="field-row checkbox-row">
           <input
             id="rc-usonly"
@@ -184,12 +185,12 @@ export function RunControls({ disabled, onRunStarted, resumeToken = 0 }: RunCont
           type="text"
           value={location}
           onChange={(e) => setLocation(e.target.value)}
-          disabled={disabled || submitting || (linkedInOnly && useShards)}
-          placeholder={linkedInOnly && useShards ? "ignored while sharding is on" : undefined}
+          disabled={disabled || submitting || (withLinkedIn && useShards)}
+          placeholder={withLinkedIn && useShards ? "ignored by LinkedIn while sharding is on" : undefined}
         />
       </div>
 
-      {linkedInOnly && (
+      {withLinkedIn && (
       <div className="field-row">
         <label htmlFor="rc-pagecap">Page cap (optional)</label>
         <input
@@ -204,7 +205,7 @@ export function RunControls({ disabled, onRunStarted, resumeToken = 0 }: RunCont
       </div>
       )}
 
-      {linkedInOnly && (
+      {withLinkedIn && (
       <div className="field-row checkbox-row">
         <input
           id="rc-testmode"
@@ -217,7 +218,7 @@ export function RunControls({ disabled, onRunStarted, resumeToken = 0 }: RunCont
       </div>
       )}
 
-      {linkedInOnly && (
+      {withLinkedIn && (
       <div className="field-row checkbox-row">
         <input
           id="rc-shards"
@@ -235,7 +236,7 @@ export function RunControls({ disabled, onRunStarted, resumeToken = 0 }: RunCont
       </div>
       )}
 
-      {linkedInOnly && useShards && (
+      {withLinkedIn && useShards && (
         <div className="shard-warning" role="alert">
           <strong>This is expensive.</strong> A full US-wide sweep is already about 100 requests
           and roughly 15 minutes. Sharding by metro multiplies that cost against a daily budget of

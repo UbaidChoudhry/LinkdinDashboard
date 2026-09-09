@@ -207,6 +207,41 @@ public class JobListingRepository {
     }
 
     /**
+     * Sets the same {@code user_status}/{@code user_status_at} pair on every id in {@code jobIds}
+     * in one statement - the bulk counterpart to {@link #setUserStatus}, used by the Results tab's
+     * multi-select "mark all as Not interested" action.
+     *
+     * @return the number of rows updated
+     */
+    public int bulkSetUserStatus(List<Long> jobIds, UserStatus status, Instant at) {
+        if (jobIds.isEmpty()) {
+            return 0;
+        }
+        return client.sql("update job_listing set user_status = :status, user_status_at = :at where job_id in (:jobIds)")
+                .param("status", status == null ? null : status.toDb())
+                .param("at", Timestamps.toText(at))
+                .param("jobIds", jobIds)
+                .update();
+    }
+
+    /**
+     * Permanently deletes every row in {@code jobIds}. Like {@code DataRepository.clearJobResults},
+     * this leaves any cached {@code ai_match} rows behind - {@code job_id} there carries no foreign
+     * key, and an orphaned verdict is harmless since it is only ever looked up by a job id that
+     * still exists.
+     *
+     * @return the number of rows deleted
+     */
+    public int deleteByIds(List<Long> jobIds) {
+        if (jobIds.isEmpty()) {
+            return 0;
+        }
+        return client.sql("delete from job_listing where job_id in (:jobIds)")
+                .param("jobIds", jobIds)
+                .update();
+    }
+
+    /**
      * Rows whose filter_version is older than {@code currentVersion}, for re-evaluation.
      * Includes rows with a null filter_version (never evaluated), since SQL's {@code <}
      * comparison against null is never true.
@@ -241,8 +276,9 @@ public class JobListingRepository {
 
     /**
      * Rows eligible for AI resume matching from one run: passing the filter, not yet triaged by
-     * the user, and carrying a non-blank description. Sources with no inline description
-     * (LinkedIn) are excluded here rather than sent to the CLI to be scored on nothing.
+     * the user, and carrying a non-blank description. A row with no description (a LinkedIn row
+     * whose detail fetch hasn't happened, or was blocked) is excluded here rather than sent to
+     * the CLI to be scored on nothing.
      */
     public List<JobListing> findScannableByRun(long runId) {
         return client.sql("""
@@ -372,6 +408,67 @@ public class JobListingRepository {
                 .param("max", salaryMax)
                 .param("source", source)
                 .param("sourceDetail", sourceDetail)
+                .param("id", jobId)
+                .update();
+    }
+
+    /**
+     * The LinkedIn detail-fetch queue, newest posting first: every LinkedIn row that passed the
+     * filter, was never triaged by the user, and has never had its detail fragment fetched -
+     * across all runs, so whatever an earlier run left behind is picked up by the next one. This
+     * is the {@code job_detail_queue} partial index's predicate (HANDOFF.md §3) plus the source
+     * (only LinkedIn ids resolve on LinkedIn's detail endpoint). A row whose fetch ended
+     * {@code ok} or {@code gone} has {@code detail_fetched_at} set and is never returned again;
+     * a row a blocked or failed attempt left untouched is.
+     */
+    public List<JobListing> findDetailQueue(int limit) {
+        return client.sql("""
+                        select * from job_listing
+                        where source = 'linkedin'
+                          and detail_fetched_at is null and filter_verdict = 'pass' and user_status is null
+                        order by posted_at desc, job_id desc
+                        limit :limit
+                        """)
+                .param("limit", limit)
+                .query(JobListingRepository::mapRow)
+                .list();
+    }
+
+    /**
+     * Records a successful detail fetch: the description and its relay-detection hash, with
+     * {@code detail_status = 'ok'}. Setting {@code detail_fetched_at} is what dequeues the row -
+     * an {@code ok} row is cached permanently and never re-fetched (HANDOFF.md §5).
+     *
+     * @return 1 if the job existed and was updated, 0 otherwise
+     */
+    public int applyDetail(long jobId, String description, String descriptionHash, Instant fetchedAt) {
+        return client.sql("""
+                        update job_listing
+                        set description = :description, description_hash = :hash,
+                            detail_fetched_at = :fetchedAt, detail_status = 'ok'
+                        where job_id = :id
+                        """)
+                .param("description", description)
+                .param("hash", descriptionHash)
+                .param("fetchedAt", Timestamps.toText(fetchedAt))
+                .param("id", jobId)
+                .update();
+    }
+
+    /**
+     * Records that LinkedIn answered 404 for a posting: {@code detail_status = 'gone'}, and
+     * {@code detail_fetched_at} set so the row leaves the queue for good. The row itself is kept -
+     * the user may already have acted on it.
+     *
+     * @return 1 if the job existed and was updated, 0 otherwise
+     */
+    public int markDetailGone(long jobId, Instant fetchedAt) {
+        return client.sql("""
+                        update job_listing
+                        set detail_fetched_at = :fetchedAt, detail_status = 'gone'
+                        where job_id = :id
+                        """)
+                .param("fetchedAt", Timestamps.toText(fetchedAt))
                 .param("id", jobId)
                 .update();
     }

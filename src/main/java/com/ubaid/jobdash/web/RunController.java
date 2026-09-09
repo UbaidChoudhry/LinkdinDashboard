@@ -50,6 +50,8 @@ public class RunController {
     /** Generous emitter timeout so a slow/long run's stream is never dropped early. */
     private static final long SSE_TIMEOUT_MS = Duration.ofMinutes(30).toMillis();
     private static final List<String> VALID_SOURCES = List.of("linkedin", "greenhouse", "lever", "workday");
+    /** Statuses a run passes through before reaching a terminal one. Mirror of the frontend's IN_FLIGHT_STATUSES. */
+    private static final List<String> IN_FLIGHT_STATUSES = List.of("running", "fetching_details", "scanning");
 
     private final RunOrchestrator runOrchestrator;
     private final RunProgressRegistry runProgressRegistry;
@@ -121,11 +123,8 @@ public class RunController {
                         "Unknown source '" + source + "'. Valid values are: " + String.join(", ", VALID_SOURCES) + ".");
             }
         }
-        if (sources.contains("linkedin") && sources.size() > 1) {
-            throw new ApiException(HttpStatus.BAD_REQUEST,
-                    "linkedin cannot be combined with other sources: its guest search returns no job "
-                            + "description, so there is nothing for the AI scan to compare against.");
-        }
+        // Any mix is allowed, LinkedIn included: RunOrchestrator runs the LinkedIn phase and the
+        // ATS phase back to back on one run, each under its own budget.
     }
 
     private void checkCircuitNotOpen() {
@@ -231,9 +230,10 @@ public class RunController {
 
             emitter.send(SseEmitter.event().name("progress").data(response, MediaType.APPLICATION_JSON));
 
-            // "scanning" is the transient state between an ATS run's collection phase and its AI
-            // resume scan - still in flight, not a terminal status, so the stream stays open.
-            if (!"running".equals(status) && !"scanning".equals(status)) {
+            // "fetching_details" (a LinkedIn run reading job descriptions) and "scanning" (the AI
+            // resume scan) are the transient phases after collection - still in flight, not
+            // terminal statuses, so the stream stays open through them.
+            if (!IN_FLIGHT_STATUSES.contains(status)) {
                 emitter.complete();
                 cancelQuietly(futureRef);
             }

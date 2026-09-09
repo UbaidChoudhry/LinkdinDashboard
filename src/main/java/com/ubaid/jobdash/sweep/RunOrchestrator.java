@@ -14,16 +14,20 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * The single entry point {@code RunController} calls to start a run of any kind. Dispatches
- * between the two collection paths and, for a successful ATS collection, chains the optional AI
- * resume scan afterwards.
- * <p>
- * <b>LinkedIn-only runs are untouched</b>: when {@code sources} is exactly {@code ["linkedin"]},
- * this delegates straight to {@link SweepService#startRun} - the existing 300/day budget,
- * circuit breaker, response-outcome handling and metro-shard logic are not re-implemented or
- * wrapped here in any way. Any other source selection is a fresh {@code sweep_run} row driven by
- * {@link AtsSweepService} on a virtual thread, optionally followed by
- * {@link ResumeMatchService#scan}.
+ * The single entry point {@code RunController} calls to start a run. Every run, whatever its
+ * source mix, is one {@code sweep_run} row driven through one pipeline on one virtual thread:
+ * <pre>
+ *   1. LinkedIn collection   SweepService.collect          (if "linkedin" is selected)
+ *   2. ATS collection        AtsSweepService.run           (if any board is selected)
+ *   3. LinkedIn descriptions DetailFetchService.fetchForRun (if 1 ran and ended "ok")
+ *   4. Location judgement    LocationClassifier            (if 2 ran and ended "ok", and usOnly)
+ *   5. AI resume scan        ResumeMatchService.scan       (unless cancelled)
+ * </pre>
+ * Phases 1 and 2 are independent - LinkedIn's budget, breaker and shard loop live entirely in
+ * {@link SweepService}, the boards' in {@link AtsSweepService} - so one stopping early never
+ * prevents the other from running. Only a cancellation stops everything. The run's terminal
+ * status is the first non-"ok" outcome among the phases that ran, in the order above, so a user
+ * sees why part of the run was cut short; the scan still runs over whatever was collected.
  */
 @Service
 public class RunOrchestrator {
@@ -32,6 +36,7 @@ public class RunOrchestrator {
 
     private final SweepService sweepService;
     private final AtsSweepService atsSweepService;
+    private final DetailFetchService detailFetchService;
     private final SweepRunRepository sweepRunRepository;
     private final ResumeRepository resumeRepository;
     private final ResumeMatchService resumeMatchService;
@@ -40,11 +45,13 @@ public class RunOrchestrator {
     private final Clock clock;
 
     public RunOrchestrator(SweepService sweepService, AtsSweepService atsSweepService,
+                            DetailFetchService detailFetchService,
                             SweepRunRepository sweepRunRepository, ResumeRepository resumeRepository,
                             ResumeMatchService resumeMatchService, LocationClassifier locationClassifier,
                             RunProgressRegistry progressRegistry, Clock clock) {
         this.sweepService = sweepService;
         this.atsSweepService = atsSweepService;
+        this.detailFetchService = detailFetchService;
         this.sweepRunRepository = sweepRunRepository;
         this.resumeRepository = resumeRepository;
         this.resumeMatchService = resumeMatchService;
@@ -54,63 +61,120 @@ public class RunOrchestrator {
     }
 
     /**
-     * Starts a run and returns its id immediately; the actual work happens asynchronously. See
-     * the class javadoc for the LinkedIn-only vs. ATS dispatch.
+     * Starts a run and returns its id immediately; the actual work happens asynchronously on a
+     * virtual thread. See the class javadoc for the pipeline.
      *
      * @param sweepRequest the LinkedIn-shaped parameters (keywords/location/hours/sharding/etc.);
-     *                     only keywords/location/hours are consulted for an ATS run.
-     * @param sources      the validated, non-empty source selection, e.g. {@code ["linkedin"]} or
-     *                     {@code ["greenhouse", "lever"]}.
+     *                     only keywords/location/hours are consulted for the ATS boards.
+     * @param sources      the validated, non-empty source selection, e.g. {@code ["linkedin"]},
+     *                     {@code ["greenhouse", "lever"]} or {@code ["linkedin", "workday"]}.
      * @param resumeId     an explicit resume to scan against, or null to fall back to the default
      *                     resume (or skip the scan entirely if there is no resume at all).
      */
     public long startRun(SweepRunRequest sweepRequest, List<String> sources, Long resumeId, boolean usOnly) {
-        if (isLinkedInOnly(sources)) {
-            return sweepService.startRun(sweepRequest);
+        String sourcesText = String.join(",", sources);
+        long runId;
+        if (sources.contains("linkedin")) {
+            // SweepService knows how to derive the row's location/page-cap from a LinkedIn request
+            // (blank location while sharding, test-mode cap); reuse that rather than repeat it.
+            runId = sweepService.createRun(sweepRequest, sourcesText, resumeId);
+        } else {
+            runId = sweepRunRepository.create(clock.instant(), sweepRequest.keywords(), sweepRequest.location(),
+                    sweepRequest.hours(), sweepRequest.testMode(), sweepRequest.pageCap(), sourcesText, resumeId);
+            progressRegistry.start(runId, new SweepProgress(runId, "running", null, 0, 0, 0, 0, false,
+                    0, 0, 0, 0, sourcesText, null));
         }
 
-        long runId = sweepRunRepository.create(clock.instant(), sweepRequest.keywords(), sweepRequest.location(),
-                sweepRequest.hours(), sweepRequest.testMode(), sweepRequest.pageCap(),
-                String.join(",", sources), resumeId);
-        String sourcesText = String.join(",", sources);
-        progressRegistry.start(runId, new SweepProgress(runId, "running", null, 0, 0, 0, 0, false,
-                0, 0, sourcesText, null));
-
-        Thread thread = Thread.ofVirtual().name("ats-run-" + runId)
-                .unstarted(() -> executeAtsRun(runId, sweepRequest, sources, resumeId, usOnly));
+        Thread thread = Thread.ofVirtual().name("run-" + runId)
+                .unstarted(() -> executeRun(runId, sweepRequest, sources, resumeId, usOnly));
         progressRegistry.registerThread(runId, thread);
         thread.start();
         return runId;
     }
 
-    private static boolean isLinkedInOnly(List<String> sources) {
-        return sources.size() == 1 && "linkedin".equals(sources.get(0));
-    }
-
-    private void executeAtsRun(long runId, SweepRunRequest sweepRequest, List<String> sources, Long resumeId,
-                                boolean usOnly) {
+    private void executeRun(long runId, SweepRunRequest sweepRequest, List<String> sources, Long resumeId,
+                             boolean usOnly) {
         progressRegistry.registerCurrentThreadIfAbsent(runId);
         AtomicBoolean cancelFlag = progressRegistry.cancelFlag(runId);
+        List<String> atsNames = sources.stream().filter(s -> !"linkedin".equals(s)).toList();
+        boolean withLinkedIn = sources.contains("linkedin");
+        boolean withAts = !atsNames.isEmpty();
 
-        AtsRunRequest atsRequest = new AtsRunRequest(sweepRequest.keywords(), sweepRequest.location(),
-                sweepRequest.hours(), sources, usOnly);
-        String status = atsSweepService.run(runId, atsRequest, () -> cancelledNow(cancelFlag));
-
-        // Only a clean collection ("ok") is followed by location classification and the AI scan -
-        // a stop for cancellation, an empty source selection, or exhausting the source's budget is
-        // a terminal state as-is.
-        if ("ok".equals(status) && !cancelledNow(cancelFlag)) {
-            classifyLocations(runId, usOnly, cancelFlag);
-            status = runResumeScanIfPossible(runId, sources, resumeId, cancelFlag, status);
+        String linkedInStatus = null;
+        String atsStatus = null;
+        String detailStatus = null;
+        String status = "failed";
+        try {
+            if (withLinkedIn) {
+                linkedInStatus = sweepService.collect(runId, sweepRequest);
+            }
+            if (withAts && !cancelledNow(cancelFlag)) {
+                AtsRunRequest atsRequest = new AtsRunRequest(sweepRequest.keywords(), sweepRequest.location(),
+                        sweepRequest.hours(), atsNames, usOnly);
+                atsStatus = atsSweepService.run(runId, atsRequest, () -> cancelledNow(cancelFlag));
+                // A mixed run with no boards enabled still collected LinkedIn; "no_sources" is
+                // only the run's verdict when the boards were all it had.
+                if ("no_sources".equals(atsStatus) && withLinkedIn) {
+                    log.info("run {}: no ATS companies enabled; continuing with LinkedIn results only", runId);
+                    atsStatus = "ok";
+                }
+            }
+            // Only a clean LinkedIn collection is followed by the detail phase. A collection that
+            // ended "capped" or "budget_exhausted" has no budget left for details anyway; "blocked"
+            // means the breaker is open; "failed" means the results were junk.
+            if ("ok".equals(linkedInStatus) && !cancelledNow(cancelFlag)) {
+                detailStatus = fetchDetailsSafely(runId, cancelFlag);
+            }
+            if ("ok".equals(atsStatus) && !cancelledNow(cancelFlag)) {
+                classifyLocations(runId, usOnly, cancelFlag);
+            }
+            // Scan whatever now carries a description, even if a phase stopped early: a budget
+            // refusal partway through the detail phase still leaves real descriptions to read,
+            // and a blocked LinkedIn phase says nothing about the boards. Only a cancellation
+            // skips it.
+            if (!cancelledNow(cancelFlag)) {
+                runResumeScanIfPossible(runId, sources, resumeId, cancelFlag, "ok");
+            }
+            status = terminalStatus(cancelledNow(cancelFlag), linkedInStatus, atsStatus, detailStatus);
+        } finally {
+            finishRun(runId, status, sources);
         }
+    }
 
+    /** The first non-"ok" outcome among the phases that ran, in pipeline order; "ok" if all were. */
+    static String terminalStatus(boolean cancelled, String linkedInStatus, String atsStatus, String detailStatus) {
+        if (cancelled) {
+            return "cancelled";
+        }
+        for (String phase : new String[] {linkedInStatus, atsStatus, detailStatus}) {
+            if (phase != null && !"ok".equals(phase)) {
+                return phase;
+            }
+        }
+        return "ok";
+    }
+
+    /**
+     * {@link DetailFetchService} handles every per-row problem itself; this guards against the
+     * unexpected, because a detail-phase bug must never turn a successful collection into a run
+     * that never finishes.
+     */
+    private String fetchDetailsSafely(long runId, AtomicBoolean cancelFlag) {
+        try {
+            return detailFetchService.fetchForRun(runId, () -> cancelledNow(cancelFlag));
+        } catch (Exception e) {
+            log.warn("detail fetch for run {} threw unexpectedly (DetailFetchService should never throw): {}",
+                    runId, e.toString());
+            return cancelledNow(cancelFlag) ? "cancelled" : "ok";
+        }
+    }
+
+    /** Persists the terminal status, publishes the final snapshot under it, and releases the run's bookkeeping. */
+    private void finishRun(long runId, String status, List<String> sources) {
         sweepRunRepository.finish(runId, clock.instant(), status);
         SweepProgress finalProgress = progressRegistry.progress(runId).orElse(
-                new SweepProgress(runId, status, null, 0, 0, 0, 0, false, 0, 0, String.join(",", sources), null));
-        progressRegistry.publish(runId, new SweepProgress(runId, status, finalProgress.currentShard(),
-                finalProgress.pagesFetched(), finalProgress.requestsMade(), finalProgress.cardsSeen(),
-                finalProgress.jobsNew(), finalProgress.saturated(), finalProgress.companiesDone(),
-                finalProgress.companiesTotal(), finalProgress.sources(), finalProgress.scan()));
+                new SweepProgress(runId, status, null, 0, 0, 0, 0, false, 0, 0, 0, 0, String.join(",", sources), null));
+        progressRegistry.publish(runId, finalProgress.withStatus(status));
         progressRegistry.finish(runId);
     }
 
@@ -169,10 +233,8 @@ public class RunOrchestrator {
 
     private SweepProgress scanningProgress(long runId, List<String> sources) {
         SweepProgress current = progressRegistry.progress(runId).orElse(
-                new SweepProgress(runId, "scanning", null, 0, 0, 0, 0, false, 0, 0, String.join(",", sources), null));
-        return new SweepProgress(runId, "scanning", current.currentShard(), current.pagesFetched(),
-                current.requestsMade(), current.cardsSeen(), current.jobsNew(), current.saturated(),
-                current.companiesDone(), current.companiesTotal(), current.sources(), current.scan());
+                new SweepProgress(runId, "scanning", null, 0, 0, 0, 0, false, 0, 0, 0, 0, String.join(",", sources), null));
+        return current.withStatus("scanning");
     }
 
     private static boolean cancelledNow(AtomicBoolean cancelFlag) {
