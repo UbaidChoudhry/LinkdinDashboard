@@ -1174,11 +1174,6 @@ tr.source-dead {
   opacity: 0.75;
 }
 
-.bucket-unscanned {
-  font-size: 12px;
-  color: var(--text);
-}
-
 .bucket-rescan {
   margin-left: auto;
 }

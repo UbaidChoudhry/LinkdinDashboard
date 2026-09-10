@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { ApiError, bulkDeleteJobs, bulkSetJobStatus, listJobs, scanMatches } from "../api/client";
-import type { JobResponse, JobTab, MatchBucket, RunResponse } from "../types/api";
+import type { JobResponse, JobTab, RunResponse } from "../types/api";
 import { DEFAULT_SORT, filterByMinSalary, nextSortState, sortJobsBy, type SortState } from "../utils/sort";
 import { groupByCompany, type CompanyGroup } from "../utils/group";
 import { isRunInFlight } from "../utils/runStatus";
@@ -64,8 +64,9 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
   const [minSalaryOn, setMinSalaryOn] = useState(true);
   const [groupByCompanyOn, setGroupByCompanyOn] = useState(false);
   // Which AI bucket to show. "all" keeps every row, including rows that were never scanned
-  // (a row with no description - e.g. a LinkedIn row outside its run's detail-fetch cap).
-  const [bucket, setBucket] = useState<MatchBucket | "all">("all");
+  // (a row with no description - e.g. a LinkedIn row whose detail fetch hasn't happened yet).
+  type Bucket = "all" | "recommended" | "not_recommended" | "not_scanned";
+  const [bucket, setBucket] = useState<Bucket>("all");
   const [scanning, setScanning] = useState(false);
   const [scanNote, setScanNote] = useState<string | null>(null);
   // Groups start collapsed - the point of grouping is to stop one prolific company flooding
@@ -116,9 +117,11 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
     const byBucket =
       bucket === "all"
         ? jobs
-        : jobs.filter((j) =>
-            bucket === "recommended" ? j.aiRecommended === true : j.aiRecommended === false,
-          );
+        : jobs.filter((j) => {
+            if (bucket === "recommended") return j.aiRecommended === true;
+            if (bucket === "not_recommended") return j.aiRecommended === false;
+            return j.aiRecommended == null;
+          });
     return filterByMinSalary(sortJobsBy(byBucket, sort), effectiveMinSalary);
   }, [jobs, sort, effectiveMinSalary, bucket]);
 
@@ -127,7 +130,8 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
   const bucketCounts = useMemo(() => {
     const recommended = jobs?.filter((j) => j.aiRecommended === true).length ?? 0;
     const notRecommended = jobs?.filter((j) => j.aiRecommended === false).length ?? 0;
-    return { recommended, notRecommended, unscanned: (jobs?.length ?? 0) - recommended - notRecommended };
+    const unscanned = jobs?.filter((j) => j.aiRecommended == null).length ?? 0;
+    return { recommended, notRecommended, unscanned };
   }, [jobs]);
 
   async function handleRescan() {
@@ -379,7 +383,15 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
             Not recommended <span className="bucket-count">{bucketCounts.notRecommended}</span>
           </button>
           {bucketCounts.unscanned > 0 && (
-            <span className="bucket-unscanned">{bucketCounts.unscanned} not scanned</span>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={bucket === "not_scanned"}
+              className={bucket === "not_scanned" ? "bucket-tab active" : "bucket-tab"}
+              onClick={() => setBucket("not_scanned")}
+            >
+              Not scanned <span className="bucket-count">{bucketCounts.unscanned}</span>
+            </button>
           )}
           <button type="button" className="bucket-rescan" onClick={handleRescan} disabled={scanning}>
             {scanning ? "Scanning…" : "Re-scan"}
