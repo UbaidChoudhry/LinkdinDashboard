@@ -52,8 +52,9 @@ function App() {
     activeTabRef.current = activeTab;
   }, [activeTab]);
 
-  // Load the most recent run on first mount, purely so the Search tab's empty state can explain
-  // "no run yet" vs. "run returned nothing" even before the user starts anything this session.
+  // Load the most recent run on first mount: the Search tab shows its panel (with Retry, if it
+  // was cut short) and the empty state can explain "no run yet" vs. "run returned nothing"
+  // before the user starts anything this session.
   useEffect(() => {
     listRuns()
       .then((runs) => {
@@ -125,7 +126,11 @@ function App() {
   // render would re-fire that effect on every render.
   const handleJobCountChange = useCallback((count: number) => setResultCount(count), []);
 
-  const displayRun = streamedRun ?? (currentRunId != null ? lastKnownRun : null);
+  // The panel shows the most recent run even when it finished before this page load: a run
+  // LinkedIn's cooldown cut short is only retryable from its panel, and the cooldown itself
+  // (30 minutes) is longer than most people keep a tab open without reloading it. Hiding the
+  // panel for anything not started in this session was what made Retry unreachable.
+  const displayRun = streamedRun ?? lastKnownRun;
   const runInFlight = isRunInFlight(displayRun?.status);
 
   return (
