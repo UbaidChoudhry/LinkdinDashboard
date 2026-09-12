@@ -324,9 +324,9 @@ types/api.ts                 hand-kept mirror of the backend DTOs — keep in sy
 hooks/useRunStream.ts        the SSE subscription for live run progress
 components/
   RunControls.tsx            the "start a run" form (+ source picker and resume picker)
-  SourceSelect.tsx            multi-select dropdown for a run's sources; enforces LinkedIn's
-                              exclusivity AT SELECTION TIME, so an invalid combination can't
-                              even be assembled
+  SourceSelect.tsx            multi-select dropdown for a run's sources; any combination is
+                              valid (since 2026-09-09), the only guard left is a non-empty
+                              selection
   SourcesPanel.tsx            the ATS company catalog: paginated + searchable (it can hold
                               >15,000 rows), enable toggles, dead-slug state, manual add
   ResumesPanel.tsx            upload / set default / delete, and preview the exact extracted
@@ -335,6 +335,8 @@ components/
   JobsPanel.tsx               the 3-tab job table, owns which tab/sort is active + the Min salary filter
   JobRow.tsx                  one row: title link, company, location, posted, salary (+ source label), actions
   SortableHeader.tsx          clickable <th>, shared by the job table
+  RunsPanel.tsx               "Runs" tab: a static table of past runs (newest first) for
+                              side-by-side comparison - counters, sources, status, AI scan stats
   FiltersPanel.tsx            exclude words + blocked companies, list/add/delete
   CompanyVolumeReport.tsx     the relay-detection volume report
   DataPanel.tsx                DB size/stats + the two-step-confirm clear action
@@ -443,6 +445,7 @@ Adzuna / h1bapi sources are driven through `StubHttpClient`, `SalaryRateLimiter`
 | Change what counts as a "senior" title to exclude | `V2__seed.sql` (defaults) or the Filters tab in the UI (runtime) — either way, matching logic is in `filter/FilterRuleSet.java` |
 | Add a new field to the job table | `V1__init.sql`-style new migration → `domain/JobListing.java` → `store/JobListingRepository.java` mapping → `web/dto/JobResponse.java` → `frontend/src/types/api.ts` |
 | Understand why a run stopped early | `sweep/SweepService.java`, the `switch` on `ResponseOutcome` in `runShard()` — cross-reference with `sweep_run.status` in the DB |
+| Finish a run LinkedIn's cooldown cut short | `POST /api/runs/{id}/resume` → `RunOrchestrator.resumeRun`: detail fetch for the rows the run never read, then the scan; never re-searches. `GET /api/runs/cooldown` feeds the countdown in `RunProgress.tsx`'s `RetryPanel`. HANDOFF.md §10 |
 | Add a new REST endpoint | a method on the matching `web/*Controller.java`, backed by a repository method in `store/` |
 | Change LinkedIn query parameters | `sweep/SweepQueryBuilder.java` only |
 | Change how many job descriptions a LinkedIn run fetches | all of them by default. `application.yml` → `sweep.detail.max-per-run` (0 = no cap) and `sweep.budget.*`, which it draws on. Turning the phase off entirely: `sweep.detail.enabled: false` |
@@ -451,6 +454,7 @@ Adzuna / h1bapi sources are driven through `StubHttpClient`, `SalaryRateLimiter`
 | Import DOL LCA wage data | `./import-lca.sh <xlsx>` → `salary/LcaImportService.java` |
 | Understand the rate limiter's math | `http/RateLimiter.java`, tests in `http/RateLimiterTest.java` use `FakeClock` to assert timing without waiting |
 | Add an ATS company | the Sources tab, or `./import-slugs.sh` for a whole catalog — **imported rows arrive disabled**, see HANDOFF.md §9 |
+| Find out which catalog rows are actually live | `./validate-slugs.py` (stdlib Python, no Spring boot) — deletes 404s, marks the rest `active`, report under `data/slug-validation/`. See HANDOFF.md §9 |
 | Add a NEW ATS platform (the 4th, 5th, …) | implement `source/JobSource`, add the name to `RunController`'s valid set and `AtsProperties.DailyCap`, and teach `SlugCatalogImportService` its key. The seam is the whole point — nothing in `sweep/` should need to change |
 | Work out why a company returns nothing | its `ats_company` row: `status`, `consecutive_failures`, `last_checked_at`, and for Workday whether `site` ever resolved |
 | Change how jobs are scored against a resume | `ai/MatchPromptBuilder` (the prompt + JSON schema); `ai/ResumeMatchService` (batching/caching) |

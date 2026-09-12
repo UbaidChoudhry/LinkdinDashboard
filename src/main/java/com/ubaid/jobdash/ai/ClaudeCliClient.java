@@ -67,10 +67,21 @@ public class ClaudeCliClient {
                 verdicts.add(new MatchVerdict(
                         r.path("ref").asString(""),
                         r.path("recommended").asBoolean(false),
-                        r.path("reason").asString("")));
+                        r.path("reason").asString(""),
+                        optionalInt(r, "salaryMin"),
+                        optionalInt(r, "salaryMax")));
             }
         }
         return verdicts;
+    }
+
+    /** Reads an optional integer field, distinguishing "absent/null" (returns null) from present. */
+    private static Integer optionalInt(JsonNode node, String field) {
+        JsonNode value = node.get(field);
+        if (value == null || value.isNull()) {
+            return null;
+        }
+        return value.asInt();
     }
 
     /**

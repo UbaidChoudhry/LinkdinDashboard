@@ -295,6 +295,92 @@ class JobDashApiTest {
                 .andExpect(jsonPath("$.message", containsString("cooldown")));
     }
 
+    // ---- resume + cooldown (the Retry behind a blocked LinkedIn run) -----------------------
+
+    @Test
+    void cooldownEndpointReportsTheOpenBreakerAndItsRemainingTime() throws Exception {
+        mockMvc.perform(get("/api/runs/cooldown"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.active").value(false))
+                .andExpect(jsonPath("$.remainingSeconds").value(0));
+
+        Instant now = clock.instant();
+        circuitStateStore.save(new CircuitSnapshot(CircuitState.OPEN, 1, 0, now, now.plusSeconds(600)));
+
+        mockMvc.perform(get("/api/runs/cooldown"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.active").value(true))
+                .andExpect(jsonPath("$.until").value(now.plusSeconds(600).toString()))
+                // The context's Clock is the real one, so a second may tick between save and read.
+                .andExpect(jsonPath("$.remainingSeconds", org.hamcrest.Matchers.allOf(
+                        org.hamcrest.Matchers.greaterThanOrEqualTo(595), org.hamcrest.Matchers.lessThanOrEqualTo(600))));
+    }
+
+    @Test
+    void resumeRunReturns404ForAnUnknownRun() throws Exception {
+        mockMvc.perform(post("/api/runs/12345/resume"))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void resumeRunReturns409WhileTheRunItselfIsStillInFlight() throws Exception {
+        long runId = createRunRow(Instant.now()); // status = running, finished_at = null
+
+        mockMvc.perform(post("/api/runs/" + runId + "/resume"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message", containsString("nothing to resume yet")));
+    }
+
+    @Test
+    void resumeRunReturns409WhileAnotherRunIsInFlight() throws Exception {
+        long blocked = createRunRow(Instant.now().minusSeconds(600));
+        sweepRunRepository.finish(blocked, Instant.now().minusSeconds(60), "blocked");
+        long other = createRunRow(Instant.now());
+
+        mockMvc.perform(post("/api/runs/" + blocked + "/resume"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message", containsString("Run " + other + " is already in progress")));
+    }
+
+    /** The whole point of Retry is the cooldown - so while it is on, a resume is refused exactly like a new run. */
+    @Test
+    void resumeRunReturns503WhileTheLinkedInCooldownIsOn() throws Exception {
+        long blocked = createRunRow(Instant.now().minusSeconds(600));
+        sweepRunRepository.finish(blocked, Instant.now().minusSeconds(60), "blocked");
+        Instant now = clock.instant();
+        circuitStateStore.save(new CircuitSnapshot(CircuitState.OPEN, 1, 0, now, now.plusSeconds(600)));
+
+        mockMvc.perform(post("/api/runs/" + blocked + "/resume"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.message", containsString("cooldown")));
+        // Refused before anything was touched: the row is still finished and still "blocked".
+        mockMvc.perform(get("/api/runs/" + blocked))
+                .andExpect(jsonPath("$.status").value("blocked"))
+                .andExpect(jsonPath("$.finishedAt").isNotEmpty());
+    }
+
+    /** A finished run reports how many LinkedIn rows the detail phase never reached, so the UI can size Retry. */
+    @Test
+    void finishedRunReportsItsUnfetchedDescriptionCount() throws Exception {
+        long runId = createRunRow(Instant.now().minusSeconds(600));
+        long unread = insertJob(1L, runId, "Engineer", "Acme", Instant.now());
+        long read = insertJob(2L, runId, "Engineer II", "Acme", Instant.now());
+        long rejected = insertJob(3L, runId, "Senior Engineer", "Acme", Instant.now());
+        setVerdictPass(unread);
+        setVerdictPass(read);
+        client.sql("update job_listing set filter_verdict = 'reject' where job_id = :id").param("id", rejected).update();
+        client.sql("update job_listing set detail_fetched_at = :at, detail_status = 'ok', description = 'x' where job_id = :id")
+                .param("at", Instant.now().toString()).param("id", read).update();
+
+        // In flight: no count, the number is still moving.
+        mockMvc.perform(get("/api/runs/" + runId))
+                .andExpect(jsonPath("$.unfetchedDescriptions").doesNotExist());
+
+        sweepRunRepository.finish(runId, Instant.now(), "blocked");
+        mockMvc.perform(get("/api/runs/" + runId))
+                .andExpect(jsonPath("$.unfetchedDescriptions").value(1));
+    }
+
     @Test
     void createRunReturns400WhenKeywordsMissing() throws Exception {
         mockMvc.perform(post("/api/runs")

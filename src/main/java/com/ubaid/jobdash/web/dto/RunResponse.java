@@ -33,7 +33,13 @@ public record RunResponse(
         int companiesTotal,
         int detailsDone,
         int detailsTotal,
-        ScanProgress scan
+        ScanProgress scan,
+        /**
+         * For a FINISHED run: how many of its passing LinkedIn rows still have no description
+         * because their detail fetch never happened (blocked, capped, out of budget). The
+         * frontend's "Retry" offers to fetch exactly these and re-scan. Null while in flight.
+         */
+        Integer unfetchedDescriptions
 ) {
 
     /** Builds a response from the persisted row alone (no live progress known to this process). */
@@ -41,7 +47,8 @@ public record RunResponse(
         return new RunResponse(run.id(), run.startedAt(), run.finishedAt(), run.status(), run.keywords(),
                 run.location(), run.hours(), run.testMode(), run.pageCap(), run.shardsUsed(), null,
                 run.pagesFetched(), run.requestsMade(), run.cardsSeen(), run.jobsNew(), run.saturated(),
-                run.sources(), run.companiesDone(), run.companiesTotal(), run.detailsDone(), run.detailsTotal(), null);
+                run.sources(), run.companiesDone(), run.companiesTotal(), run.detailsDone(), run.detailsTotal(),
+                null, null);
     }
 
     /** Builds a response from the persisted row's static fields plus a live progress snapshot. */
@@ -50,6 +57,13 @@ public record RunResponse(
                 run.location(), run.hours(), run.testMode(), run.pageCap(), run.shardsUsed(), progress.currentShard(),
                 progress.pagesFetched(), progress.requestsMade(), progress.cardsSeen(), progress.jobsNew(),
                 progress.saturated(), run.sources(), progress.companiesDone(), progress.companiesTotal(),
-                progress.detailsDone(), progress.detailsTotal(), progress.scan());
+                progress.detailsDone(), progress.detailsTotal(), progress.scan(), null);
+    }
+
+    /** Copy with {@link #unfetchedDescriptions} set - attached by the controller once a run has finished. */
+    public RunResponse withUnfetchedDescriptions(Integer count) {
+        return new RunResponse(id, startedAt, finishedAt, status, keywords, location, hours, testMode, pageCap,
+                shardsUsed, currentShard, pagesFetched, requestsMade, cardsSeen, jobsNew, saturated, sources,
+                companiesDone, companiesTotal, detailsDone, detailsTotal, scan, count);
     }
 }

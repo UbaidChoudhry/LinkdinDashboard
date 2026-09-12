@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { ApiError, createRun, listResumes } from "../api/client";
 import type { CreateRunRequest, JobSourceName, ResumeResponse } from "../types/api";
+import { ATS_SOURCES } from "../types/api";
 import { SourceSelect } from "./SourceSelect";
 
 interface RunControlsProps {
@@ -14,7 +15,7 @@ interface RunControlsProps {
 const DEFAULT_KEYWORDS = "Software Engineer";
 const DEFAULT_HOURS = 24;
 const DEFAULT_LOCATION = "United States";
-const DEFAULT_SOURCES: JobSourceName[] = ["greenhouse", "lever", "workday"];
+const DEFAULT_SOURCES: JobSourceName[] = ["linkedin", ...ATS_SOURCES];
 
 export function RunControls({ disabled, onRunStarted, resumeToken = 0 }: RunControlsProps) {
   const [sources, setSources] = useState<JobSourceName[]>(DEFAULT_SOURCES);

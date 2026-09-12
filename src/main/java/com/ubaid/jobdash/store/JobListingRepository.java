@@ -295,6 +295,25 @@ public class JobListingRepository {
                 .list();
     }
 
+    /**
+     * How many of this run's passing, statusless LinkedIn rows still have no description because
+     * their detail fragment was never fetched (a blocked, capped or budget-exhausted run leaves
+     * them queued). Rows LinkedIn 404'd ({@code detail_status = 'gone'}) have a fetch timestamp
+     * and are excluded: fetching them again cannot help. This is the number the run panel's
+     * "Retry" promises to fill in.
+     */
+    public int countUnfetchedDescriptions(long runId) {
+        return client.sql("""
+                        select count(*) from job_listing
+                        where last_seen_run_id = :runId and source = 'linkedin'
+                          and filter_verdict = 'pass' and user_status is null
+                          and detail_fetched_at is null
+                        """)
+                .param("runId", runId)
+                .query(Integer.class)
+                .single();
+    }
+
     /** The same eligibility shape as {@link #findScannableByRun}, for a manual re-scan of a specific job set. */
     public List<JobListing> findScannableByIds(java.util.Collection<Long> jobIds) {
         if (jobIds.isEmpty()) {
@@ -323,6 +342,7 @@ public class JobListingRepository {
         return client.sql("""
                         select distinct location from job_listing
                         where last_seen_run_id = :runId and location is not null and trim(location) <> ''
+                          and source <> 'linkedin'
                         order by location
                         """)
                 .param("runId", runId)
@@ -344,6 +364,7 @@ public class JobListingRepository {
                         update job_listing
                         set location_us = :inUs, location_confident = :confident
                         where last_seen_run_id = :runId and location = :location
+                          and source <> 'linkedin'
                         """)
                 .param("inUs", inUs ? 1 : 0)
                 .param("confident", confident ? 1 : 0)
@@ -408,6 +429,30 @@ public class JobListingRepository {
                 .param("max", salaryMax)
                 .param("source", source)
                 .param("sourceDetail", sourceDetail)
+                .param("id", jobId)
+                .update();
+    }
+
+    /**
+     * Writes a salary the AI resume scan found explicitly stated in the job's own posting -
+     * ground truth, so it overwrites any estimate-sourced band {@link #applySalary} wrote
+     * (a posted figure beats a guessed one). Clears {@code salary_source_detail} too: that
+     * column's "matched entity" label only makes sense for an estimate, not a posting.
+     * <p>
+     * Never writes to {@code salary_estimate} - that cache is keyed (company, title), and a
+     * posting figure is specific to this one job, not a fact about the company/title pair.
+     *
+     * @return 1 if the job existed and was updated, 0 otherwise
+     */
+    public int applyPostingSalary(long jobId, double salaryMin, double salaryMax) {
+        return client.sql("""
+                        update job_listing
+                        set salary_min = :min, salary_max = :max,
+                            salary_source = 'posting', salary_source_detail = null
+                        where job_id = :id
+                        """)
+                .param("min", salaryMin)
+                .param("max", salaryMax)
                 .param("id", jobId)
                 .update();
     }

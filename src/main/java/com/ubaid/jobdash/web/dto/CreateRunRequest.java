@@ -18,8 +18,9 @@ import java.util.List;
  *                   consulted when {@code useShards} is true.
  * @param sources    which source(s) to run: any of {@code "linkedin"}, {@code "greenhouse"},
  *                   {@code "lever"}, {@code "workday"}. Null/empty means {@code ["linkedin"]},
- *                   preserving today's behaviour for any existing caller. {@code "linkedin"}
- *                   cannot be combined with any other source (see {@code RunController}).
+ *                   preserving today's behaviour for any existing caller. Any combination is
+ *                   allowed; a mixed run collects LinkedIn and the boards back to back, each
+ *                   under its own request budget.
  * @param usOnly     restricts ATS results to postings identifiably in the United States.
  *                   <b>Defaults to true</b> when absent - the boards are worldwide, so the
  *                   useful default for this tool is US-only; pass false explicitly to widen it.

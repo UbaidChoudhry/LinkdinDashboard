@@ -31,11 +31,23 @@ class SalaryEnrichmentServiceTest extends AbstractStoreTest {
                 new SalaryProperties.Lca("", true));
     }
 
-    /** In-test source returning a canned result (or throwing). */
+    /** Seeds one passing job with a description and returns the sweep run id it belongs to. */
+    private long seedPassingJobWithDescription(long sourceJobId, String company, String title, String description) {
+        long runId = sweepRunRepository.create(NOW, "swe", "", 24, false, null);
+        jobListingRepository.upsertAll(List.of(new JobCardInsert("lever", String.valueOf(sourceJobId), title, company,
+                "Austin, Texas", NOW, "https://jobs.example.com/" + sourceJobId,
+                "https://example.com/company", description)), runId, NOW);
+        client.sql("update job_listing set filter_verdict = 'pass' where source_job_id = :id")
+                .param("id", String.valueOf(sourceJobId)).update();
+        return runId;
+    }
+
+    /** In-test source returning a canned result (or throwing), counting how many times it was called. */
     private static final class FakeSource implements SalarySource {
         private final String name;
         private final SalaryResult result;
         private final boolean throwing;
+        private final java.util.concurrent.atomic.AtomicInteger invocations = new java.util.concurrent.atomic.AtomicInteger();
 
         FakeSource(String name, SalaryResult result, boolean throwing) {
             this.name = name;
@@ -50,10 +62,15 @@ class SalaryEnrichmentServiceTest extends AbstractStoreTest {
 
         @Override
         public Optional<SalaryResult> lookup(SalaryLookup q) {
+            invocations.incrementAndGet();
             if (throwing) {
                 throw new IllegalStateException("boom");
             }
             return Optional.ofNullable(result);
+        }
+
+        int invocationCount() {
+            return invocations.get();
         }
     }
 
@@ -206,6 +223,55 @@ class SalaryEnrichmentServiceTest extends AbstractStoreTest {
         // A throwing source is treated as "no result" -> a 'none' estimate is still cached.
         assertThat(salaryEstimateRepository.find("acme robotics", "software engineer").orElseThrow().source())
                 .isEqualTo("none");
+    }
+
+    // ---- skip gate: a posting that states its own salary skips the external cascade ----------
+
+    /** An explicit range in the description must trigger ZERO source lookups. */
+    @Test
+    void explicitSalaryRangeInDescriptionSkipsTheCascadeEntirely() {
+        long runId = seedPassingJobWithDescription(50, "Acme Robotics", "Software Engineer",
+                "Great backend role. Salary: $150,000 - $180,000 per year, plus benefits.");
+        FakeSource lca = new FakeSource("lca",
+                new SalaryResult(1.0, 2.0, "USD", LocalDate.now(clock), 1, "lca", null), false);
+
+        service(true, lca).enrichRun(runId, "Austin, Texas", NOT_CANCELLED);
+
+        assertThat(lca.invocationCount()).as("no source lookup for a job with a stated salary").isZero();
+        JobListing job = jobListingRepository.findById(jobIdFor(50)).orElseThrow();
+        assertThat(job.salarySource()).isNull();
+        assertThat(salaryEstimateRepository.find("acme robotics", "software engineer"))
+                .as("no cache write either")
+                .isEmpty();
+    }
+
+    /** A small bonus figure must NOT trip the gate - the cascade still runs normally. */
+    @Test
+    void smallBonusFigureStillGoesThroughTheCascade() {
+        long runId = seedPassingJobWithDescription(51, "Acme Robotics", "Software Engineer",
+                "Great backend role. Includes a $5,000 signing bonus and 401k match.");
+        FakeSource lca = new FakeSource("lca",
+                new SalaryResult(160000.0, 210000.0, "USD", LocalDate.of(2025, 3, 1), 12, "lca", null), false);
+
+        service(true, lca).enrichRun(runId, "Austin, Texas", NOT_CANCELLED);
+
+        assertThat(lca.invocationCount()).as("the cascade still runs for a mere bonus mention").isEqualTo(1);
+        JobListing job = jobListingRepository.findById(jobIdFor(51)).orElseThrow();
+        assertThat(job.salarySource()).isEqualTo("lca");
+    }
+
+    /** A blank description must not be affected by the gate at all. */
+    @Test
+    void blankDescriptionIsUnaffectedByTheSkipGate() {
+        long runId = seedPassingJobWithDescription(52, "Acme Robotics", "Software Engineer", null);
+        FakeSource lca = new FakeSource("lca",
+                new SalaryResult(160000.0, 210000.0, "USD", LocalDate.of(2025, 3, 1), 12, "lca", null), false);
+
+        service(true, lca).enrichRun(runId, "Austin, Texas", NOT_CANCELLED);
+
+        assertThat(lca.invocationCount()).isEqualTo(1);
+        JobListing job = jobListingRepository.findById(jobIdFor(52)).orElseThrow();
+        assertThat(job.salarySource()).isEqualTo("lca");
     }
 
     @Test

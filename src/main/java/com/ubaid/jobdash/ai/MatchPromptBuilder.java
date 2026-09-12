@@ -23,7 +23,9 @@ public class MatchPromptBuilder {
 
     /**
      * JSON schema for {@code --json-schema}: a required {@code results} array of objects, each
-     * with required {@code ref}/{@code recommended}/{@code reason}.
+     * with required {@code ref}/{@code recommended}/{@code reason} plus optional
+     * {@code salaryMin}/{@code salaryMax} - populated only when the job's own description
+     * explicitly states a salary (see the extraction instructions in {@link #build}).
      */
     public static final String RESULT_JSON_SCHEMA = """
             {
@@ -38,7 +40,9 @@ public class MatchPromptBuilder {
                     "properties": {
                       "ref": {"type": "string"},
                       "recommended": {"type": "boolean"},
-                      "reason": {"type": "string"}
+                      "reason": {"type": "string"},
+                      "salaryMin": {"type": ["integer", "null"]},
+                      "salaryMax": {"type": ["integer", "null"]}
                     }
                   }
                 }
@@ -80,6 +84,21 @@ public class MatchPromptBuilder {
 
                 Echo each job's "ref" value back exactly in your corresponding result so the
                 verdicts can be matched to the jobs.
+
+                Also check each job's description for an EXPLICITLY STATED salary or pay range,
+                and if one exists, report it in "salaryMin"/"salaryMax" as annualized whole-dollar
+                USD integers:
+                - Extract a salary ONLY when the description states compensation explicitly (a
+                  dollar figure or range). Do not infer, estimate, or guess one from the title,
+                  seniority, or location - vague language like "competitive pay" or "commensurate
+                  with experience" is NOT a stated salary.
+                - If the description states an hourly rate, annualize it by multiplying by 2080
+                  (40 hours/week x 52 weeks) and report the annualized figure - never the hourly
+                  number itself.
+                - If the description states a single figure rather than a range, set both
+                  "salaryMin" and "salaryMax" to that same figure.
+                - If no salary is stated, omit "salaryMin" and "salaryMax" (or set them null) -
+                  do not default them to 0.
 
                 RESUME:
                 %s

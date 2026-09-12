@@ -91,6 +91,19 @@ export interface RunResponse {
   detailsTotal?: number | null;
   /** Live AI-scan progress while status is "scanning"; null before the scan phase. */
   scan?: ScanProgress | null;
+  /**
+   * For a FINISHED run: how many of its passing LinkedIn rows still have no description because
+   * the detail fetch never reached them (blocked by a cooldown, capped, out of budget). These are
+   * what "Retry" on the run panel fetches before re-running the scan. Null while in flight.
+   */
+  unfetchedDescriptions?: number | null;
+}
+
+/** The LinkedIn cooldown (circuit breaker), from GET /api/runs/cooldown. Mirrors CooldownResponse.java. */
+export interface CooldownResponse {
+  active: boolean;
+  until: string | null;
+  remainingSeconds: number;
 }
 
 /** Live progress of the AI match scan. Mirrors ai/ScanProgress.java. */

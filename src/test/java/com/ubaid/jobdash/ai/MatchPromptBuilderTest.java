@@ -66,6 +66,25 @@ class MatchPromptBuilderTest {
     }
 
     @Test
+    void jsonSchemaDeclaresTheOptionalSalaryFields() {
+        assertThat(MatchPromptBuilder.RESULT_JSON_SCHEMA).contains("\"salaryMin\"").contains("\"salaryMax\"");
+        // Still required only on ref/recommended/reason - salary stays optional so an absent
+        // salary doesn't force the model to invent one.
+        assertThat(MatchPromptBuilder.RESULT_JSON_SCHEMA).contains("\"required\": [\"ref\", \"recommended\", \"reason\"]");
+    }
+
+    @Test
+    void promptInstructsExplicitSalaryExtractionRules() {
+        JobForMatching job = new JobForMatching("job-1", "Engineer", "Acme", "Remote", "Pay: $100,000/yr");
+
+        String prompt = builder.build("resume text", List.of(job));
+
+        assertThat(prompt).contains("EXPLICITLY STATED salary");
+        assertThat(prompt).contains("2080");
+        assertThat(prompt).contains("competitive pay");
+    }
+
+    @Test
     void everyJobRefAppearsInTheRenderedPrompt() {
         List<JobForMatching> jobs = List.of(
                 new JobForMatching("ref-alpha", "Engineer", "Acme", "Remote", "Build things."),

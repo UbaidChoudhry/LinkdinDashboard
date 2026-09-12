@@ -4,6 +4,7 @@ import com.ubaid.jobdash.ai.ResumeMatchService;
 import com.ubaid.jobdash.source.location.LocationClassifier;
 import com.ubaid.jobdash.ai.ScanProgressListener;
 import com.ubaid.jobdash.domain.Resume;
+import com.ubaid.jobdash.domain.SweepRun;
 import com.ubaid.jobdash.store.ResumeRepository;
 import com.ubaid.jobdash.store.SweepRunRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -296,5 +297,76 @@ class RunOrchestratorTest {
         orchestrator.startRun(SWEEP_REQUEST, List.of("greenhouse"), null, true);
 
         verify(sweepRunRepository, timeout(2000)).finish(eq(RUN_ID), any(), eq("ok"));
+    }
+
+    // ---- resume: the Retry behind a run LinkedIn's cooldown cut short --------------------
+
+    private static SweepRun finishedRun(String status, String sources, Long resumeId) {
+        return new SweepRun(RUN_ID, NOW.minusSeconds(600), NOW.minusSeconds(60), status, "engineer", "remote",
+                24, false, null, null, 19, 167, 308, 254, false, sources, resumeId, 0, 0, 0, 0);
+    }
+
+    /** Resuming a blocked LinkedIn run reads the descriptions it left unread, then scans - never re-collects. */
+    @Test
+    void resumingABlockedLinkedInRunFetchesDetailsThenScansWithoutCollectingAgain() {
+        when(sweepRunRepository.findById(RUN_ID))
+                .thenReturn(Optional.of(finishedRun("blocked", "linkedin,greenhouse", 3L)));
+        when(sweepRunRepository.reopen(RUN_ID, "fetching_details")).thenReturn(1);
+        when(detailFetchService.fetchForRun(eq(RUN_ID), any())).thenReturn("ok");
+
+        orchestrator.resumeRun(RUN_ID);
+
+        InOrder order = inOrder(sweepRunRepository, detailFetchService, resumeMatchService);
+        order.verify(sweepRunRepository).reopen(RUN_ID, "fetching_details");
+        order.verify(detailFetchService, timeout(2000)).fetchForRun(eq(RUN_ID), any());
+        // The run's own resume is used, not the default one.
+        order.verify(resumeMatchService, timeout(2000))
+                .scan(eq(RUN_ID), eq(3L), any(BooleanSupplier.class), any(ScanProgressListener.class));
+        order.verify(sweepRunRepository, timeout(2000)).finish(eq(RUN_ID), any(), eq("ok"));
+        verifyNoInteractions(sweepService, atsSweepService, locationClassifier);
+        verify(resumeRepository, never()).findDefault();
+    }
+
+    /** If the breaker is still open when the resume runs, the run ends "blocked" again - and stays retryable. */
+    @Test
+    void aResumeThatIsBlockedAgainFinishesBlocked() {
+        when(sweepRunRepository.findById(RUN_ID)).thenReturn(Optional.of(finishedRun("blocked", "linkedin", 3L)));
+        when(sweepRunRepository.reopen(RUN_ID, "fetching_details")).thenReturn(1);
+        when(detailFetchService.fetchForRun(eq(RUN_ID), any())).thenReturn("blocked");
+
+        orchestrator.resumeRun(RUN_ID);
+
+        verify(resumeMatchService, timeout(2000))
+                .scan(eq(RUN_ID), eq(3L), any(BooleanSupplier.class), any(ScanProgressListener.class));
+        verify(sweepRunRepository, timeout(2000)).finish(eq(RUN_ID), any(), eq("blocked"));
+    }
+
+    /** A boards-only run has no LinkedIn descriptions to fetch; resuming it is just a re-scan. */
+    @Test
+    void resumingAnAtsOnlyRunSkipsTheDetailPhase() {
+        when(sweepRunRepository.findById(RUN_ID)).thenReturn(Optional.of(finishedRun("ok", "greenhouse,lever", null)));
+        when(sweepRunRepository.reopen(RUN_ID, "scanning")).thenReturn(1);
+        when(resumeRepository.findDefault()).thenReturn(Optional.of(
+                new Resume(7L, "cv", "cv.pdf", "application/pdf", "data/resumes/cv.pdf", "text", 4, true, NOW)));
+
+        orchestrator.resumeRun(RUN_ID);
+
+        verify(resumeMatchService, timeout(2000))
+                .scan(eq(RUN_ID), eq(7L), any(BooleanSupplier.class), any(ScanProgressListener.class));
+        verify(sweepRunRepository, timeout(2000)).finish(eq(RUN_ID), any(), eq("ok"));
+        verifyNoInteractions(detailFetchService, sweepService, atsSweepService);
+    }
+
+    /** reopen() affecting no row means the run is still in flight: refuse rather than start a second thread on it. */
+    @Test
+    void resumingARunStillInFlightIsRefused() {
+        when(sweepRunRepository.findById(RUN_ID)).thenReturn(Optional.of(finishedRun("running", "linkedin", 3L)));
+        when(sweepRunRepository.reopen(RUN_ID, "fetching_details")).thenReturn(0);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> orchestrator.resumeRun(RUN_ID))
+                .isInstanceOf(IllegalStateException.class);
+
+        verifyNoInteractions(detailFetchService, resumeMatchService);
+        verify(sweepRunRepository, never()).finish(anyLong(), any(), any());
     }
 }

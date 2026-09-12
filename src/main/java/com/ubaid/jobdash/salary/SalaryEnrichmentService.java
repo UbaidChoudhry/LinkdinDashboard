@@ -15,6 +15,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.BooleanSupplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Fills in the salary band for the jobs of one sweep run: for every passing row that has no
@@ -31,6 +33,17 @@ public class SalaryEnrichmentService {
 
     /** Cascade order, most-trusted first. Sources not named here sort last, keeping bean order out of it. */
     private static final List<String> CASCADE_ORDER = List.of("lca", "adzuna", "h1bapi");
+
+    /**
+     * Matches a dollar figure in a job description, e.g. "$150,000", "$20,000", "$5,000". Used by
+     * {@link #hasExplicitSalary(String)} to gate the external cascade: only a figure whose value
+     * is at least {@link #EXPLICIT_SALARY_FLOOR} counts as "the posting states a salary" - a
+     * "$5,000 signing bonus" or "401k" must not trip this, but "$150,000 - $180,000" must.
+     */
+    private static final Pattern DOLLAR_AMOUNT = Pattern.compile("\\$\\s?(\\d[\\d,]*)(?:\\.\\d{1,2})?");
+
+    /** The AI scan's prompt asks for annualized USD, so this floor is annual-salary-shaped, not hourly. */
+    private static final long EXPLICIT_SALARY_FLOOR = 20_000L;
 
     private final List<SalarySource> sources;
     private final SalaryEstimateRepository salaryEstimateRepository;
@@ -83,6 +96,18 @@ public class SalaryEnrichmentService {
                 String companyKey = CompanyKey.of(job.company());
                 String titleKey = TitleKey.of(job.title());
                 if (companyKey.isBlank() || titleKey.isBlank()) {
+                    continue;
+                }
+
+                if (hasExplicitSalary(job.description())) {
+                    // The posting states its own salary; the AI scan will pick it up
+                    // authoritatively and write it straight to job_listing (salary_source=
+                    // 'posting'). Skip the cascade entirely - no API calls, no cache write -
+                    // rather than have an external estimate contend with (or get overwritten by)
+                    // a number the poster already gave us. If the job never gets scanned, it
+                    // simply keeps a null salary here, same as an ordinary cascade miss.
+                    log.debug("skipping salary cascade for job {} ({}) - description states an explicit salary",
+                            job.jobId(), job.company());
                     continue;
                 }
 
@@ -148,6 +173,32 @@ public class SalaryEnrichmentService {
             return res;
         }
         return null;
+    }
+
+    /**
+     * Conservative gate: true only when the description contains a dollar figure of at least
+     * {@link #EXPLICIT_SALARY_FLOOR}. A "$5,000 signing bonus" (or "401k") must not trip this -
+     * its only dollar figure is under the floor - while "$150,000 - $180,000" trips it on either
+     * side of the range. Deliberately not stricter than this: false negatives just mean the row
+     * goes through the (harmless) cascade, false positives would wrongly withhold an external
+     * estimate from a row the scan may never reach.
+     */
+    private static boolean hasExplicitSalary(String description) {
+        if (description == null || description.isBlank()) {
+            return false;
+        }
+        Matcher m = DOLLAR_AMOUNT.matcher(description);
+        while (m.find()) {
+            String digits = m.group(1).replace(",", "");
+            try {
+                if (Long.parseLong(digits) >= EXPLICIT_SALARY_FLOOR) {
+                    return true;
+                }
+            } catch (NumberFormatException ignored) {
+                // A malformed number (e.g. stray commas) just fails to trip the gate.
+            }
+        }
+        return false;
     }
 
     private static boolean isTooOld(LocalDate dataDate, Instant floor) {

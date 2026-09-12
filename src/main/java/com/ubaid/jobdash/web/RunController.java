@@ -4,11 +4,13 @@ import com.ubaid.jobdash.domain.SweepRun;
 import com.ubaid.jobdash.http.CircuitSnapshot;
 import com.ubaid.jobdash.http.CircuitState;
 import com.ubaid.jobdash.http.CircuitStateStore;
+import com.ubaid.jobdash.store.JobListingRepository;
 import com.ubaid.jobdash.store.SweepRunRepository;
 import com.ubaid.jobdash.sweep.RunOrchestrator;
 import com.ubaid.jobdash.sweep.RunProgressRegistry;
 import com.ubaid.jobdash.sweep.SweepProgress;
 import com.ubaid.jobdash.sweep.SweepRunRequest;
+import com.ubaid.jobdash.web.dto.CooldownResponse;
 import com.ubaid.jobdash.web.dto.CreateRunRequest;
 import com.ubaid.jobdash.web.dto.RunIdResponse;
 import com.ubaid.jobdash.web.dto.RunResponse;
@@ -56,16 +58,18 @@ public class RunController {
     private final RunOrchestrator runOrchestrator;
     private final RunProgressRegistry runProgressRegistry;
     private final SweepRunRepository sweepRunRepository;
+    private final JobListingRepository jobListingRepository;
     private final CircuitStateStore circuitStateStore;
     private final Clock clock;
     private final ScheduledExecutorService sseScheduler;
 
     public RunController(RunOrchestrator runOrchestrator, RunProgressRegistry runProgressRegistry,
-                          SweepRunRepository sweepRunRepository, CircuitStateStore circuitStateStore, Clock clock,
-                          ScheduledExecutorService sseScheduler) {
+                          SweepRunRepository sweepRunRepository, JobListingRepository jobListingRepository,
+                          CircuitStateStore circuitStateStore, Clock clock, ScheduledExecutorService sseScheduler) {
         this.runOrchestrator = runOrchestrator;
         this.runProgressRegistry = runProgressRegistry;
         this.sweepRunRepository = sweepRunRepository;
+        this.jobListingRepository = jobListingRepository;
         this.circuitStateStore = circuitStateStore;
         this.clock = clock;
         this.sseScheduler = sseScheduler;
@@ -128,14 +132,54 @@ public class RunController {
     }
 
     private void checkCircuitNotOpen() {
+        CooldownResponse cooldown = currentCooldown();
+        if (cooldown.active()) {
+            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "LinkedIn requests are paused after repeated failures. This is a cooldown, not an "
+                            + "error to clear — try again in about "
+                            + formatDuration(Duration.ofSeconds(cooldown.remainingSeconds())) + ".");
+        }
+    }
+
+    /**
+     * The LinkedIn cooldown, for the run panel's countdown. Declared before {@code /api/runs/{id}}
+     * only for readability - Spring picks the literal path over the variable one regardless.
+     */
+    @GetMapping("/api/runs/cooldown")
+    public CooldownResponse cooldown() {
+        return currentCooldown();
+    }
+
+    private CooldownResponse currentCooldown() {
         CircuitSnapshot snapshot = circuitStateStore.load();
         if (snapshot.state() == CircuitState.OPEN && snapshot.openUntil() != null
                 && clock.instant().isBefore(snapshot.openUntil())) {
             Duration remaining = Duration.between(clock.instant(), snapshot.openUntil());
-            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
-                    "LinkedIn requests are paused after repeated failures. This is a cooldown, not an "
-                            + "error to clear — try again in about " + formatDuration(remaining) + ".");
+            return new CooldownResponse(true, snapshot.openUntil(), Math.max(0, remaining.getSeconds()));
         }
+        return CooldownResponse.inactive();
+    }
+
+    /**
+     * Re-opens a finished run for the phases a LinkedIn cooldown, cap or budget cut short:
+     * fetching the descriptions of the rows it collected but never read, then the AI scan. The
+     * search itself is not repeated. Same guards as starting a run - one run at a time, and no
+     * LinkedIn traffic while the breaker is open - because it spends the same budget.
+     */
+    @PostMapping("/api/runs/{id}/resume")
+    public ResponseEntity<RunIdResponse> resumeRun(@PathVariable long id) {
+        SweepRun run = sweepRunRepository.findById(id).orElseThrow(() -> notFound(id));
+        sweepRunRepository.findRunning().ifPresent(running -> {
+            throw new ApiException(HttpStatus.CONFLICT, running.id() == id
+                    ? "Run " + id + " is still in progress; there is nothing to resume yet."
+                    : "Run " + running.id() + " is already in progress. Wait for it to finish or cancel it "
+                            + "before resuming run " + id + ".");
+        });
+        if (run.sources() == null || run.sources().contains("linkedin")) {
+            checkCircuitNotOpen();
+        }
+        runOrchestrator.resumeRun(id);
+        return ResponseEntity.accepted().body(new RunIdResponse(id));
     }
 
     private static String formatDuration(Duration d) {
@@ -165,7 +209,20 @@ public class RunController {
 
     private RunResponse toResponse(SweepRun run) {
         Optional<SweepProgress> progress = runProgressRegistry.progress(run.id());
-        return progress.map(p -> RunResponse.fromRunAndProgress(run, p)).orElseGet(() -> RunResponse.fromRun(run));
+        return withRetryHint(run,
+                progress.map(p -> RunResponse.fromRunAndProgress(run, p)).orElseGet(() -> RunResponse.fromRun(run)));
+    }
+
+    /**
+     * A finished run carries how many of its LinkedIn rows still lack a description, so the
+     * panel can offer "Retry" with a real number. Only for finished runs: while in flight the
+     * count is changing under the detail phase, and the SSE poll would pay for it every tick.
+     */
+    private RunResponse withRetryHint(SweepRun run, RunResponse response) {
+        if (run.finishedAt() == null) {
+            return response;
+        }
+        return response.withUnfetchedDescriptions(jobListingRepository.countUnfetchedDescriptions(run.id()));
     }
 
     @PostMapping("/api/runs/{id}/cancel")
@@ -205,35 +262,43 @@ public class RunController {
 
     private void pushProgress(long id, SseEmitter emitter, AtomicReference<ScheduledFuture<?>> futureRef) {
         try {
+            SweepRun run = sweepRunRepository.findById(id).orElse(null);
+            if (run == null) {
+                emitter.complete();
+                cancelQuietly(futureRef);
+                return;
+            }
+
             RunResponse response;
             String status;
             Optional<SweepProgress> progress = runProgressRegistry.progress(id);
             if (progress.isPresent()) {
-                SweepRun run = sweepRunRepository.findById(id).orElse(null);
-                if (run == null) {
-                    emitter.complete();
-                    cancelQuietly(futureRef);
-                    return;
-                }
                 response = RunResponse.fromRunAndProgress(run, progress.get());
                 status = progress.get().status();
             } else {
-                SweepRun run = sweepRunRepository.findById(id).orElse(null);
-                if (run == null) {
-                    emitter.complete();
-                    cancelQuietly(futureRef);
-                    return;
-                }
                 response = RunResponse.fromRun(run);
                 status = run.status();
             }
 
-            emitter.send(SseEmitter.event().name("progress").data(response, MediaType.APPLICATION_JSON));
+            emitter.send(SseEmitter.event().name("progress")
+                    .data(withRetryHint(run, response), MediaType.APPLICATION_JSON));
 
             // "fetching_details" (a LinkedIn run reading job descriptions) and "scanning" (the AI
             // resume scan) are the transient phases after collection - still in flight, not
             // terminal statuses, so the stream stays open through them.
-            if (!IN_FLIGHT_STATUSES.contains(status)) {
+            //
+            // A status outside IN_FLIGHT_STATUSES is not proof the run is over: SweepService's
+            // collect() publishes the LinkedIn phase's own outcome (e.g. "ok") into the shared
+            // progress registry the instant collection ends, before the next phase (detail fetch,
+            // then the scan) publishes its own in-flight status a moment later. This poll runs
+            // every SSE_POLL_MS regardless of that transition, so it can land squarely inside the
+            // gap and read "ok" while the run is still very much in progress. finishedAt is set
+            // exactly once, by RunOrchestrator.finishRun(), which persists it to the row strictly
+            // after every phase - including the AI scan - has actually completed, and it does so
+            // before republishing the matching terminal status into the registry - so pairing the
+            // two here is race-free. Completing the emitter on the bare status was closing this
+            // SSE stream for good mid-scan; the frontend's isRunFinished() is the mirror of this.
+            if (!IN_FLIGHT_STATUSES.contains(status) && run.finishedAt() != null) {
                 emitter.complete();
                 cancelQuietly(futureRef);
             }

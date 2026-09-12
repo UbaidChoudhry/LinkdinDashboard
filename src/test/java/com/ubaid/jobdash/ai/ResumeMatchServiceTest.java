@@ -2,6 +2,7 @@ package com.ubaid.jobdash.ai;
 
 import com.ubaid.jobdash.domain.AiMatch;
 import com.ubaid.jobdash.domain.FilterVerdict;
+import com.ubaid.jobdash.domain.JobListing;
 import com.ubaid.jobdash.domain.Resume;
 import com.ubaid.jobdash.store.AbstractStoreTest;
 import com.ubaid.jobdash.store.AiMatchRepository;
@@ -413,6 +414,106 @@ class ResumeMatchServiceTest extends AbstractStoreTest {
         assertThat(result.scanned()).isEqualTo(2);
         assertThat(cli.refsPerInvocation().get(0))
                 .containsExactlyInAnyOrder(String.valueOf(unclassified), String.valueOf(lowConfidence));
+    }
+
+    // ---- posting-stated salary extraction ----------------------------------------------------
+
+    /** A verdict carrying a salary must land on the job row, with source stamped 'posting'. */
+    @Test
+    void verdictWithSalaryWritesSalaryAndPostingSourceOntoTheJob() {
+        long resumeId = insertResume();
+        long runId = newRun();
+        long jobId = insertJob(runId, 700, "Backend role. Pay: $150,000 - $180,000/yr.");
+
+        FakeCliClient cli = new FakeCliClient(refs ->
+                new ClaudeCliResult.Ok(refs.stream()
+                        .map(r -> new MatchVerdict(r, true, "fits", 150000, 180000)).toList(), 0.01, 100));
+        ResumeMatchService service = service(props(9, 1), cli);
+
+        service.scan(runId, resumeId, () -> false);
+
+        JobListing job = jobListingRepository.findById(jobId).orElseThrow();
+        assertThat(job.salaryMin()).isEqualTo(150000.0);
+        assertThat(job.salaryMax()).isEqualTo(180000.0);
+        assertThat(job.salarySource()).isEqualTo("posting");
+    }
+
+    /** A posting-stated salary is ground truth and must overwrite an existing estimate. */
+    @Test
+    void verdictWithSalaryOverwritesAnExistingEstimate() {
+        long resumeId = insertResume();
+        long runId = newRun();
+        long jobId = insertJob(runId, 701, "Backend role. Pay: $150,000 - $180,000/yr.");
+        jobListingRepository.applySalary(jobId, 90000.0, 110000.0, "adzuna", "Acme Corp Estimate");
+
+        FakeCliClient cli = new FakeCliClient(refs ->
+                new ClaudeCliResult.Ok(refs.stream()
+                        .map(r -> new MatchVerdict(r, true, "fits", 150000, 180000)).toList(), 0.01, 100));
+        ResumeMatchService service = service(props(9, 1), cli);
+
+        service.scan(runId, resumeId, () -> false);
+
+        JobListing job = jobListingRepository.findById(jobId).orElseThrow();
+        assertThat(job.salaryMin()).isEqualTo(150000.0);
+        assertThat(job.salaryMax()).isEqualTo(180000.0);
+        assertThat(job.salarySource()).isEqualTo("posting");
+    }
+
+    /** An inverted salary (min > max) is a hallucination signal and must be rejected outright. */
+    @Test
+    void invertedSalaryIsRejectedAndRowUntouched() {
+        long resumeId = insertResume();
+        long runId = newRun();
+        long jobId = insertJob(runId, 702, "Backend role.");
+
+        FakeCliClient cli = new FakeCliClient(refs ->
+                new ClaudeCliResult.Ok(refs.stream()
+                        .map(r -> new MatchVerdict(r, true, "fits", 180000, 150000)).toList(), 0.01, 100));
+        ResumeMatchService service = service(props(9, 1), cli);
+
+        service.scan(runId, resumeId, () -> false);
+
+        JobListing job = jobListingRepository.findById(jobId).orElseThrow();
+        assertThat(job.salarySource()).isNull();
+        assertThat(job.salaryMin()).isNull();
+    }
+
+    /** A salary outside the plausible 10k-2M annual range is also a hallucination signal. */
+    @Test
+    void outOfRangeSalaryIsRejectedAndRowUntouched() {
+        long resumeId = insertResume();
+        long runId = newRun();
+        long jobId = insertJob(runId, 703, "Backend role.");
+
+        FakeCliClient cli = new FakeCliClient(refs ->
+                new ClaudeCliResult.Ok(refs.stream()
+                        .map(r -> new MatchVerdict(r, true, "fits", 1, 5)).toList(), 0.01, 100));
+        ResumeMatchService service = service(props(9, 1), cli);
+
+        service.scan(runId, resumeId, () -> false);
+
+        JobListing job = jobListingRepository.findById(jobId).orElseThrow();
+        assertThat(job.salarySource()).isNull();
+        assertThat(job.salaryMin()).isNull();
+    }
+
+    /** A verdict without a stated salary must leave the job's salary columns untouched. */
+    @Test
+    void verdictWithoutSalaryLeavesSalaryColumnsAlone() {
+        long resumeId = insertResume();
+        long runId = newRun();
+        long jobId = insertJob(runId, 704, "Backend role, competitive pay.");
+
+        FakeCliClient cli = new FakeCliClient(refs ->
+                new ClaudeCliResult.Ok(refs.stream().map(r -> new MatchVerdict(r, true, "fits")).toList(), 0.01, 100));
+        ResumeMatchService service = service(props(9, 1), cli);
+
+        service.scan(runId, resumeId, () -> false);
+
+        JobListing job = jobListingRepository.findById(jobId).orElseThrow();
+        assertThat(job.salarySource()).isNull();
+        assertThat(job.salaryMin()).isNull();
+        assertThat(job.salaryMax()).isNull();
     }
 
     /** A run where every posting is confidently non-US is a clean no-op, not an error. */

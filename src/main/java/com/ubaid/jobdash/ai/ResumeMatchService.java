@@ -49,6 +49,10 @@ public class ResumeMatchService {
      */
     private static final Logger scanLog = LoggerFactory.getLogger("jobdash.ai.scan");
 
+    /** Sanity bounds on a posting-stated salary the model reports - guards against a hallucinated figure. */
+    private static final double MIN_PLAUSIBLE_SALARY = 10_000.0;
+    private static final double MAX_PLAUSIBLE_SALARY = 2_000_000.0;
+
     private final ResumeRepository resumeRepository;
     private final JobListingRepository jobListingRepository;
     private final AiMatchRepository aiMatchRepository;
@@ -330,6 +334,7 @@ public class ResumeMatchService {
                         }
                         matches.add(new AiMatch(job.jobId(), resumeId, verdict.recommended(), verdict.reason(),
                                 properties.model(), runId, now));
+                        applyPostingSalaryIfValid(job.jobId(), verdict.salaryMin(), verdict.salaryMax());
                     }
                     yield new BatchOutcome(matches, ok.costUsd(), false, null);
                 }
@@ -344,6 +349,27 @@ public class ResumeMatchService {
             log.warn("resume match batch threw: {}", e.toString());
             return new BatchOutcome(List.of(), 0.0, false, e.getMessage());
         }
+    }
+
+    /**
+     * Writes a posting-stated salary onto the job when the model reported one and it survives
+     * sanity bounds. The model can hallucinate, so a verdict is rejected (logged, row untouched)
+     * rather than trusted blindly when it's inverted or implausible - this is the only guard
+     * between an LLM's output and a number shown to the user as ground truth.
+     */
+    private void applyPostingSalaryIfValid(long jobId, Integer salaryMin, Integer salaryMax) {
+        if (salaryMin == null || salaryMax == null) {
+            return;
+        }
+        if (salaryMin > salaryMax) {
+            log.debug("rejecting posting salary for job {}: min {} > max {}", jobId, salaryMin, salaryMax);
+            return;
+        }
+        if (salaryMin < MIN_PLAUSIBLE_SALARY || salaryMax > MAX_PLAUSIBLE_SALARY) {
+            log.debug("rejecting posting salary for job {}: {}-{} outside plausible range", jobId, salaryMin, salaryMax);
+            return;
+        }
+        jobListingRepository.applyPostingSalary(jobId, salaryMin, salaryMax);
     }
 
     private static List<List<JobListing>> partition(List<JobListing> jobs, int batchSize) {

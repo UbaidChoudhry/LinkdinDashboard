@@ -1,3 +1,5 @@
+import type { RunResponse } from "../types/api";
+
 export type RunStatusKind = "success" | "warning" | "error" | "info" | "neutral";
 
 export interface RunStatusInfo {
@@ -37,18 +39,20 @@ export const RUN_STATUS_INFO: Record<string, RunStatusInfo> = {
   },
   capped: {
     label: "Stopped: request cap",
-    message: "The run stopped after hitting its per-run request cap. Results may be incomplete.",
+    message:
+      "The run stopped after hitting its per-run request cap. Results may be incomplete; jobs collected without a description can be finished with Retry below.",
     kind: "warning",
   },
   budget_exhausted: {
     label: "Stopped: daily budget exhausted",
-    message: "The run stopped because today's request budget has been spent. It will resume capacity tomorrow.",
+    message:
+      "The run stopped because today's request budget has been spent. It will resume capacity tomorrow - Retry below then fetches what this run left unread.",
     kind: "warning",
   },
   blocked: {
     label: "Blocked (cooldown)",
     message:
-      "LinkedIn requests are paused after repeated failures. This is a cooldown, not an error to clear - wait and try again shortly.",
+      "LinkedIn answered with a rate limit, so LinkedIn requests are paused for a cooldown. This is not an error to clear: the jobs already collected are kept, and once the countdown below ends, Retry fetches their descriptions and runs the AI scan.",
     kind: "warning",
   },
   failed: {
@@ -96,4 +100,30 @@ export const IN_FLIGHT_STATUSES: ReadonlySet<string> = new Set(["running", "fetc
 /** True while a run is still working (collecting or scanning). */
 export function isRunInFlight(status: string | null | undefined): boolean {
   return status != null && IN_FLIGHT_STATUSES.has(status);
+}
+
+/**
+ * True only once a run has genuinely finished - not merely reached a status outside
+ * `IN_FLIGHT_STATUSES`, but had a finish timestamp actually persisted for it.
+ *
+ * This guards a real phase-boundary race, not a hypothetical one: `SweepService.collect()`
+ * publishes the *LinkedIn collection phase's own* outcome (e.g. `"ok"`) into the shared
+ * in-memory progress registry the instant collection ends - before `DetailFetchService` (or,
+ * for a run with no detail phase, the scan) runs its own setup and publishes an in-flight
+ * status a moment later. `RunResponse.finishedAt` is set exactly once, by
+ * `RunOrchestrator.finishRun()`, strictly after every phase - including the AI scan - has
+ * actually completed, and the backend persists it to the row before republishing the matching
+ * terminal status into the registry, so pairing the two here is safe.
+ *
+ * The SSE stream is polled every 750ms independently of these transitions, so a poll can land
+ * squarely inside that collect()-to-detail-fetch gap and hand the client a status that *looks*
+ * terminal while the run is still very much in progress. Treating that blip as "the run is
+ * done" is what closed the browser's EventSource for good (bug: AI scan progress never showed
+ * without a manual reload) and auto-switched the shell to the Results tab before the scan had
+ * even started. Both call sites that used to decide "is this run over?" off `status` alone now
+ * go through this instead. See HANDOFF §9's "Three fixes from real use" for the family of bugs
+ * this belongs to.
+ */
+export function isRunFinished(run: Pick<RunResponse, "status" | "finishedAt">): boolean {
+  return !isRunInFlight(run.status) && run.finishedAt != null;
 }

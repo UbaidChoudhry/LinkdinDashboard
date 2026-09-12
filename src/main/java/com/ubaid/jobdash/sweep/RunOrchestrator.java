@@ -3,6 +3,7 @@ package com.ubaid.jobdash.sweep;
 import com.ubaid.jobdash.ai.ResumeMatchService;
 import com.ubaid.jobdash.source.location.LocationClassifier;
 import com.ubaid.jobdash.domain.Resume;
+import com.ubaid.jobdash.domain.SweepRun;
 import com.ubaid.jobdash.store.ResumeRepository;
 import com.ubaid.jobdash.store.SweepRunRepository;
 import org.slf4j.Logger;
@@ -90,6 +91,62 @@ public class RunOrchestrator {
         progressRegistry.registerThread(runId, thread);
         thread.start();
         return runId;
+    }
+
+    /**
+     * Re-opens a finished run for the phases a LinkedIn cooldown (or a cap / the daily budget)
+     * cut short: the description fetch for rows the run collected but never read, then the AI
+     * scan over everything that now carries a description. It does <b>not</b> re-run the
+     * search itself - the pages the run never reached are a new run's job. Nothing is
+     * re-collected, so the boards are not touched and no location classification is repeated.
+     * <p>
+     * Returns immediately; the work happens on a virtual thread exactly like {@link #startRun},
+     * so the same SSE stream and cancel path apply. The run's terminal status becomes the
+     * detail phase's outcome ("ok", or "blocked" again if the breaker re-opened).
+     *
+     * @throws IllegalArgumentException if no such run exists
+     * @throws IllegalStateException    if the run is still in flight (the caller's guard should
+     *                                  already have refused it)
+     */
+    public void resumeRun(long runId) {
+        SweepRun run = sweepRunRepository.findById(runId)
+                .orElseThrow(() -> new IllegalArgumentException("No run found with id " + runId));
+        List<String> sources = run.sources() == null || run.sources().isBlank()
+                ? List.of("linkedin")
+                : List.of(run.sources().split(","));
+        boolean withLinkedIn = sources.contains("linkedin");
+        String initialStatus = withLinkedIn ? "fetching_details" : "scanning";
+        if (sweepRunRepository.reopen(runId, initialStatus) == 0) {
+            throw new IllegalStateException("Run " + runId + " is still in flight and cannot be resumed.");
+        }
+        // Carry the row's counters into the live snapshot so the panel keeps showing what the
+        // run already collected while its remaining phases work.
+        progressRegistry.start(runId, new SweepProgress(runId, initialStatus, null, run.pagesFetched(),
+                run.requestsMade(), run.cardsSeen(), run.jobsNew(), run.saturated(), run.companiesDone(),
+                run.companiesTotal(), run.detailsDone(), run.detailsTotal(), String.join(",", sources), null));
+
+        Thread thread = Thread.ofVirtual().name("run-" + runId + "-resume")
+                .unstarted(() -> executeResume(runId, sources, run.resumeId(), withLinkedIn));
+        progressRegistry.registerThread(runId, thread);
+        thread.start();
+    }
+
+    private void executeResume(long runId, List<String> sources, Long resumeId, boolean withLinkedIn) {
+        progressRegistry.registerCurrentThreadIfAbsent(runId);
+        AtomicBoolean cancelFlag = progressRegistry.cancelFlag(runId);
+        String detailStatus = null;
+        String status = "failed";
+        try {
+            if (withLinkedIn && !cancelledNow(cancelFlag)) {
+                detailStatus = fetchDetailsSafely(runId, cancelFlag);
+            }
+            if (!cancelledNow(cancelFlag)) {
+                runResumeScanIfPossible(runId, sources, resumeId, cancelFlag, "ok");
+            }
+            status = terminalStatus(cancelledNow(cancelFlag), null, null, detailStatus);
+        } finally {
+            finishRun(runId, status, sources);
+        }
     }
 
     private void executeRun(long runId, SweepRunRequest sweepRequest, List<String> sources, Long resumeId,

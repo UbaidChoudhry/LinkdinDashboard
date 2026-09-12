@@ -139,11 +139,21 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
     setScanNote(null);
     try {
       const result = await scanMatches({});
-      setScanNote(
-        result.errorMessage
-          ? result.errorMessage
-          : `Scanned ${result.scanned} — ${result.recommended} recommended, ${result.notRecommended} not.`,
-      );
+      // The scan only reads rows that HAVE a description and skips verdicts already cached, so
+      // "Scanned 0" on a list full of "Not scanned" rows is not a failure - it means those rows
+      // have nothing to scan yet. Say so, and point at the action that actually fixes it.
+      const unreadable =
+        jobs?.filter((j) => j.aiRecommended == null && j.source === "linkedin" && j.detailStatus !== "ok").length ?? 0;
+      let note = result.errorMessage
+        ? result.errorMessage
+        : `Scanned ${result.scanned} — ${result.recommended} recommended, ${result.notRecommended} not.`;
+      if (!result.errorMessage && result.scanned === 0 && unreadable > 0) {
+        note =
+          `Nothing new to scan: ${unreadable} LinkedIn job${unreadable === 1 ? "" : "s"} shown here ` +
+          "have no description yet (the run's description fetch was blocked or cut short), and the AI " +
+          "cannot score a job without one. Use Retry on the run panel in the Search tab to fetch them and re-scan.";
+      }
+      setScanNote(note);
       await load();
     } catch (err) {
       setScanNote(err instanceof ApiError ? err.message : "Scan failed.");

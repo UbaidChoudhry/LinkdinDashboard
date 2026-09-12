@@ -20,6 +20,8 @@ function salarySourceLabel(source: string | null | undefined): string | null {
       return "Adzuna estimate";
     case "h1bapi":
       return "H-1B data";
+    case "posting":
+      return "From job posting";
     default:
       return null;
   }
@@ -79,7 +81,7 @@ export function JobRow({ job, tab, onChanged, onError, grouped = false, selected
         <a href={job.jobUrl} target="_blank" rel="noopener noreferrer">
           {job.title}
         </a>
-        {job.source && job.source !== "linkedin" && (
+        {job.source && (
           <span className="job-source-tag">{job.source}</span>
         )}
         {/* The AI verdict rides under the title rather than in its own column: the reason is a

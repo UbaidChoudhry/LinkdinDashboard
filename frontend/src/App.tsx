@@ -9,12 +9,13 @@ import { CompanyVolumeReport } from "./components/CompanyVolumeReport";
 import { DataPanel } from "./components/DataPanel";
 import { SourcesPanel } from "./components/SourcesPanel";
 import { ResumesPanel } from "./components/ResumesPanel";
+import { RunsPanel } from "./components/RunsPanel";
 import { useRunStream } from "./hooks/useRunStream";
-import { isRunInFlight } from "./utils/runStatus";
+import { isRunFinished, isRunInFlight } from "./utils/runStatus";
 import type { RunResponse } from "./types/api";
 
 /** The top-level sections of the dashboard. Each is a tab; only one is visible at a time. */
-type AppTab = "search" | "results" | "sources" | "resumes" | "filters" | "data";
+type AppTab = "search" | "results" | "sources" | "resumes" | "filters" | "runs" | "data";
 
 const APP_TABS: { id: AppTab; label: string }[] = [
   { id: "search", label: "Search" },
@@ -22,6 +23,7 @@ const APP_TABS: { id: AppTab; label: string }[] = [
   { id: "sources", label: "Sources" },
   { id: "resumes", label: "Resumes" },
   { id: "filters", label: "Filters" },
+  { id: "runs", label: "Runs" },
   { id: "data", label: "Data" },
 ];
 
@@ -34,10 +36,14 @@ function App() {
   const [resumeToken, setResumeToken] = useState(0);
   const [activeTab, setActiveTab] = useState<AppTab>("search");
   const [resultCount, setResultCount] = useState<number | null>(null);
-  const prevStatusRef = useRef<string | null>(null);
+  // Tracks isRunFinished(), not raw status - see that function's doc comment for the
+  // collect()-to-detail-fetch race a plain status comparison here used to fall for.
+  const prevFinishedRef = useRef<boolean>(false);
   const activeTabRef = useRef<AppTab>("search");
 
-  const { run: streamedRun, streamError } = useRunStream(currentRunId);
+  // Bumped when the current run is resumed, so the stream re-subscribes to the same id.
+  const [streamAttempt, setStreamAttempt] = useState(0);
+  const { run: streamedRun, streamError } = useRunStream(currentRunId, streamAttempt);
 
   // Mirror the active tab into a ref so the run-status effect below can read it without taking
   // it as a dependency (which would re-run that effect, and re-fire its tab switch, on every
@@ -68,11 +74,15 @@ function App() {
   useEffect(() => {
     if (!streamedRun) return;
     setLastKnownRun(streamedRun);
-    const prev = prevStatusRef.current;
-    prevStatusRef.current = streamedRun.status;
-    // Only a genuinely terminal status means "finished". Firing this on "scanning" refreshed
-    // the results list before any verdict existed, and then never refreshed again.
-    if (isRunInFlight(prev) && !isRunInFlight(streamedRun.status)) {
+    const wasFinished = prevFinishedRef.current;
+    const finished = isRunFinished(streamedRun);
+    prevFinishedRef.current = finished;
+    // Only a genuinely finished run (isRunFinished, not just a non-in-flight status) means
+    // "done". A status that merely looks terminal - the moment collect() ends and before the
+    // next phase publishes its own in-flight status - used to refresh the results list and
+    // switch tabs before the AI scan had even started, and then never refresh again once the
+    // real finish arrived (prevFinishedRef was already "true" for the blip).
+    if (!wasFinished && finished) {
       setRefreshToken((t) => t + 1);
       // A finished run's payoff is the result list, so land the user on it - but only if they
       // were still watching the run. If they'd wandered off to Filters or Data, yanking the
@@ -84,8 +94,17 @@ function App() {
   }, [streamedRun]);
 
   function handleRunStarted(runId: number) {
-    prevStatusRef.current = "running";
+    prevFinishedRef.current = false;
     setCurrentRunId(runId);
+  }
+
+  function handleRunResumed(runId: number) {
+    // Same run id as before, so bumping the attempt is what re-opens the SSE subscription
+    // (useRunStream keys its effect on both). The finish-transition tracking starts over too,
+    // so the results refresh and tab switch fire again when the resumed run ends.
+    prevFinishedRef.current = false;
+    setCurrentRunId(runId);
+    setStreamAttempt((a) => a + 1);
   }
 
   function handleCancelled() {
@@ -98,7 +117,7 @@ function App() {
     // drop it rather than let the UI describe a run that's now gone.
     setCurrentRunId(null);
     setLastKnownRun(null);
-    prevStatusRef.current = null;
+    prevFinishedRef.current = false;
     setRefreshToken((t) => t + 1);
   }
 
@@ -160,7 +179,14 @@ function App() {
               onRunStarted={handleRunStarted}
               resumeToken={resumeToken}
             />
-            {displayRun && <RunProgress run={displayRun} streamError={streamError} onCancelled={handleCancelled} />}
+            {displayRun && (
+              <RunProgress
+                run={displayRun}
+                streamError={streamError}
+                onCancelled={handleCancelled}
+                onResumed={handleRunResumed}
+              />
+            )}
           </div>
         </div>
 
@@ -183,6 +209,10 @@ function App() {
         <div className="tab-panel" hidden={activeTab !== "filters"}>
           <FiltersPanel />
           <CompanyVolumeReport />
+        </div>
+
+        <div className="tab-panel tab-panel-wide" hidden={activeTab !== "runs"}>
+          <RunsPanel refreshToken={refreshToken} />
         </div>
 
         <div className="tab-panel" hidden={activeTab !== "data"}>

@@ -143,6 +143,19 @@ public class SweepRunRepository {
                 .update();
     }
 
+    /**
+     * Puts a finished run back in flight under {@code status} so its remaining phases can be
+     * resumed (see {@code RunOrchestrator.resumeRun}). Returns 0 when the run is missing or is
+     * still in flight - the caller must treat that as "nothing to resume", never as success.
+     */
+    public int reopen(long id, String status) {
+        return client.sql("update sweep_run set status = :status, finished_at = null "
+                        + "where id = :id and finished_at is not null")
+                .param("status", status)
+                .param("id", id)
+                .update();
+    }
+
     public List<SweepRun> findRecent(int limit) {
         return client.sql("select * from sweep_run order by id desc limit :limit")
                 .param("limit", limit)

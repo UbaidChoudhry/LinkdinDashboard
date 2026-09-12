@@ -1371,3 +1371,45 @@ tr.source-dead {
   opacity: 0.8;
   cursor: help;
 }
+
+/* Runs tab: same flex/fill-chain sizing as .jobs-panel, so its table absorbs leftover height too. */
+.runs-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.runs-table th,
+.runs-table td {
+  white-space: nowrap;
+}
+
+/* Compact status badge for the Runs table - reuses the .status-* background/border colors that
+   RunProgress's full-width banner uses, just sized down to sit inline in a table cell. */
+.status-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* The Retry offer under a run LinkedIn cut short (RunProgress.tsx's RetryPanel). */
+.retry-panel {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid rgba(234, 179, 8, 0.5);
+  background: rgba(234, 179, 8, 0.08);
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.retry-panel .retry-copy {
+  margin: 0 0 10px;
+}
+
+.retry-panel .retry-button {
+  font-variant-numeric: tabular-nums;
+}

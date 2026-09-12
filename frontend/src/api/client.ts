@@ -4,6 +4,7 @@ import type {
   ClearJobDataResponse,
   CompanyBlocklistResponse,
   CompanyVolumeResponse,
+  CooldownResponse,
   CreateRunRequest,
   DataStatsResponse,
   ErrorResponse,
@@ -76,8 +77,10 @@ export function createRun(body: CreateRunRequest): Promise<RunIdResponse> {
   });
 }
 
-export function listRuns(): Promise<RunResponse[]> {
-  return request<RunResponse[]>("/api/runs");
+/** Newest-first. `limit` mirrors the backend's optional query param (default 20 server-side). */
+export function listRuns(limit?: number): Promise<RunResponse[]> {
+  const params = limit != null ? `?${new URLSearchParams({ limit: String(limit) }).toString()}` : "";
+  return request<RunResponse[]>(`/api/runs${params}`);
 }
 
 export function getRun(id: number): Promise<RunResponse> {
@@ -86,6 +89,15 @@ export function getRun(id: number): Promise<RunResponse> {
 
 export function cancelRun(id: number): Promise<void> {
   return request<void>(`/api/runs/${id}/cancel`, { method: "POST" });
+}
+
+/** Re-opens a finished run to fetch the descriptions it never read and re-run the AI scan. */
+export function resumeRun(id: number): Promise<RunIdResponse> {
+  return request<RunIdResponse>(`/api/runs/${id}/resume`, { method: "POST" });
+}
+
+export function getCooldown(): Promise<CooldownResponse> {
+  return request<CooldownResponse>("/api/runs/cooldown");
 }
 
 export function listJobs(

@@ -473,6 +473,17 @@ enabled, so the feature works on first boot.
 against that file on 2026-09-07: **8 of 34** sampled Greenhouse slugs and **7 of 8** sampled Lever
 slugs were already dead (`doordash`, `openai`, `ramp`, `notion`, `benchling`, `anduril`,
 `sourcegraph`, `hashicorp` have all left Greenhouse; nearly every sampled Lever slug had moved).
+**Measured properly on 2026-09-15 with `./validate-slugs.py`** (every unverified row probed live,
+~20 min, stdlib Python): Greenhouse 2,700 of 8,123 dead (33%), Lever 1,404 of 3,587 (39%),
+Workday 456 of 3,646 unresolvable (12.5%). The 4,566 dead rows were deleted (list in
+`data/slug-validation/removed.csv`, DB backup in `data/backups/`), the 10,787 live ones are
+`status='active'` but still `enabled=0`, carrying `last_job_count`, the real Greenhouse board
+name, and for Workday the resolved `site` - so the Sources tab can now be sorted/searched by
+what is actually there. Two things the validator taught: Workday's `robots.txt` answers HTTP 422
+for dead tenants AND some live ones (Netflix), so the resolver's site guesses are the only way
+in for those; and a Workday board can 502 on every site candidate (Whole Foods, 2026-09-15) -
+treat that as transient, not dead.
+
 A company that 404s `ats.dead-slug-threshold` runs in a row is set `status='dead'`, `enabled=0`
 and never called again. It is **marked, not deleted** — a dead row is already skipped by every
 run, and keeping it explains why a company disappeared from your results. `--prune` deletes them
@@ -611,6 +622,44 @@ Both now go through `isRunInFlight()` in `utils/runStatus.ts`, which owns the on
 "still working" (`running` + `scanning`). **Never compare a status to `"running"` directly** —
 that is what broke, in three separate places, and a fourth (`RunProgress`'s cancel button) was
 about to.
+
+**A fifth instance, one level deeper (2026-09-10).** `isRunInFlight()` closed the hole above, but
+it still trusts `status` alone, and `status` itself can lie for a moment. `SweepService.collect()`
+publishes the *LinkedIn collection phase's own* outcome (e.g. `"ok"`) into the shared in-memory
+progress registry the instant collection ends - before `DetailFetchService` (or, for a run with no
+detail phase, the scan) does its own setup and publishes an in-flight status a moment later. The
+SSE stream is polled every 750ms independently of these transitions, so a poll can land squarely
+inside that gap and hand the client a status that looks terminal while the run is still very much
+in progress. `useRunStream` closed the `EventSource` on it (AI scan progress never showed again
+without a manual reload) and `App.tsx` fired its "run finished" refresh and switched to the Results
+tab before the scan had even started - the same two symptoms as fix #1, caused this time by the
+backend's own status being momentarily wrong rather than the frontend misreading a correct one.
+
+The fix is `isRunFinished()` in `utils/runStatus.ts`: a run is only "done" once `finishedAt` is
+also set, and `RunOrchestrator.finishRun()` persists that timestamp to the row *before*
+republishing the matching terminal status into the registry - so pairing the two closes the gap.
+`useRunStream` and `App.tsx` both go through it now. **A status outside `IN_FLIGHT_STATUSES` is
+still not proof a run is over - pair it with `finishedAt`.**
+
+**The same gap was reachable server-side, too - `RunController.pushProgress` had the identical
+bare-status check** (`if (!IN_FLIGHT_STATUSES.contains(status))`) deciding whether to
+`emitter.complete()`. A poll landing in the same collect()-to-detail-fetch window made the
+*server* end the SSE response, which fires the browser's `onerror` regardless of the frontend fix
+above - the client never even got a status to check. `pushProgress` now requires
+`run.finishedAt() != null` too, the same pairing as `isRunFinished()`, race-free for the same
+reason. Covered by `RunControllerStreamTest` (real MockMvc async streaming request against a
+`@TempDir` SQLite DB): registry status `"ok"` + `finished_at` null keeps the stream open; the same
+status with `finished_at` set completes it.
+
+**`useRunStream`'s `onerror` handler compounded this.** It called `source.close()` on any error,
+which sets `readyState` to `CLOSED` and cancels the browser's own automatic reconnect - so *any*
+transient drop (this server-side one, a real network blip, or `SSE_TIMEOUT_MS` lapsing on a very
+long scan) killed live progress for good until a manual reload. It now only surfaces a "retrying"
+note and leaves the `EventSource` alone; the browser reconnects on its own to the same (idempotent
+GET) endpoint, and the progress handler clears the note on the next event. The genuine-finish path
+is untouched: the client still closes deliberately, from inside the `progress` handler, the moment
+`isRunFinished()` is true - including on a reconnected stream, since its first event carries
+whatever the run's current state actually is.
 
 **2. Foreign postings were flooding the results.** Two independent causes:
 - **Workday applied no location filtering at all.** It filters keywords server-side and nothing
@@ -810,4 +859,115 @@ collect-and-finish shape the sweep tests drive.
 `src/test/resources/fixtures/frag_*.html` (captured 2026-08-28). No new live traffic was spent
 building this. A hand check in test mode costs 3 search pages plus at most 60 details - set
 `sweep.detail.max-per-run` low first if you want it cheaper.
+
+### Retry after a cooldown: resuming a run (added 2026-09-16)
+
+Real-use failure: run 29 got a 429 on search page 20, the breaker opened for 30 minutes and the
+run ended `blocked`. Because the detail phase only follows an "ok" LinkedIn collection, its 80
+passing LinkedIn rows never got a description, showed up in the Results tab as "Not scanned",
+and **Re-scan did nothing** - the scan only reads rows that have a description, so it logged
+"nothing to do" four times while the user kept clicking. And there was no way back: the panel
+said "wait and try again" with nothing to click.
+
+Two pieces fix that, and they are deliberately separate from starting a run:
+
+- `POST /api/runs/{id}/resume` → `RunOrchestrator.resumeRun`. Re-opens the finished row
+  (`SweepRunRepository.reopen`: status back to `fetching_details`, `finished_at` cleared) and
+  runs **only the phases the cooldown cut short**: the detail fetch, then the scan. It never
+  re-runs the search - the pages the run did not reach are a new run's job - and never touches
+  the boards or location classification. Same guards as `POST /api/runs`: one run at a time,
+  and refused with 503 while the breaker is open, because it spends the same LinkedIn budget.
+  The terminal status is the detail phase's outcome, so a resume that gets blocked again ends
+  `blocked` again and stays retryable.
+- `GET /api/runs/cooldown` reports the breaker (`active`, `until`, `remainingSeconds`).
+  `RunProgress.tsx`'s `RetryPanel` polls it every 15s while a retryable run is shown, counts down
+  locally, and enables "Retry: fetch N descriptions and re-scan" the moment it lapses. `N` is
+  `RunResponse.unfetchedDescriptions`, attached by the controller **only to finished runs** (the
+  count is moving while the detail phase works, and the SSE poll would pay for it every tick).
+
+Because the run id does not change, the browser's `EventSource` - which closed itself when the
+run first finished - has to be re-opened: `useRunStream(runId, attempt)` keys its effect on both,
+and `App.handleRunResumed` bumps `attempt`. Re-scan itself now explains the "Scanned 0" case
+instead of pretending it worked: it counts the LinkedIn rows on screen with no description and
+points at Retry.
+
+Tests: `RunOrchestratorTest` (resume order, blocked-again, ATS-only, in-flight refusal) and
+`JobDashApiTest` (cooldown endpoint, resume 404/409/503, unfetched count only on finished runs).
+
+---
+
+## 11. Posting-stated salary, extracted during the AI scan (added 2026-09-10)
+
+**What it does.** The AI resume scan already reads each job's full description; it now also
+extracts a salary from it when the posting explicitly states one, and writes it straight to
+`job_listing` as ground truth - a number the poster gave us beats one any of the three external
+sources (§8) merely estimated. `SalaryEnrichmentService` skips its cascade for a row whose own
+description already looks like it states a salary, so the two paths don't race or duplicate work.
+
+**Schema/prompt (`ai/MatchPromptBuilder`).** `RESULT_JSON_SCHEMA` gained two optional integer
+fields, `salaryMin`/`salaryMax`, alongside the untouched required `ref`/`recommended`/`reason`.
+The prompt instructs the model to: extract ONLY an explicitly stated figure (not infer one from
+title/seniority/location); annualize an hourly rate by ×2080; set both fields to the same value
+for a single stated figure; and omit/null them rather than default to 0 when nothing is stated.
+`MatchVerdict` carries the two as nullable `Integer`s, with a 3-arg convenience constructor kept
+so every existing call site (`new MatchVerdict(ref, recommended, reason)`) still compiles
+unchanged. `ClaudeCliClient.toVerdicts` reads them as optional (absent/null → `null`, never `0`).
+
+**Applying results (`ai/ResumeMatchService`).** A new `JobListingRepository.applyPostingSalary`
+sets `salary_min`/`salary_max` and stamps `salary_source = 'posting'`, and clears
+`salary_source_detail` (that column's "matched entity ≈ label" is an estimate-only concept and
+would otherwise linger stale after being overwritten by a posting figure). It unconditionally
+overwrites - the same unconditional `update` shape as `applySalary` - so a posting figure always
+wins once the scan reaches a row, regardless of order: enrichment (§8) already only touches rows
+with no salary yet, so there's nothing to change there for "posted beats estimated" to hold.
+Applied in `runOneBatch`, per verdict, right after the `AiMatch` is built, gated through
+`applyPostingSalaryIfValid`: **the model can hallucinate**, so a verdict is rejected (row left
+untouched, logged at debug) when `salaryMin > salaryMax` or either figure falls outside a
+10,000-2,000,000 annual USD sanity band - deliberately wide (a token annual salary at the low end,
+a comfortably-covers-any-real-posting ceiling at the high end) so it only catches actual garbage,
+not a legitimately low or high real figure. Posting salaries are never written to
+`salary_estimate` - that cache is keyed `(company, title)` and shared across every job with that
+pair, while a posting figure is specific to the one job whose own text stated it.
+
+**Skipping external sources (`salary/SalaryEnrichmentService`).** Before running the cascade for a
+row, `hasExplicitSalary(job.description())` gates it: a conservative regex
+(`\$\s?(\d[\d,]*)(?:\.\d{1,2})?`) finds every dollar figure in the description, and if any parses
+to **≥ $20,000** the row is skipped entirely - no source lookups, no `salary_estimate` cache write
+(logged at debug) - left for the scan to fill in authoritatively later. Below that floor, the
+cascade runs exactly as before. The $20,000 floor is deliberately a single condition rather than
+two: the design brief called for "≥5-digit figure OR a `$ddd,ddd`-`$ddd,ddd` range", but any range
+shaped like `$150,000 - $180,000` already trips the single-figure check on either side (150000 is
+one dollar figure ≥ $20,000), so a second range-shaped pattern would have been redundant - one
+regression test (`smallBonusFigureStillGoesThroughTheCascade`) guards that "$5,000 signing bonus"
+does *not* trip it, and another (`explicitSalaryRangeInDescriptionSkipsTheCascadeEntirely`) guards
+that a real range does, asserting on the stub source's own invocation count (HANDOFF §1's rule:
+assert the positive outcome, not merely "it didn't throw"). If a row this gate skips never gets
+AI-scanned (feature disabled, no resume, run cancelled before the scan phase), it simply keeps a
+null salary forever - identical to an ordinary cascade miss, and considered acceptable rather than
+worth a fallback path.
+
+**The caching caveat, left unfixed on purpose.** `ai_match` rows are cached forever per
+`(job_id, resume_id)`, and a cached job is never re-sent to the CLI (§9) - so a job already scanned
+*before* this feature shipped will never retroactively pick up a posting salary; it would need a
+fresh scan against a new/changed resume, or a manual `rescan`, to be revisited. No backfill was
+built for this, per the brief - a targeted `rescan(jobIds, ...)` call is the escape hatch if a user
+ever needs one, since that path already exists and bypasses nothing new.
+
+**Chose not to add salary columns to `ai_match`.** The schema question (should the extracted
+salary also live on the cached verdict, for audit/debugging - "what did the model see when it
+decided to skip the cascade for this job?") was considered and skipped: it would touch
+`AiMatchRepository.upsertAll`/`mapRow`, the `AiMatch` record, and a new migration (V12, since V11
+already exists), for a value that's already durably visible in the one place a user or the UI
+would ever look for it (`job_listing.salary_min/max/source`). `job_listing` is this feature's only
+schema-level change, and there is no V12 - no migration was needed.
+
+**Tests added**, all in the existing per-package files, using the existing test doubles
+(`FakeCliClient` for the scan, `FakeSource` for enrichment - the latter grew an invocation counter
+to assert the zero-lookups claim directly): `MatchPromptBuilderTest` (schema carries the new
+fields, prompt carries the extraction rules), `ResumeMatchServiceTest` (a verdict with a salary
+lands on the row with `source='posting'`; it overwrites an existing `'adzuna'` estimate; an
+inverted or out-of-range verdict is rejected and the row stays untouched; a verdict with no salary
+leaves the columns alone), `SalaryEnrichmentServiceTest` (an explicit `$150,000 - $180,000`
+description makes zero source-lookup calls and writes no cache row; a `$5,000 signing bonus`
+description still runs the cascade normally; a blank description is unaffected either way).
 

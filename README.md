@@ -108,6 +108,7 @@ Other options:
 ./run.sh --frontend-only    # UI only, expects a backend already running
 ./import-lca.sh             # one-shot: load every DOL LCA .xlsx in data/lca (then deletes them)
 ./import-slugs.sh           # one-shot: import an ATS company catalog (imported rows start disabled)
+./validate-slugs.py         # one-shot: probe every unverified catalog row live, delete the dead ones
 ```
 
 ### Running the pieces by hand
@@ -314,6 +315,22 @@ so the same file keeps working as more are added.
 **Imported companies arrive disabled.** The public catalog holds over 15,000 companies for those
 three platforms alone; enabling them all would mean 15,000 requests per run. Enable the ones you
 want in the Sources tab. Importing never touches a company you have already configured.
+
+### Validating the catalog
+
+```bash
+./validate-slugs.py                # probe every status='unverified' row, then apply
+./validate-slugs.py --dry-run      # probe and write the report only
+./validate-slugs.py --ats workday  # one platform
+```
+
+Hits each board the way a run would (Greenhouse and Lever board endpoints, Workday
+`robots.txt` + site-id probe) with only the Python standard library, at ~45 slugs/s. A definite
+404 deletes the row, a live board becomes `status='active'` (still disabled) with its job count,
+Greenhouse's real board name and, for Workday, the resolved site id. Transient failures leave
+the row `unverified`. Enabled rows are never deleted, only listed in `flagged.csv`. Safe with
+the backend running: it backs the DB up first and applies in one short transaction. Results
+resume from `data/slug-validation/results.jsonl` if it is interrupted.
 
 ### Dead slugs retire themselves
 
