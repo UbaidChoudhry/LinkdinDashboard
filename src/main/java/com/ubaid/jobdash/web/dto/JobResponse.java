@@ -1,6 +1,7 @@
 package com.ubaid.jobdash.web.dto;
 
 import com.ubaid.jobdash.domain.AiMatch;
+import com.ubaid.jobdash.domain.JobApplication;
 import com.ubaid.jobdash.domain.JobListing;
 
 import java.time.Instant;
@@ -45,16 +46,27 @@ public record JobResponse(
         Boolean aiRecommended,
         String aiReason,
         Boolean locationUs,
-        Boolean locationConfident
+        Boolean locationConfident,
+        String applicationStatus,
+        String applicationNotes
 ) {
 
     /** Builds a response with no AI match context - {@code aiRecommended}/{@code aiReason} are null. */
     public static JobResponse from(JobListing job) {
-        return from(job, null);
+        return from(job, null, null);
     }
 
     /** Builds a response, populating {@code aiRecommended}/{@code aiReason} from a cached verdict, if any. */
     public static JobResponse from(JobListing job, AiMatch aiMatch) {
+        return from(job, aiMatch, null);
+    }
+
+    /**
+     * Builds a response, additionally populating {@code applicationStatus}/{@code applicationNotes}
+     * from the most recent {@link JobApplication} row for this job, if any - null on both means
+     * "never attempted", not "failed".
+     */
+    public static JobResponse from(JobListing job, AiMatch aiMatch, JobApplication application) {
         return new JobResponse(
                 job.jobId(),
                 job.source(),
@@ -81,7 +93,9 @@ public record JobResponse(
                 aiMatch == null ? null : aiMatch.recommended(),
                 aiMatch == null ? null : aiMatch.reason(),
                 job.locationUs(),
-                job.locationConfident()
+                job.locationConfident(),
+                application == null ? null : application.status(),
+                application == null ? null : application.notes()
         );
     }
 }

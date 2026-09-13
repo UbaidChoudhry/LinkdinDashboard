@@ -2,12 +2,14 @@ package com.ubaid.jobdash.web;
 
 import com.ubaid.jobdash.domain.AiMatch;
 import com.ubaid.jobdash.domain.FilterVerdict;
+import com.ubaid.jobdash.domain.JobApplication;
 import com.ubaid.jobdash.domain.JobListing;
 import com.ubaid.jobdash.domain.Resume;
 import com.ubaid.jobdash.domain.SweepRun;
 import com.ubaid.jobdash.domain.UserStatus;
 import com.ubaid.jobdash.filter.FilterEngine;
 import com.ubaid.jobdash.store.AiMatchRepository;
+import com.ubaid.jobdash.store.ApplicationRepository;
 import com.ubaid.jobdash.store.JobListingRepository;
 import com.ubaid.jobdash.store.ResumeRepository;
 import com.ubaid.jobdash.store.SweepRunRepository;
@@ -43,16 +45,19 @@ public class JobController {
     private final FilterEngine filterEngine;
     private final ResumeRepository resumeRepository;
     private final AiMatchRepository aiMatchRepository;
+    private final ApplicationRepository applicationRepository;
     private final Clock clock;
 
     public JobController(JobListingRepository jobListingRepository, SweepRunRepository sweepRunRepository,
                           FilterEngine filterEngine, ResumeRepository resumeRepository,
-                          AiMatchRepository aiMatchRepository, Clock clock) {
+                          AiMatchRepository aiMatchRepository, ApplicationRepository applicationRepository,
+                          Clock clock) {
         this.jobListingRepository = jobListingRepository;
         this.sweepRunRepository = sweepRunRepository;
         this.filterEngine = filterEngine;
         this.resumeRepository = resumeRepository;
         this.aiMatchRepository = aiMatchRepository;
+        this.applicationRepository = applicationRepository;
         this.clock = clock;
     }
 
@@ -85,8 +90,12 @@ public class JobController {
         // One batched lookup for the whole page, never a query per row.
         Map<Long, AiMatch> aiMatches = effectiveResumeId == null ? Map.of()
                 : aiMatchRepository.findByJobIds(sorted.stream().map(JobListing::jobId).toList(), effectiveResumeId);
+        Map<Long, JobApplication> applications = applicationRepository.findLatestByJobIds(
+                sorted.stream().map(JobListing::jobId).toList());
 
-        return sorted.stream().map(job -> JobResponse.from(job, aiMatches.get(job.jobId()))).toList();
+        return sorted.stream()
+                .map(job -> JobResponse.from(job, aiMatches.get(job.jobId()), applications.get(job.jobId())))
+                .toList();
     }
 
     private List<JobListing> searchTab(boolean includePreviousRuns) {

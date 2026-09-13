@@ -268,6 +268,20 @@ Lever's raw form) and owns the `--json-schema`. `ClaudeCliClient` runs the binar
 stream into `RunProgress.tsx`, and the `jobdash.ai.scan` logger writes `logs/ai-scan.log` for
 `tail -f` (configured in `logback-spring.xml`). See HANDOFF.md §9.
 
+### `apply/` — driving a real browser to fill an application
+The step after the AI scan: instead of just judging a job, Claude *acts* on it. `ApplyOrchestrator`
+is the orchestrator (mirrors `ResumeMatchService`'s shape) — one `claude -p --chrome` invocation
+**per job, sequential**, on a virtual thread; LinkedIn rows are skipped with **zero** CLI calls
+("apply manually" — see HANDOFF.md §12 for why). `ApplyPromptBuilder` renders the prompt (resume
+text, applicant profile, the job's description) and owns the apply `--json-schema`
+(`outcome`/`summary`/`unanswered`). `ApplyProperties` is the typed `apply:` config block
+(`enabled`, `model`, `timeout`, `max-turns`, `max-budget-usd`, `max-description-chars`). Progress
+and results land on the `apply_batch` / `job_application` rows, not an in-memory registry — the UI
+polls the DB. `ApplyOrchestrator` never throws, exactly like `ResumeMatchService`; a failed job
+becomes a `failed` row, not a failed batch. Logs go to `logs/apply.log` via the `jobdash.apply`
+logger — **never the resume text or profile**, same discipline as `logs/ai-scan.log`. See
+HANDOFF.md §12.
+
 ### `store/` — all SQL lives here
 One `@Repository` per table, all built on Spring's `JdbcClient` (hand-written SQL, no JPA — see
 HANDOFF.md §3 for why). If you need a new query, it goes in the matching repository, not
@@ -289,6 +303,9 @@ scattered elsewhere.
 | `AtsCompanyRepository` | `ats_company` — the company catalog. `findForRun` returns only enabled, non-dead rows; `recordFailure` retires a slug after `ats.dead-slug-threshold` consecutive 404s |
 | `ResumeRepository` | `resume` — uploaded resumes; `setDefault` keeps exactly one default row |
 | `AiMatchRepository` | `ai_match` — cached AI verdicts keyed `(job_id, resume_id)` |
+| `ApplicantProfileRepository` | `applicant_profile` — single row (`id=1`), upserted, never inserted twice |
+| `ApplyBatchRepository` | `apply_batch` — one row per "Apply with Claude" click; `findInFlight()` is the 409 guard |
+| `ApplicationRepository` | `job_application` — one row per job per batch attempt; `findLatestByJobIds` mirrors `AiMatchRepository.findByJobIds` for the `JobResponse` batched lookup |
 
 `store/adapter/` — `JdbcRequestBudgetStore` and `JdbcCircuitStateStore` bridge the `http`
 package's storage-agnostic interfaces (`RequestBudgetStore`, `CircuitStateStore`) onto the real
@@ -297,9 +314,12 @@ repositories. This split exists because the `http` package was built in parallel
 
 ### `web/` — HTTP in, JSON out
 One `@RestController` per resource area: `RunController`, `JobController`, `FilterController`,
-`ReportController`, `DataController`. Each is thin — it translates HTTP to a service/repository
-call and back, no business logic. `web/dto/` holds every request/response shape; **the frontend's
-`frontend/src/types/api.ts` is a hand-kept mirror of these** — if you change a DTO, update both.
+`ReportController`, `DataController`, `ApplicationController`. Each is thin — it translates HTTP
+to a service/repository call and back, no business logic. `ApplicationController` covers
+`GET/PUT /api/profile`, `POST /api/applications`, `GET /api/applications/current`,
+`GET /api/applications/{id}`, `POST /api/applications/{id}/cancel`. `web/dto/` holds every
+request/response shape; **the frontend's `frontend/src/types/api.ts` is a hand-kept mirror of
+these** — if you change a DTO, update both.
 
 `GlobalExceptionHandler` + `ApiException` — the only way an error reaches the client is
 `{"message": "..."}` with a real status code, never a stack trace. Throw `ApiException` with a
@@ -330,10 +350,18 @@ components/
   SourcesPanel.tsx            the ATS company catalog: paginated + searchable (it can hold
                               >15,000 rows), enable toggles, dead-slug state, manual add
   ResumesPanel.tsx            upload / set default / delete, and preview the exact extracted
-                              text the model will be given
+                              text the model will be given; renders <ApplicantProfileForm> at
+                              the bottom
+  ApplicantProfileForm.tsx    the single-row applicant profile (work authorization, sponsorship,
+                              salary expectation, etc.) that fills in what a resume can't answer
   RunProgress.tsx            live counters + saturation warning + cancel button
   JobsPanel.tsx               the 3-tab job table, owns which tab/sort is active + the Min salary filter
-  JobRow.tsx                  one row: title link, company, location, posted, salary (+ source label), actions
+  ApplyControls.tsx           "Apply with Claude" button + Submit toggle, mounted in the Results
+                              tab's bucket bar next to Re-scan; owns its own 2s poll against
+                              `/api/applications/{id}` and re-attaches to an in-flight batch on
+                              reload via `/api/applications/current`
+  JobRow.tsx                  one row: title link, company, location, posted, salary (+ source label), actions,
+                              application status badge
   SortableHeader.tsx          clickable <th>, shared by the job table
   RunsPanel.tsx               "Runs" tab: a static table of past runs (newest first) for
                               side-by-side comparison - counters, sources, status, AI scan stats
@@ -404,6 +432,9 @@ ats_company          the ATS slug catalog: enabled/status/dead tracking, Workday
 resume               uploaded resumes + their extracted text                        (V7)
 ai_match             cached AI verdicts, keyed (job_id, resume_id)                  (V7)
 location_verdict     Claude's US/not-US call per distinct location string, no TTL   (V9)
+applicant_profile    single row (id=1): work authorization, sponsorship, salary, etc. (V12)
+apply_batch           one row per "Apply with Claude" click: status, per-outcome counters (V12)
+job_application       one row per job per batch attempt: status, notes, cost           (V12)
 ```
 
 Two indexes worth knowing about:
@@ -463,3 +494,7 @@ Adzuna / h1bapi sources are driven through `StubHttpClient`, `SalaryRateLimiter`
 | Find what LinkedIn's HTML actually looks like | `src/test/resources/fixtures/*.html` — these are real saved responses |
 | See what was deliberately left out | README's "What's not built yet" and HANDOFF.md §5 |
 | Set up salary API keys | `SALARY_SETUP.md` — copy `.env.example` → `.env` |
+| Change how Claude fills out an application | `apply/ApplyPromptBuilder.java` — the prompt + `--json-schema` |
+| Change the CLI flags for the browser-driving invocation | `apply/ApplyOrchestrator.chromeArgs` |
+| Find out why an application failed | `job_application.notes` (the model's own summary/error) for that row, and `logs/apply.log` for the full run |
+| Turn "Apply with Claude" off | `application.yml` → `apply.enabled: false` |

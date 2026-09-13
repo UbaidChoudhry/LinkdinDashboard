@@ -10,6 +10,7 @@ import {
 } from "../api/client";
 import type { ResumeResponse } from "../types/api";
 import { absoluteTime } from "../utils/format";
+import { ApplicantProfileForm } from "./ApplicantProfileForm";
 
 interface ResumesPanelProps {
   /** Bumped by the panel whenever the list changes, so the run form can refresh its picker. */
@@ -185,6 +186,8 @@ export function ResumesPanel({ onResumesChanged }: ResumesPanelProps) {
           ))}
         </ul>
       )}
+
+      <ApplicantProfileForm />
     </section>
   );
 }

@@ -60,6 +60,20 @@ else
   echo "         Install it, or set CLAUDE_CLI_PATH to the binary, then restart." >&2
 fi
 
+# Apply with Claude drives a real Chrome tab via the `claude-in-chrome` MCP server, which
+# needs the Claude in Chrome extension and a one-time interactive handshake. That handshake
+# writes this native-messaging host file - Chrome only reads the NativeMessagingHosts
+# directory at startup, so its presence (not the extension itself) is what we can check from
+# a shell script. Optional, like the claude CLI above - warn, never fail the boot.
+CHROME_NATIVE_HOST="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.anthropic.claude_code_browser_extension.json"
+if [ -f "$CHROME_NATIVE_HOST" ]; then
+  echo "chrome        Claude in Chrome integration configured"
+else
+  echo "warning: Claude in Chrome is not set up - 'Apply with Claude' will be unavailable." >&2
+  echo "         Install the extension, run 'claude --chrome' once from this directory," >&2
+  echo "         then restart Chrome. Everything else works without it." >&2
+fi
+
 # Safety net for schema migrations. V5 REBUILDS job_listing (SQLite cannot alter a primary
 # key, so the table is recreated and copied), and a rebuild is the one migration shape that
 # can lose rows if it goes wrong. Keep one snapshot per day, and only the 3 most recent -

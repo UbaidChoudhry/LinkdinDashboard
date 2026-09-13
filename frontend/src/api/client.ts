@@ -1,4 +1,6 @@
 import type {
+  ApplicantProfile,
+  ApplyBatchResponse,
   AtsCompanyPage,
   AtsCompanyResponse,
   ClearJobDataResponse,
@@ -274,4 +276,44 @@ export function addSource(body: {
 
 export function deleteSource(id: number): Promise<void> {
   return request<void>(`/api/sources/${id}`, { method: "DELETE" });
+}
+
+// --- Apply with Claude -----------------------------------------------------
+// GET /api/profile and GET /api/applications/current both return 204 (no body) when there is
+// nothing saved/running yet - request() maps that to `undefined`, so these wrap it as `null`.
+
+export async function getProfile(): Promise<ApplicantProfile | null> {
+  const profile = await request<ApplicantProfile | undefined>("/api/profile");
+  return profile ?? null;
+}
+
+export function saveProfile(profile: Omit<ApplicantProfile, "updatedAt">): Promise<ApplicantProfile> {
+  return request<ApplicantProfile>("/api/profile", {
+    method: "PUT",
+    body: JSON.stringify(profile),
+  });
+}
+
+export function startApplications(body: {
+  jobIds: number[];
+  resumeId?: number | null;
+  submit: boolean;
+}): Promise<{ batchId: number }> {
+  return request<{ batchId: number }>("/api/applications", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function getApplyBatch(id: number): Promise<ApplyBatchResponse> {
+  return request<ApplyBatchResponse>(`/api/applications/${id}`);
+}
+
+export async function getCurrentApplyBatch(): Promise<ApplyBatchResponse | null> {
+  const batch = await request<ApplyBatchResponse | undefined>("/api/applications/current");
+  return batch ?? null;
+}
+
+export function cancelApplyBatch(id: number): Promise<void> {
+  return request<void>(`/api/applications/${id}/cancel`, { method: "POST" });
 }

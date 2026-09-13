@@ -7,7 +7,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -146,5 +148,79 @@ class ClaudeCliClientTest {
 
         assertThat(result).isInstanceOf(ClaudeCliResult.Ok.class);
         assertThat(((ClaudeCliResult.Ok) result).verdicts()).hasSize(1);
+    }
+
+    @Test
+    void cliOptionsArgsReachTheScriptVerbatim() throws IOException {
+        Path capturedArgs = tempDir.resolve("captured-args.txt");
+        Path script = stub("echo-args.sh", """
+                cat > /dev/null
+                echo "$@" > "%s"
+                echo '{"is_error": false, "structured_output": {"ok": true}}'
+                """.formatted(capturedArgs));
+        ClaudeCliClient client = new ClaudeCliClient(props(script.toString(), Duration.ofSeconds(10)),
+                tools.jackson.databind.json.JsonMapper.builder().build());
+
+        List<String> args = List.of("-p", "--chrome", "--model", "sonnet", "--output-format", "json",
+                "--json-schema", "{}", "--max-turns", "5");
+        ClaudeCliClient.CliOptions options = new ClaudeCliClient.CliOptions(args, Duration.ofSeconds(10), () -> false);
+
+        CliJsonResult result = client.runStructured("dummy prompt", "{}", options);
+
+        assertThat(result).isInstanceOf(CliJsonResult.Ok.class);
+        String captured = Files.readString(capturedArgs).strip();
+        assertThat(captured).isEqualTo(String.join(" ", args));
+    }
+
+    @Test
+    void cancelledSupplierKillsASleepingScriptAndReturnsFailedCancelled() throws IOException {
+        Path script = stub("sleepy.sh", """
+                cat > /dev/null
+                sleep 30
+                echo '{"is_error": false, "structured_output": {"ok": true}}'
+                """);
+        ClaudeCliClient client = new ClaudeCliClient(props(script.toString(), Duration.ofSeconds(30)),
+                tools.jackson.databind.json.JsonMapper.builder().build());
+
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        Thread canceller = new Thread(() -> {
+            try {
+                Thread.sleep(500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            cancelled.set(true);
+        });
+        canceller.start();
+
+        ClaudeCliClient.CliOptions options = new ClaudeCliClient.CliOptions(
+                List.of("-p"), Duration.ofSeconds(30), cancelled::get);
+
+        long start = System.currentTimeMillis();
+        CliJsonResult result = client.runStructured("dummy prompt", "{}", options);
+        long elapsed = System.currentTimeMillis() - start;
+
+        assertThat(result).isInstanceOf(CliJsonResult.Failed.class);
+        assertThat(((CliJsonResult.Failed) result).message()).isEqualTo("cancelled");
+        // The process must actually have been killed promptly, not left to run the full 30s sleep.
+        assertThat(elapsed).isLessThan(10_000);
+    }
+
+    @Test
+    void twoArgOverloadStillPassesSafeModeAndRestricted() throws IOException {
+        Path capturedArgs = tempDir.resolve("captured-default-args.txt");
+        Path script = stub("echo-default-args.sh", """
+                cat > /dev/null
+                echo "$@" > "%s"
+                echo '{"is_error": false, "structured_output": {"results": []}}'
+                """.formatted(capturedArgs));
+        ClaudeCliClient client = new ClaudeCliClient(props(script.toString(), Duration.ofSeconds(10)),
+                tools.jackson.databind.json.JsonMapper.builder().build());
+
+        CliJsonResult result = client.runStructured("dummy prompt", "{}");
+
+        assertThat(result).isInstanceOf(CliJsonResult.Ok.class);
+        String captured = Files.readString(capturedArgs).strip();
+        assertThat(captured).contains("--safe-mode").contains("--restricted");
     }
 }

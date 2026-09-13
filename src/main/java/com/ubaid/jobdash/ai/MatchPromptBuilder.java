@@ -1,7 +1,6 @@
 package com.ubaid.jobdash.ai;
 
-import org.jsoup.Jsoup;
-import org.jsoup.parser.Parser;
+import com.ubaid.jobdash.text.PromptText;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ArrayNode;
@@ -15,8 +14,10 @@ import java.util.List;
  * <p>
  * ATS boards hand back HTML descriptions in two different disguises: Greenhouse escapes the HTML
  * itself (so the raw text contains literal {@code &lt;p&gt;}), while Lever sends real HTML tags.
- * {@link #stripHtml(String)} unescapes first, then strips tags, so both forms end up as the same
- * plain text — and plain-text input (no tags, no entities) passes through unchanged.
+ * {@link PromptText#stripHtml(String)} unescapes first, then strips tags, so both forms end up as
+ * the same plain text — and plain-text input (no tags, no entities) passes through unchanged.
+ * That helper (and truncation) lives in {@code text.PromptText} rather than here so
+ * {@code apply.ApplyPromptBuilder} can share it without duplicating the logic.
  */
 @Component
 public class MatchPromptBuilder {
@@ -50,8 +51,6 @@ public class MatchPromptBuilder {
             }
             """;
 
-    private static final String TRUNCATION_MARKER = " …[truncated]";
-
     private final AiProperties properties;
     private final ObjectMapper objectMapper;
 
@@ -69,7 +68,8 @@ public class MatchPromptBuilder {
             node.put("title", nullToEmpty(job.title()));
             node.put("company", nullToEmpty(job.company()));
             node.put("location", nullToEmpty(job.location()));
-            node.put("description", truncate(stripHtml(job.description()), properties.maxDescriptionChars()));
+            node.put("description",
+                    PromptText.truncate(PromptText.stripHtml(job.description()), properties.maxDescriptionChars()));
             array.add(node);
         }
         String jobsJson = objectMapper.writeValueAsString(array);
@@ -106,28 +106,6 @@ public class MatchPromptBuilder {
                 JOBS:
                 %s
                 """.formatted(resume, jobsJson);
-    }
-
-    /** Strips HTML, handling both real tags (Lever) and entity-escaped tags (Greenhouse). */
-    private static String stripHtml(String raw) {
-        if (raw == null || raw.isBlank()) {
-            return "";
-        }
-        String unescaped = Parser.unescapeEntities(raw, false);
-        return Jsoup.parse(unescaped).text();
-    }
-
-    /** Cuts on a word boundary at {@code maxChars} and appends an explicit truncation marker. */
-    private static String truncate(String text, int maxChars) {
-        if (text.length() <= maxChars) {
-            return text;
-        }
-        String cut = text.substring(0, maxChars);
-        int lastSpace = cut.lastIndexOf(' ');
-        if (lastSpace > 0) {
-            cut = cut.substring(0, lastSpace);
-        }
-        return cut + TRUNCATION_MARKER;
     }
 
     private static String nullToEmpty(String s) {

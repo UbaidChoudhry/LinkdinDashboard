@@ -163,7 +163,8 @@ were still on the Search tab watching it.
 | **Not interested** | Everything you dismissed, **across all runs** |
 
 **AI match buckets.** Once a run has been scanned, the Untriaged list gains **All /
-Recommended match / Not recommended** buckets with counts, plus a **Re-scan** button. Each row
+Recommended match / Not recommended** buckets with counts, plus a **Re-scan** button and an
+**Apply with Claude** button (see [Applying with Claude](#applying-with-claude)). Each row
 carries its one-sentence reason under the title. Rows that were never scanned — every LinkedIn
 row, and anything the scan skipped — stay visible under **All** and are counted separately as
 "not scanned", never silently dropped.
@@ -279,6 +280,14 @@ ai:
   concurrency: 3               # simultaneous `claude` processes
   max-description-chars: 6000
   us-only: true                # re-check location before scanning, as well as at collection
+
+apply:
+  enabled: true
+  model: sonnet
+  timeout: 10m                  # per job
+  max-turns: 60
+  max-budget-usd: 2.0
+  max-description-chars: 4000
 ```
 
 **`batch-size` is the cost lever that matters.** The cost shown in the UI is whatever the Claude
@@ -373,6 +382,65 @@ jumps straight from 0 to done; lower the batch size if you want finer movement.
 It shells out to the `claude` binary on your PATH. If it isn't installed, `./run.sh` says so and
 everything else still works — you just don't get scored results. Set `CLAUDE_CLI_PATH` if it
 lives somewhere unusual.
+
+---
+
+## Applying with Claude
+
+Once a run has scored jobs into the **Recommended match** bucket (Results tab, Untriaged sub-tab),
+the **Apply with Claude** button next to Re-scan drives an actual browser through each one: it
+opens the posting, finds the apply form, fills it from your resume and applicant profile, attaches
+the resume file, and either stops at the review step or submits — your call, via the **Submit
+applications** checkbox next to the button, **default off**.
+
+**With Submit off** (the default), Claude fills the form, attaches the resume, and leaves the tab
+open on the review step without touching the final Submit/Send button. The job's row gets a
+**Needs review** badge and a one-line summary — read it, open the tab Claude left open, check the
+answers, and submit yourself. This is deliberate: the model is told never to invent
+work-authorization, sponsorship, salary or EEO answers, so anything it couldn't answer from your
+resume or profile is left blank and listed in the row's notes for you to fill in by hand.
+
+**With Submit on**, a successful application clicks through the confirmation page too and the job
+moves straight to **Applied**.
+
+**The applicant profile.** A resume answers "what have you done," not "are you authorized to work
+here" or "what's your salary expectation" — those need a real answer, and Claude is never allowed
+to guess one. Fill in the **applicant profile** form at the bottom of the **Resumes** tab once
+(name, contact info, links, work authorization, sponsorship, salary expectation, and a free-text
+field for anything else you're regularly asked) and every application draws on it.
+
+**LinkedIn rows are skipped, listed as "Apply manually."** Applying through LinkedIn needs your
+real, logged-in LinkedIn account, and this project's one non-negotiable rule (see
+[How it gets the data](#how-it-gets-the-data)) is that account must never be exposed to
+automation. Only Greenhouse / Lever / Workday postings get the Claude-driven flow.
+
+**Prerequisites**, one-time:
+
+- Google Chrome (or another Chromium browser — Edge, Brave, etc.)
+- The [Claude in Chrome extension](https://chromewebstore.google.com/detail/claude/fcoeoabgfenejglbffodgkkbkcdhcgfn)
+  (≥1.0.36) installed
+- Claude Code signed in via `/login` — an API key or setup-token disables Chrome integration
+- Run `claude --chrome` once, interactively, from this repo's directory to accept the one-time
+  permission dialog, **then restart Chrome** — it only reads its native-messaging host list at
+  startup, so the extension won't connect until you do
+- `./run.sh` checks for this and warns if it isn't done yet; everything else works without it
+
+Claude drives your **real** Chrome window, opening tabs you can watch — nothing runs headless or
+out of sight.
+
+**Cost.** Each application is its own `claude -p --chrome` invocation, so expect roughly
+**$0.30–$1.50 per application** depending on how many form fields and browser actions it takes.
+The batch view shows a running total from the CLI's own reported cost.
+
+**Watching it.** The Results tab shows live progress while a batch runs (which job, how many
+done, a Cancel button). For the full detail in a terminal:
+
+```bash
+tail -f logs/apply.log
+```
+
+That file never contains your resume text, your applicant profile, or the prompt sent to Claude —
+only job titles, outcomes and timings, the same discipline as `logs/ai-scan.log`.
 
 ---
 

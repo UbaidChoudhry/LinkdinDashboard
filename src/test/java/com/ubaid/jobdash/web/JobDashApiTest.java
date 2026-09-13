@@ -1,10 +1,16 @@
 package com.ubaid.jobdash.web;
 
+import com.ubaid.jobdash.domain.ApplicantProfile;
+import com.ubaid.jobdash.domain.Resume;
 import com.ubaid.jobdash.http.CircuitSnapshot;
 import com.ubaid.jobdash.http.CircuitState;
 import com.ubaid.jobdash.http.CircuitStateStore;
+import com.ubaid.jobdash.store.ApplicantProfileRepository;
+import com.ubaid.jobdash.store.ApplicationRepository;
+import com.ubaid.jobdash.store.ApplyBatchRepository;
 import com.ubaid.jobdash.store.JobCardInsert;
 import com.ubaid.jobdash.store.JobListingRepository;
+import com.ubaid.jobdash.store.ResumeRepository;
 import com.ubaid.jobdash.store.SweepRunRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -27,6 +33,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -66,6 +73,14 @@ class JobDashApiTest {
     private CircuitStateStore circuitStateStore;
     @Autowired
     private Clock clock;
+    @Autowired
+    private ApplicantProfileRepository applicantProfileRepository;
+    @Autowired
+    private ApplyBatchRepository applyBatchRepository;
+    @Autowired
+    private ApplicationRepository applicationRepository;
+    @Autowired
+    private ResumeRepository resumeRepository;
 
     @BeforeEach
     void resetData() {
@@ -74,7 +89,21 @@ class JobDashApiTest {
         client.sql("delete from sweep_run").update();
         client.sql("delete from exclude_word where word not in ('Senior','Sr','Staff','Principal','Lead','Manager','Director','Intern')").update();
         client.sql("delete from company_blocklist").update();
+        client.sql("delete from job_application").update();
+        client.sql("delete from apply_batch").update();
+        client.sql("delete from applicant_profile").update();
+        client.sql("delete from resume").update();
         circuitStateStore.save(CircuitSnapshot.initial());
+    }
+
+    private long insertResume(boolean isDefault) {
+        return resumeRepository.insert(new Resume(0, "Resume", "resume.pdf", "application/pdf",
+                "data/resumes/x.pdf", "resume text", 11, isDefault, Instant.now()));
+    }
+
+    private void saveProfile() {
+        applicantProfileRepository.save(new ApplicantProfile(
+                "Jane Doe", "jane@example.com", "", "", "", "", "", false, "", "", Instant.now()));
     }
 
     // ---- test helpers -------------------------------------------------------------------
@@ -542,5 +571,95 @@ class JobDashApiTest {
                         .content("{\"jobIds\":[]}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").exists());
+    }
+
+    // ---- applicant profile ------------------------------------------------------------------
+
+    @Test
+    void profileReturns204BeforeAnySaveThenRoundTripsOnPut() throws Exception {
+        mockMvc.perform(get("/api/profile"))
+                .andExpect(status().isNoContent());
+
+        mockMvc.perform(put("/api/profile")
+                        .contentType("application/json")
+                        .content("""
+                                {"fullName":"Jane Doe","email":"jane@example.com","phone":"555-1234",
+                                 "location":"Remote","linkedinUrl":"https://linkedin.com/in/jane",
+                                 "portfolioUrl":"https://jane.dev","workAuthorization":"US Citizen",
+                                 "requiresSponsorship":false,"salaryExpectation":"150k",
+                                 "extraAnswers":"n/a"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.fullName").value("Jane Doe"))
+                .andExpect(jsonPath("$.email").value("jane@example.com"))
+                .andExpect(jsonPath("$.requiresSponsorship").value(false))
+                .andExpect(jsonPath("$.updatedAt").exists());
+
+        mockMvc.perform(get("/api/profile"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.fullName").value("Jane Doe"))
+                .andExpect(jsonPath("$.phone").value("555-1234"));
+    }
+
+    @Test
+    void putProfileRejectsBlankFullName() throws Exception {
+        mockMvc.perform(put("/api/profile")
+                        .contentType("application/json")
+                        .content("{\"fullName\":\"\",\"email\":\"jane@example.com\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").exists());
+    }
+
+    // ---- apply batches -----------------------------------------------------------------------
+
+    @Test
+    void startApplicationsReturns400WithoutAnApplicantProfile() throws Exception {
+        long run = createRunRow(Instant.now());
+        long job = insertJob(60, run, "Engineer", "Acme", Instant.now());
+        setVerdictPass(job);
+
+        mockMvc.perform(post("/api/applications")
+                        .contentType("application/json")
+                        .content("{\"jobIds\":[" + job + "]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message", containsString("applicant profile")));
+    }
+
+    @Test
+    void startApplicationsReturns409WhenABatchIsAlreadyInFlight() throws Exception {
+        saveProfile();
+        long resumeId = insertResume(true);
+        long run = createRunRow(Instant.now());
+        long job = insertJob(61, run, "Engineer", "Acme", Instant.now());
+        setVerdictPass(job);
+
+        applyBatchRepository.create(resumeId, false, 1, Instant.now()); // status = running
+
+        mockMvc.perform(post("/api/applications")
+                        .contentType("application/json")
+                        .content("{\"jobIds\":[" + job + "]}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").exists());
+    }
+
+    // ---- applicationStatus on GET /api/jobs ---------------------------------------------------
+
+    @Test
+    void jobsEndpointCarriesApplicationStatusFromLatestApplication() throws Exception {
+        long run = createRunRow(Instant.now());
+        long job = insertJob(70, run, "Engineer", "Acme", Instant.now());
+        setVerdictPass(job);
+        long resumeId = insertResume(true);
+
+        long batchId = applyBatchRepository.create(resumeId, false, 1, Instant.now());
+        long applicationId = applicationRepository.create(batchId, job, "queued");
+        applicationRepository.update(applicationId, "needs_review", "review before submitting",
+                0.42, Instant.now(), Instant.now());
+
+        mockMvc.perform(get("/api/jobs").param("tab", "search"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].jobId").value((int) job))
+                .andExpect(jsonPath("$[0].applicationStatus").value("needs_review"))
+                .andExpect(jsonPath("$[0].applicationNotes").value("review before submitting"));
     }
 }

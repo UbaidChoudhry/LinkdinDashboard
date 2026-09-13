@@ -171,6 +171,26 @@ public class JobListingRepository {
                 .optional();
     }
 
+    /**
+     * Unfiltered batched lookup by id, keyed by job id - used to attach title/company (for
+     * display) to rows from another table (e.g. {@code job_application}) in one query, never one
+     * per row. A missing id (the job row was deleted) is simply absent from the map.
+     */
+    public java.util.Map<Long, JobListing> findByIds(java.util.Collection<Long> jobIds) {
+        if (jobIds.isEmpty()) {
+            return java.util.Map.of();
+        }
+        List<JobListing> rows = client.sql("select * from job_listing where job_id in (:jobIds)")
+                .param("jobIds", jobIds)
+                .query(JobListingRepository::mapRow)
+                .list();
+        java.util.Map<Long, JobListing> byId = new java.util.HashMap<>();
+        for (JobListing row : rows) {
+            byId.put(row.jobId(), row);
+        }
+        return byId;
+    }
+
     /** One row of the company-volume relay-detection report; see {@link #companyVolumeSince}. */
     public record CompanyVolume(String company, int postings, int titles, int locations) {
     }

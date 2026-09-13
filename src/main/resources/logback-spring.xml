@@ -8,13 +8,15 @@
 
   The "jobdash.ai.scan" logger has additivity="false" on purpose: without it every scan line
   would ALSO appear on the console and in logs/backend.log, which is exactly the noise this file
-  exists to avoid.
+  exists to avoid. The "jobdash.apply" logger (Apply with Claude, logs/apply.log) copies the same
+  shape for the same reason - never log the prompt, resume text, or applicant profile through it.
 -->
 <configuration>
     <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
     <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
 
     <property name="AI_SCAN_LOG" value="${AI_SCAN_LOG:-logs/ai-scan.log}"/>
+    <property name="APPLY_LOG" value="${APPLY_LOG:-logs/apply.log}"/>
 
     <appender name="AI_SCAN" class="ch.qos.logback.core.rolling.RollingFileAppender">
         <file>${AI_SCAN_LOG}</file>
@@ -31,8 +33,27 @@
         </rollingPolicy>
     </appender>
 
+    <appender name="APPLY" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${APPLY_LOG}</file>
+        <encoder>
+            <!-- Deliberately terse: this is meant to be read live in a terminal, so no thread
+                 names, no logger names, no stack-trace noise competing with the numbers. -->
+            <pattern>%d{HH:mm:ss} %-5level %msg%n</pattern>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>logs/apply.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>10MB</maxFileSize>
+            <maxHistory>7</maxHistory>
+            <totalSizeCap>100MB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
     <logger name="jobdash.ai.scan" level="INFO" additivity="false">
         <appender-ref ref="AI_SCAN"/>
+    </logger>
+
+    <logger name="jobdash.apply" level="INFO" additivity="false">
+        <appender-ref ref="APPLY"/>
     </logger>
 
     <root level="INFO">

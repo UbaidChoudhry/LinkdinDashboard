@@ -127,3 +127,21 @@ ai:
   # this can be large - 73 strings fitted comfortably in one call. Bigger batch = fewer
   # invocations = lower cost, since the ~25k-token per-invocation overhead dwarfs the payload.
   location-batch-size: 200
+
+# "Apply with Claude": drives the local `claude` CLI with the Claude-in-Chrome extension to fill
+# (and optionally submit) job application forms. See apply/ApplyOrchestrator.
+apply:
+  enabled: true
+  # Same model as ai.model - kept separate so cost/quality can be tuned independently per feature.
+  model: sonnet
+  # Per-job ceiling: one browser-driven application (open tab, find form, fill fields, upload
+  # resume, review/submit) takes much longer than a text-only scan call.
+  timeout: 10m
+  # Upper bound on browser actions (tool calls) Claude may take filling out one application -
+  # guards against an unresponsive page looping the agent indefinitely.
+  max-turns: 60
+  # Per-job cost ceiling passed to the CLI's own --max-budget-usd, so a single stuck application
+  # can't run away; the batch's own summary sums the CLI-reported cost per job, never estimated.
+  max-budget-usd: 2.0
+  # Job descriptions are truncated to this many characters before being sent to the CLI.
+  max-description-chars: 4000

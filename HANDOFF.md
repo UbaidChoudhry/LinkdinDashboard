@@ -971,3 +971,133 @@ leaves the columns alone), `SalaryEnrichmentServiceTest` (an explicit `$150,000 
 description makes zero source-lookup calls and writes no cache row; a `$5,000 signing bonus`
 description still runs the cascade normally; a blank description is unaffected either way).
 
+---
+
+## 12. Apply with Claude: browser-driven applications (added 2026-09-17)
+
+**What it does.** The AI scan (§9) judges a job; this feature acts on that judgment. A new **Apply
+with Claude** button sits in the Results tab's bucket bar, next to Re-scan, and operates on the
+Untriaged tab's **Recommended match** bucket. Click it and, for each non-LinkedIn job in that
+bucket, Claude opens the real posting in a real Chrome tab, finds the apply form, fills it from the
+uploaded resume plus a small **applicant profile**, attaches the resume file, and either stops on
+the review step or clicks through to Submit — controlled by a **Submit applications** checkbox
+next to the button, **default off**.
+
+Backend: the `apply/` package (`ApplyProperties`, `ApplyPromptBuilder`, `ApplyOrchestrator`),
+`web/ApplicationController` (`GET/PUT /api/profile`, `POST /api/applications`,
+`GET /api/applications/current`, `GET /api/applications/{id}`,
+`POST /api/applications/{id}/cancel`), and three new tables — `applicant_profile` (single row),
+`apply_batch` (one row per click), `job_application` (one row per job per attempt) — added in
+`V12__applications.sql`, behind `ApplicantProfileRepository`, `ApplyBatchRepository`,
+`ApplicationRepository`. Frontend: `ApplyControls.tsx` (the button, the checkbox, a 2s poll, a
+Cancel button, and re-attachment to an in-flight batch on reload via `/api/applications/current`)
+and `ApplicantProfileForm.tsx` (rendered at the bottom of the Resumes tab). `JobResponse` gained
+`applicationStatus` / `applicationNotes`, surfaced as a status badge on each `JobRow` (**Needs
+review** / **Submitted** / **Apply failed** / **Apply manually**). Config lives in a new `apply:`
+block in `application.yml` (`enabled`, `model: sonnet`, `timeout: 10m` per job, `max-turns: 60`,
+`max-budget-usd: 2.0`, `max-description-chars: 4000`). Logs go to `logs/apply.log` via the
+`jobdash.apply` logger, same shape as `jobdash.ai.scan` → `logs/ai-scan.log` (§9) — **the prompt,
+the resume text and the applicant profile are never logged**, only titles, outcomes and timings.
+
+### Driver decision: Claude in Chrome, not Playwright MCP
+
+The user chose the **Claude in Chrome extension** (`claude -p --chrome`), driving their own real
+Chrome window, over a Playwright MCP fallback that was designed but never built (see below).
+Prerequisites, all one-time: Google Chrome (or another Chromium browser), the [Claude in Chrome
+extension](https://chromewebstore.google.com/detail/claude/fcoeoabgfenejglbffodgkkbkcdhcgfn)
+(≥1.0.36), Claude Code signed in via `/login` (an API key or setup-token **disables** Chrome
+integration), and one interactive `claude --chrome` run from this repo's directory to accept the
+one-time permission dialog. Claude opens tabs in the user's actual browser window, so the user
+watches every action it takes — nothing runs headless or out of sight.
+
+**The exact invocation, measured working non-interactively** (prompt on stdin, as always — §9):
+
+```
+claude -p --chrome --model sonnet --output-format json --json-schema <schema> \
+       --no-session-persistence --strict-mcp-config --tools Read \
+       --allowedTools mcp__claude-in-chrome Read \
+       --max-turns 60 --max-budget-usd 2.0
+```
+
+Three non-obvious findings got here, each the cost of a probe:
+
+1. **The allow rule must be the bare server name `mcp__claude-in-chrome`.**
+   `mcp__claude-in-chrome__*` looks like the obvious wildcard and is **not** one — with it,
+   navigation still worked, but `javascript_tool` and `computer` (the screenshot tool) both landed
+   in `permission_denials` and the run burned every turn it had retrying blocked actions.
+2. **The very first `--chrome` run writes the native-messaging host file** at
+   `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.anthropic.claude_code_browser_extension.json`
+   and then fails anyway with "Browser extension not connected" — Chrome only reads that directory
+   at startup, so the fix is to restart Chrome once, after which it connects. (A similarly named
+   `com.anthropic.claude_browser_extension.json` in the same folder belongs to the separate Claude
+   desktop app, not Claude Code — don't check for that one.) `run.sh`'s preflight (below) checks
+   for exactly this file's presence, not whether Chrome has picked it up yet.
+3. **`--safe-mode` must NOT be on this invocation.** The resume scan's `ClaudeCliClient` call
+   (§9) hard-codes `--safe-mode --restricted`, but `--safe-mode` disables MCP servers outright, and
+   Chrome integration **is** the `claude-in-chrome` MCP server — using the scan's flags here would
+   silently mean no browser control at all. This is why `ClaudeCliClient.runStructured` had to grow
+   a `CliOptions` parameter instead of hard-coding one flag set for every caller.
+
+Probe costs, for calibrating what to expect: reading a Greenhouse board's page title back = 6
+turns, $0.07. Uploading a file from `data/` into a test form's file input = 14 turns, $0.19. A
+real application — navigate, locate the form, fill several fields, upload, review — runs
+**roughly $0.30–$1.50**, which is what the batch summary's running cost total will show.
+
+### Design decisions, and why
+
+- **One CLI call per job, sequential — not one session for the whole batch.** Keeps each call's
+  context small (no accumulating browser state across unrelated postings), gives a real structured
+  verdict per job instead of one verdict guessed at batch end, and lets timeout/budget/cancel apply
+  **per application** rather than to the whole run. It also bounds the blast radius of the failure
+  mode in the next point.
+- **A dropped extension connection costs one job, not the batch.** The Chrome extension's service
+  worker can idle out on a long-running session; because every job is its own `claude -p --chrome`
+  process, a connection drop mid-job fails that one job (`failed`, with the CLI's own error in
+  `notes`) and the orchestrator moves on to the next, instead of losing everything already done.
+- **Polling, not SSE.** An apply batch advances once per job — often a minute or more apart — so a
+  2s poll against `GET /api/applications/{id}` costs nothing and avoids standing up a second
+  `SseEmitter` scheduler for a rate of change SSE has no advantage at. `RunController`'s SSE pattern
+  (§9's scan progress, §10's run stream) stays the reference if per-browser-action streaming is
+  ever wanted.
+- **Submit toggle, default OFF.** The default outcome is `needs_review`: the form is filled, the
+  resume is attached, and the tab is left open on the review step for the user to press Submit
+  themselves. Wrong answers only ever reach a real employer when Submit is deliberately ticked —
+  everything else is a form sitting there for a human to check.
+- **LinkedIn rows are skipped ("Apply manually"), with zero CLI calls.** Applying through LinkedIn
+  needs the user's own logged-in account, and §2's rule — never authenticate, never expose the
+  real account to automation — is the one non-negotiable constraint in this whole codebase (also
+  stated in the README's "How it gets the data"). Extending that automation to *applying* would be
+  exactly the cookie-replay-adjacent risk §2 exists to avoid. Only Greenhouse / Lever / Workday
+  postings get the Claude-driven flow.
+- **A `submitted` outcome marks the job `applied`.** `ApplyOrchestrator` calls
+  `JobListingRepository.setUserStatus(jobId, APPLIED, now)` exactly when the CLI's structured
+  result says `submitted` — a `needs_review` result leaves `user_status` untouched, because nothing
+  has actually been applied to yet.
+- **The model is told never to invent work-authorization, sponsorship, salary or EEO answers.**
+  These are exactly the questions a resume cannot answer and that carry real consequences if
+  guessed wrong. Anything the model can't answer from the resume or the profile is left blank on
+  the form and listed in `unanswered`, which lands in the job's `job_application.notes` for the
+  user to fill in by hand.
+- **The applicant profile exists because a resume answers none of the above.** A resume is "what
+  have you done"; work authorization, sponsorship, location, salary expectation and links are a
+  different category of question that the same person answers identically across every
+  application, hence one profile row (`applicant_profile`, `id=1`) rather than per-job input.
+
+### The Playwright MCP fallback: designed, not built
+
+Task 0 of the implementation plan existed to gate on whether `claude -p --chrome` could drive a
+browser **non-interactively** at all — that was unverified going in, since the documented
+`--chrome` usage is interactive. The probe above succeeded, so the fallback below was never
+needed and was never built:
+
+```
+claude -p --mcp-config <playwright.json> --strict-mcp-config --allowedTools "mcp__playwright__*"
+```
+
+with `@playwright/mcp` as the MCP server and a **persistent profile** under
+`data/browser-profile/` (so cookies/sessions on the board's own site survive between runs, the way
+a real browser profile would). Only `ApplyCliOptions` and the prompt's tool vocabulary would
+change if this is ever needed — same `ApplyOrchestrator`, same schema, same per-job-call
+architecture. Reach for it only if a future macOS/Chrome update breaks the extension handshake in
+a way that isn't a one-time fix.
+

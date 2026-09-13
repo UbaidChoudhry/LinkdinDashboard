@@ -1271,6 +1271,69 @@ tr.source-dead {
   opacity: 0.75;
 }
 
+.application-badge {
+  display: inline-block;
+  margin-top: 3px;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--text);
+  vertical-align: middle;
+}
+
+.application-badge.needs-review {
+  border-color: rgba(234, 179, 8, 0.5);
+  color: #ca8a04;
+}
+
+@media (prefers-color-scheme: dark) {
+  .application-badge.needs-review {
+    color: #eab308;
+  }
+}
+
+.application-badge.submitted {
+  border-color: rgba(22, 163, 74, 0.5);
+  color: #16a34a;
+}
+
+.application-badge.failed {
+  border-color: rgba(220, 38, 38, 0.5);
+  color: #dc2626;
+}
+
+.application-badge.skipped {
+  opacity: 0.75;
+}
+
+.application-badge.filling {
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+/* ---------------------------------------------------------------------------
+   Apply with Claude controls (bucket bar)
+   --------------------------------------------------------------------------- */
+
+.apply-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  /* Sits right after the Re-scan button; the wrapping flex lets it drop to its own line on
+     narrow widths instead of squeezing the bucket tabs. */
+}
+
+.apply-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+}
+
 /* ---------------------------------------------------------------------------
    AI scan progress panel
    --------------------------------------------------------------------------- */

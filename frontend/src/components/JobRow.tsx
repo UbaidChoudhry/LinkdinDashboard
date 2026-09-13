@@ -11,6 +11,15 @@ function formatSalary(min: number | null, max: number | null): string {
   return fmt((max ?? min) as number);
 }
 
+const APPLICATION_STATUS_LABELS: Record<string, string> = {
+  needs_review: "Needs review",
+  submitted: "Submitted",
+  failed: "Apply failed",
+  skipped: "Apply manually",
+  filling: "Applying…",
+  queued: "Queued",
+};
+
 /** Human-readable label for the `salarySource` recorded by the backend enrichment step. */
 function salarySourceLabel(source: string | null | undefined): string | null {
   switch (source) {
@@ -92,6 +101,14 @@ export function JobRow({ job, tab, onChanged, onError, grouped = false, selected
             title={job.aiReason}
           >
             {job.aiRecommended ? "✓" : "✕"} {job.aiReason}
+          </span>
+        )}
+        {job.applicationStatus && (
+          <span
+            className={`application-badge ${job.applicationStatus.replace(/_/g, "-")}`}
+            title={job.applicationNotes ?? ""}
+          >
+            {APPLICATION_STATUS_LABELS[job.applicationStatus] ?? job.applicationStatus}
           </span>
         )}
       </td>

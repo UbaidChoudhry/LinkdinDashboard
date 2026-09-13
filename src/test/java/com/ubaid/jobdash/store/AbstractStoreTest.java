@@ -33,6 +33,9 @@ public abstract class AbstractStoreTest {
     protected SalaryEstimateRepository salaryEstimateRepository;
     protected LcaWageRepository lcaWageRepository;
     protected ExternalRequestLogRepository externalRequestLogRepository;
+    protected ApplicantProfileRepository applicantProfileRepository;
+    protected ApplyBatchRepository applyBatchRepository;
+    protected ApplicationRepository applicationRepository;
 
     @BeforeEach
     void migrateFreshDatabase() {
@@ -59,5 +62,8 @@ public abstract class AbstractStoreTest {
         this.salaryEstimateRepository = new SalaryEstimateRepository(client);
         this.lcaWageRepository = new LcaWageRepository(client);
         this.externalRequestLogRepository = new ExternalRequestLogRepository(client);
+        this.applicantProfileRepository = new ApplicantProfileRepository(client);
+        this.applyBatchRepository = new ApplyBatchRepository(client);
+        this.applicationRepository = new ApplicationRepository(client);
     }
 }

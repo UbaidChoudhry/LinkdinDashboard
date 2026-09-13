@@ -48,6 +48,10 @@ export interface JobResponse {
    */
   locationUs?: boolean | null;
   locationConfident?: boolean | null;
+  /** Status of the most recent Apply with Claude attempt on this job, if any. */
+  applicationStatus?: ApplicationStatus | null;
+  /** The model's notes on that attempt (summary / unanswered questions / error). */
+  applicationNotes?: string | null;
 }
 
 export type RunStatus =
@@ -256,4 +260,57 @@ export interface ScanResultResponse {
   failedBatches: number;
   totalCostUsd: number;
   errorMessage: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Apply with Claude - applicant profile and apply batches
+// ---------------------------------------------------------------------------
+
+/** The single applicant profile row. Mirrors domain/ApplicantProfile.java. */
+export interface ApplicantProfile {
+  fullName: string;
+  email: string;
+  phone: string;
+  location: string;
+  linkedinUrl: string;
+  portfolioUrl: string;
+  workAuthorization: string;
+  requiresSponsorship: boolean;
+  salaryExpectation: string;
+  extraAnswers: string;
+  updatedAt: string | null;
+}
+
+/** Per-job outcome of an apply batch. Mirrors web/dto/JobApplicationResponse.java. */
+export type ApplicationStatus = "queued" | "filling" | "submitted" | "needs_review" | "failed" | "skipped";
+
+/** Mirrors web/dto/JobApplicationResponse.java. */
+export interface JobApplicationResponse {
+  id: number;
+  jobId: number;
+  title: string;
+  company: string;
+  status: ApplicationStatus;
+  notes: string;
+  costUsd: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+/** Mirrors web/dto/ApplyBatchResponse.java. */
+export interface ApplyBatchResponse {
+  id: number;
+  resumeId: number;
+  submit: boolean;
+  status: "running" | "ok" | "cancelled" | "failed";
+  total: number;
+  done: number;
+  submitted: number;
+  needsReview: number;
+  failed: number;
+  skipped: number;
+  costUsd: number;
+  startedAt: string;
+  finishedAt: string | null;
+  jobs: JobApplicationResponse[];
 }

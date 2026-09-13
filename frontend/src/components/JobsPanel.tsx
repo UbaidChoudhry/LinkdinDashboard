@@ -5,6 +5,7 @@ import type { JobResponse, JobTab, RunResponse } from "../types/api";
 import { DEFAULT_SORT, filterByMinSalary, nextSortState, sortJobsBy, type SortState } from "../utils/sort";
 import { groupByCompany, type CompanyGroup } from "../utils/group";
 import { isRunInFlight } from "../utils/runStatus";
+import { ApplyControls } from "./ApplyControls";
 import { JobRow } from "./JobRow";
 import { CompanyGroupRow } from "./CompanyGroupRow";
 import { InfoTip } from "./InfoTip";
@@ -133,6 +134,21 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
     const unscanned = jobs?.filter((j) => j.aiRecommended == null).length ?? 0;
     return { recommended, notRecommended, unscanned };
   }, [jobs]);
+
+  // Apply with Claude only ever acts on the Untriaged tab's recommended, non-LinkedIn rows -
+  // LinkedIn postings are listed as "apply manually" instead of being sent to the CLI.
+  const recommendedJobs = useMemo(
+    () => (activeTab === "search" ? jobs?.filter((j) => j.aiRecommended === true) ?? [] : []),
+    [activeTab, jobs],
+  );
+  const eligibleJobIds = useMemo(
+    () => recommendedJobs.filter((j) => j.source !== "linkedin").map((j) => j.jobId),
+    [recommendedJobs],
+  );
+  const linkedinCount = useMemo(
+    () => recommendedJobs.filter((j) => j.source === "linkedin").length,
+    [recommendedJobs],
+  );
 
   async function handleRescan() {
     setScanning(true);
@@ -406,6 +422,7 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
           <button type="button" className="bucket-rescan" onClick={handleRescan} disabled={scanning}>
             {scanning ? "Scanning…" : "Re-scan"}
           </button>
+          <ApplyControls eligibleJobIds={eligibleJobIds} linkedinCount={linkedinCount} onFinished={load} />
         </div>
       )}
 

@@ -11,9 +11,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 
 /**
  * Runs the local {@code claude} CLI, in restricted/safe mode with no session persistence, to
@@ -36,6 +38,17 @@ public class ClaudeCliClient {
 
     private final AiProperties properties;
     private final ObjectMapper objectMapper;
+
+    /**
+     * Per-call overrides for {@link #runStructured(String, String, CliOptions)}: {@code args} is
+     * the FULL flag list after the binary path (callers own their own flag set — the default
+     * scan flags live in the two-arg overload, {@code apply.ApplyOrchestrator} builds its own
+     * Chrome-driving set), {@code timeout} replaces {@code ai.timeout} for this call, and
+     * {@code cancelled} is polled between 1-second wait slices so a batch's cancel button can
+     * kill an in-flight process promptly instead of only at the timeout.
+     */
+    public record CliOptions(List<String> args, Duration timeout, BooleanSupplier cancelled) {
+    }
 
     public ClaudeCliClient(AiProperties properties, ObjectMapper objectMapper) {
         this.properties = properties;
@@ -92,8 +105,7 @@ public class ClaudeCliClient {
      * output, an interrupt — comes back as a {@link CliJsonResult} variant.
      */
     public CliJsonResult runStructured(String prompt, String jsonSchema) {
-        List<String> command = List.of(
-                properties.cliPath(),
+        List<String> args = List.of(
                 "-p",
                 "--model", properties.model(),
                 "--output-format", "json",
@@ -101,6 +113,21 @@ public class ClaudeCliClient {
                 "--no-session-persistence",
                 "--safe-mode",
                 "--restricted");
+        return runStructured(prompt, jsonSchema, new CliOptions(args, properties.timeout(), () -> false));
+    }
+
+    /**
+     * As {@link #runStructured(String, String)}, but the caller supplies the full flag list
+     * (everything after the binary path — so callers own their own flag set, e.g. an
+     * apply/ApplyOrchestrator invocation needs {@code --chrome} instead of {@code --safe-mode}),
+     * the per-call timeout, and a cancellation flag polled between 1-second wait slices. On
+     * cancellation the process is killed with {@link Process#destroyForcibly()} and
+     * {@code Failed("cancelled", -1)} is returned.
+     */
+    public CliJsonResult runStructured(String prompt, String jsonSchema, CliOptions options) {
+        List<String> command = new ArrayList<>();
+        command.add(properties.cliPath());
+        command.addAll(options.args());
 
         Process process;
         try {
@@ -133,20 +160,39 @@ public class ClaudeCliClient {
             log.debug("failed writing prompt to claude CLI stdin: {}", e.toString());
         }
 
-        boolean finished;
+        // Waited for in 1-second slices (rather than one blocking waitFor(timeout)) so a
+        // cancellation flag flipped mid-run is noticed promptly instead of only at the deadline.
+        long deadlineNanos = System.nanoTime() + options.timeout().toNanos();
+        boolean finished = false;
+        boolean cancelled = false;
         try {
-            finished = process.waitFor(properties.timeout().toMillis(), TimeUnit.MILLISECONDS);
+            while (!finished && System.nanoTime() < deadlineNanos) {
+                if (options.cancelled().getAsBoolean()) {
+                    cancelled = true;
+                    break;
+                }
+                long remainingNanos = deadlineNanos - System.nanoTime();
+                long sliceMs = Math.min(TimeUnit.SECONDS.toMillis(1), TimeUnit.NANOSECONDS.toMillis(remainingNanos));
+                finished = process.waitFor(Math.max(0, sliceMs), TimeUnit.MILLISECONDS);
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             process.destroyForcibly();
             return new CliJsonResult.Failed("interrupted while waiting for claude CLI", -1);
         }
 
+        if (cancelled) {
+            process.destroyForcibly();
+            joinQuietly(stdoutThread);
+            joinQuietly(stderrThread);
+            return new CliJsonResult.Failed("cancelled", -1);
+        }
+
         if (!finished) {
             process.destroyForcibly();
             joinQuietly(stdoutThread);
             joinQuietly(stderrThread);
-            return new CliJsonResult.Timeout(properties.timeout().toMillis());
+            return new CliJsonResult.Timeout(options.timeout().toMillis());
         }
 
         joinQuietly(stdoutThread);
