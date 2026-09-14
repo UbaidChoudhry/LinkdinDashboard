@@ -3,12 +3,18 @@ package com.ubaid.jobdash.web.dto;
 import com.ubaid.jobdash.domain.JobApplication;
 import com.ubaid.jobdash.domain.JobListing;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 
 /**
  * One job's outcome within an apply batch, as returned inside {@link ApplyBatchResponse}.
  * {@code title}/{@code company} are looked up from {@code job_listing} in one batched query per
- * batch (never per row) and are {@code ""} if that job row is gone.
+ * batch (never per row) and are {@code ""} if that job row is gone. {@code sessionId} and
+ * {@code lastActivity} surface the live-observability/resumable-session columns added for
+ * "Apply with Claude"; {@code hasLog} is {@code true} only when the row has a {@code log_path}
+ * AND the file it points at still exists, so the UI knows whether
+ * {@code GET .../jobs/{id}/log} will actually return something.
  */
 public record JobApplicationResponse(
         long id,
@@ -19,13 +25,18 @@ public record JobApplicationResponse(
         String notes,
         double costUsd,
         Instant startedAt,
-        Instant finishedAt
+        Instant finishedAt,
+        String sessionId,
+        String lastActivity,
+        boolean hasLog
 ) {
     public static JobApplicationResponse of(JobApplication a, JobListing job) {
         return new JobApplicationResponse(
                 a.id(), a.jobId(),
                 job == null ? "" : job.title(),
                 job == null ? "" : job.company(),
-                a.status(), a.notes(), a.costUsd(), a.startedAt(), a.finishedAt());
+                a.status(), a.notes(), a.costUsd(), a.startedAt(), a.finishedAt(),
+                a.sessionId(), a.lastActivity(),
+                a.logPath() != null && Files.exists(Path.of(a.logPath())));
     }
 }

@@ -34,6 +34,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -639,6 +640,45 @@ class JobDashApiTest {
                         .contentType("application/json")
                         .content("{\"jobIds\":[" + job + "]}"))
                 .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").exists());
+    }
+
+    // ---- apply transcript log --------------------------------------------------------------
+
+    @Test
+    void jobLogEndpointServesTheTranscriptFileVerbatim() throws Exception {
+        saveProfile();
+        long resumeId = insertResume(true);
+        long run = createRunRow(Instant.now());
+        long job = insertJob(80, run, "Engineer", "Acme", Instant.now());
+        setVerdictPass(job);
+
+        long batchId = applyBatchRepository.create(resumeId, false, 1, Instant.now());
+        long applicationId = applicationRepository.create(batchId, job, "filling");
+
+        Path transcript = tempDir.resolve("job-" + applicationId + ".log");
+        java.nio.file.Files.writeString(transcript, "10:00:00 tool navigate https://acme.com\n");
+        applicationRepository.setSession(applicationId, "session-uuid", transcript.toString());
+
+        mockMvc.perform(get("/api/applications/" + batchId + "/jobs/" + applicationId + "/log"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType("text/plain;charset=UTF-8"))
+                .andExpect(content().string("10:00:00 tool navigate https://acme.com\n"));
+    }
+
+    @Test
+    void jobLogEndpointReturns404WhenNoTranscriptRecorded() throws Exception {
+        saveProfile();
+        long resumeId = insertResume(true);
+        long run = createRunRow(Instant.now());
+        long job = insertJob(81, run, "Engineer", "Acme", Instant.now());
+        setVerdictPass(job);
+
+        long batchId = applyBatchRepository.create(resumeId, false, 1, Instant.now());
+        long applicationId = applicationRepository.create(batchId, job, "queued");
+
+        mockMvc.perform(get("/api/applications/" + batchId + "/jobs/" + applicationId + "/log"))
+                .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.message").exists());
     }
 

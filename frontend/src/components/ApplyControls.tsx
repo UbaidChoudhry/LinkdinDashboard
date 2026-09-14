@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiError,
+  applicationLogUrl,
   cancelApplyBatch,
   getApplyBatch,
   getCurrentApplyBatch,
   startApplications,
 } from "../api/client";
-import type { ApplyBatchResponse } from "../types/api";
+import type { ApplyBatchResponse, JobApplicationResponse } from "../types/api";
 
 interface ApplyControlsProps {
   /** Job ids eligible for this run: recommended, untriaged, non-LinkedIn rows on screen. */
@@ -19,6 +20,16 @@ interface ApplyControlsProps {
 
 const POLL_MS = 2000;
 
+// Same labels JobRow uses for the per-row application badge, reused here for the details list.
+const APPLICATION_STATUS_LABELS: Record<string, string> = {
+  needs_review: "Needs review",
+  submitted: "Submitted",
+  failed: "Apply failed",
+  skipped: "Apply manually",
+  filling: "Applying…",
+  queued: "Queued",
+};
+
 function summaryLine(batch: ApplyBatchResponse): string {
   return (
     `Done: ${batch.needsReview} need review, ${batch.submitted} submitted, ` +
@@ -27,11 +38,61 @@ function summaryLine(batch: ApplyBatchResponse): string {
   );
 }
 
+function CopyResumeButton({ sessionId }: { sessionId: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(`claude --resume ${sessionId} --chrome`);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard access can be denied/unavailable - nothing else to do here.
+    }
+  }
+
+  return (
+    <button type="button" className="secondary" onClick={handleCopy}>
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
+function DetailsRow({ job, batchId }: { job: JobApplicationResponse; batchId: number }) {
+  const showActivity = (job.status === "filling" || job.status === "failed") && job.lastActivity;
+  return (
+    <div className="apply-details-row">
+      <span className={`application-badge ${job.status}`}>
+        {APPLICATION_STATUS_LABELS[job.status] ?? job.status}
+      </span>{" "}
+      <strong>
+        {job.title} — {job.company}
+      </strong>
+      {job.notes && <div>{job.notes}</div>}
+      {showActivity && <div className="apply-activity">Claude: {job.lastActivity}</div>}
+      {job.hasLog && (
+        <div>
+          <a href={applicationLogUrl(batchId, job.id)} target="_blank" rel="noreferrer">
+            View log
+          </a>
+        </div>
+      )}
+      {job.sessionId && (
+        <div>
+          Resume in terminal: <code>claude --resume {job.sessionId} --chrome</code>{" "}
+          <CopyResumeButton sessionId={job.sessionId} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ApplyControls({ eligibleJobIds, linkedinCount, onFinished }: ApplyControlsProps) {
   const [submitChecked, setSubmitChecked] = useState(false);
   const [batch, setBatch] = useState<ApplyBatchResponse | null>(null);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showDetails, setShowDetails] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Guards against onFinished() firing twice for the same batch (e.g. a poll tick landing right
   // after cancel/finish has already been handled).
@@ -123,53 +184,79 @@ export function ApplyControls({ eligibleJobIds, linkedinCount, onFinished }: App
 
   const running = batch?.status === "running";
   const currentJob = running ? batch?.jobs.find((j) => j.status === "filling" || j.status === "queued") : undefined;
+  const fillingJob = running ? batch?.jobs.find((j) => j.status === "filling") : undefined;
 
   return (
-    <div className="apply-controls">
-      <button type="button" onClick={handleApply} disabled={eligibleJobIds.length === 0 || running || starting}>
-        {starting ? "Starting…" : `Apply with Claude (${eligibleJobIds.length})`}
-      </button>
+    <Fragment>
+      <div className="apply-controls">
+        <button type="button" onClick={handleApply} disabled={eligibleJobIds.length === 0 || running || starting}>
+          {starting ? "Starting…" : `Apply with Claude (${eligibleJobIds.length})`}
+        </button>
 
-      <span className="checkbox-row">
-        <input
-          id="apply-submit"
-          type="checkbox"
-          checked={submitChecked}
-          onChange={(e) => setSubmitChecked(e.target.checked)}
-          disabled={running}
-        />
-        <label htmlFor="apply-submit">Submit applications</label>
-      </span>
-      <span className="apply-note">
-        Unchecked: Claude fills each form and stops before Submit so you can review
-      </span>
-
-      {linkedinCount > 0 && (
+        <span className="checkbox-row">
+          <input
+            id="apply-submit"
+            type="checkbox"
+            checked={submitChecked}
+            onChange={(e) => setSubmitChecked(e.target.checked)}
+            disabled={running}
+          />
+          <label htmlFor="apply-submit">Submit applications</label>
+        </span>
         <span className="apply-note">
-          {linkedinCount} LinkedIn job{linkedinCount === 1 ? "" : "s"} will be skipped — apply to
-          those manually.
+          Unchecked: Claude fills each form and stops before Submit so you can review
         </span>
-      )}
 
-      {running && batch && (
-        <span className="apply-note apply-progress">
-          Applying {batch.done}/{batch.total}
-          {currentJob ? ` · ${currentJob.title} — ${currentJob.company}…` : "…"}
-          <button type="button" className="secondary" onClick={handleCancel}>
-            Cancel
+        {linkedinCount > 0 && (
+          <span className="apply-note">
+            {linkedinCount} LinkedIn job{linkedinCount === 1 ? "" : "s"} will be skipped — apply to
+            those manually.
+          </span>
+        )}
+
+        {running && batch && (
+          <span className="apply-note apply-progress">
+            <span>
+              Applying {batch.done}/{batch.total}
+              {currentJob ? ` · ${currentJob.title} — ${currentJob.company}…` : "…"}
+              {fillingJob?.lastActivity && (
+                <span className="apply-activity">Claude: {fillingJob.lastActivity}</span>
+              )}
+            </span>
+            <button type="button" className="secondary" onClick={handleCancel}>
+              Cancel
+            </button>
+          </span>
+        )}
+
+        {!running && batch && batch.status !== "running" && (
+          <span className="apply-note">{summaryLine(batch)}</span>
+        )}
+
+        {batch && (
+          <button type="button" className="secondary" onClick={() => setShowDetails((v) => !v)}>
+            {showDetails ? "Details ▴" : "Details ▾"}
           </button>
-        </span>
-      )}
+        )}
 
-      {!running && batch && batch.status !== "running" && (
-        <span className="apply-note">{summaryLine(batch)}</span>
-      )}
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
 
-      {error && (
-        <p className="form-error" role="alert">
-          {error}
-        </p>
+      {batch && showDetails && (
+        <div className="apply-details">
+          <p className="apply-note">
+            Stuck? Open the log, or resume the session in a terminal and ask Claude what blocked
+            it — the browser tabs it used are gone once the session ends, but it can reopen them.
+          </p>
+          {batch.jobs.map((job) => (
+            <DetailsRow key={job.id} job={job} batchId={batch.id} />
+          ))}
+        </div>
       )}
-    </div>
+    </Fragment>
   );
 }

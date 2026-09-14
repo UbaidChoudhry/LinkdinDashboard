@@ -19,6 +19,7 @@ import com.ubaid.jobdash.web.dto.ApplyBatchResponse;
 import com.ubaid.jobdash.web.dto.ApplyRequest;
 import com.ubaid.jobdash.web.dto.JobApplicationResponse;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -29,6 +30,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
@@ -177,6 +180,35 @@ public class ApplicationController {
     @GetMapping("/api/applications")
     public List<ApplyBatchResponse> recent(@RequestParam(name = "limit", defaultValue = "20") int limit) {
         return applyBatchRepository.findRecent(limit).stream().map(this::toResponse).toList();
+    }
+
+    /**
+     * Serves one job's per-job apply transcript verbatim - live observability for a job that's
+     * still running, or a post-mortem for one that failed or needs review. 404s if the
+     * application id isn't in that batch, or if it has no transcript file (never called the CLI,
+     * or the file was since removed).
+     */
+    @GetMapping(value = "/api/applications/{batchId}/jobs/{applicationId}/log", produces = MediaType.TEXT_PLAIN_VALUE)
+    public ResponseEntity<String> jobLog(@PathVariable long batchId, @PathVariable long applicationId) {
+        JobApplication application = applicationRepository.findByBatch(batchId).stream()
+                .filter(a -> a.id() == applicationId)
+                .findFirst()
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND,
+                        "No job application found with id " + applicationId + " in batch " + batchId + "."));
+
+        if (application.logPath() == null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "No apply transcript recorded for this job.");
+        }
+        Path logPath = Path.of(application.logPath());
+        if (!Files.exists(logPath)) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "Apply transcript file is missing.");
+        }
+        try {
+            String content = Files.readString(logPath, StandardCharsets.UTF_8);
+            return ResponseEntity.ok().contentType(MediaType.valueOf("text/plain; charset=utf-8")).body(content);
+        } catch (IOException e) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "Could not read apply transcript: " + e.getMessage());
+        }
     }
 
     private ApplyBatchResponse toResponse(ApplyBatch batch) {

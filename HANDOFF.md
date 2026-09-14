@@ -1013,8 +1013,8 @@ watches every action it takes — nothing runs headless or out of sight.
 **The exact invocation, measured working non-interactively** (prompt on stdin, as always — §9):
 
 ```
-claude -p --chrome --model sonnet --output-format json --json-schema <schema> \
-       --no-session-persistence --strict-mcp-config --tools Read \
+claude -p --chrome --model sonnet --output-format stream-json --verbose --session-id <uuid> \
+       --json-schema <schema> --strict-mcp-config --tools Read \
        --allowedTools mcp__claude-in-chrome Read \
        --max-turns 60 --max-budget-usd 2.0
 ```
@@ -1101,3 +1101,43 @@ change if this is ever needed — same `ApplyOrchestrator`, same schema, same pe
 architecture. Reach for it only if a future macOS/Chrome update breaks the extension handshake in
 a way that isn't a one-time fix.
 
+
+### Observability and resumable sessions (added 2026-09-17, same evening)
+
+**The failure that forced this.** The first real batch ran its first job (a Greenhouse posting) for
+202 seconds, the user watched Claude stall at the resume-upload step, and cancelled. The
+`job_application` row then said `failed / cancelled` and **nothing else** — the call used
+`--output-format json`, which emits one blob at process exit, and the kill discarded it. The tabs
+Claude had opened closed with the session. There was no way to learn what it had done, let alone
+why. Two changes, both verified with probes before building:
+
+- **Stream, don't buffer.** The apply call now runs `--output-format stream-json --verbose`
+  (`--verbose` is required with stream-json in print mode), one JSON object per stdout line:
+  `system/init`, `assistant` (text and `tool_use` blocks), `user` (`tool_result` blocks, with
+  `is_error`), assorted `rate_limit_event`s, and finally `result` carrying `structured_output`,
+  `total_cost_usd` and `session_id`. `ClaudeCliClient.runStreaming` reads stdout line by line and
+  hands each event to a listener; `ApplyOrchestrator`'s listener writes a timestamped line to
+  `logs/apply/batch-<b>-job-<jobId>.log`, mirrors tool calls into `logs/apply.log`, and stores the
+  latest one on `job_application.last_activity` (V13), which the Results tab shows under the live
+  progress line and in a per-job **Details** list with a **View log** link
+  (`GET /api/applications/{batchId}/jobs/{applicationId}/log`). The scan path (§9) is untouched -
+  it still uses the buffered `runStructured`.
+- **Idle watchdog, not just a deadline.** `apply.idle-timeout` (3m): a job with no stream event for
+  that long is killed and marked `failed` with a "Stuck:" note. The 10-minute `apply.timeout` was
+  the only guard before, and a page frozen by a native file dialog would have sat there for all of
+  it. The most likely cause of the original stall is exactly that - a button labelled Attach /
+  Browse / Choose file that opens the macOS file picker, which blocks the page and every extension
+  command with it (the Chrome docs' "modal dialog" case). The prompt now says to use the upload tool
+  on the `<input type=file>` and never click a button that opens the OS picker.
+- **Every job is a resumable session.** `--no-session-persistence` is gone from the apply call and
+  each job gets `--session-id <uuid>`, stored on the row. Verified: a `-p` session started that way
+  can be continued with `claude --resume <uuid> --chrome`, and the resumed session remembered what
+  it had done ("I opened boards.greenhouse.io/airbnb, which redirected to…", $0.11 for the question).
+  The UI shows that command with a Copy button, so "interact with Claude to see why it is stuck"
+  is literally that: open a terminal, paste, ask. The browser tab group is gone by then (the CLI
+  closes it when the session ends) but the session can reopen the posting.
+
+**Privacy line, restated.** `logs/apply.log` keeps the §9 discipline (no prompt, resume or profile).
+The per-job transcripts under `logs/apply/` deliberately do **not** - they record the tool inputs,
+which include whatever Claude typed into the form, because a transcript without the typed values
+cannot explain a stuck form. `logs/` is gitignored; say so in any doc that points people at them.

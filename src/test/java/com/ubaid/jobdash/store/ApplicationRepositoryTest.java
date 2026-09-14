@@ -78,4 +78,55 @@ class ApplicationRepositoryTest extends AbstractStoreTest {
         assertThat(latest.get(jobId).notes()).isEqualTo("second attempt submitted");
         assertThat(latest.get(otherJobId).status()).isEqualTo("needs_review");
     }
+
+    @Test
+    void newRowHasEmptyActivityAndNullSessionAndLogPath() {
+        long runId = newRun();
+        long jobId = insertJob(runId, 8L);
+        long batchId = applyBatchRepository.create(1L, false, 1, Instant.now());
+
+        long appId = applicationRepository.create(batchId, jobId, "queued");
+        JobApplication row = applicationRepository.findByBatch(batchId).get(0);
+
+        assertThat(row.sessionId()).isNull();
+        assertThat(row.lastActivity()).isEqualTo("");
+        assertThat(row.logPath()).isNull();
+        assertThat(appId).isEqualTo(row.id());
+    }
+
+    @Test
+    void setSessionAndSetLastActivityUpdateTheirColumns() {
+        long runId = newRun();
+        long jobId = insertJob(runId, 9L);
+        long batchId = applyBatchRepository.create(1L, false, 1, Instant.now());
+        long appId = applicationRepository.create(batchId, jobId, "queued");
+
+        applicationRepository.setSession(appId, "session-uuid-123", "logs/apply/batch-1-job-9.log");
+        applicationRepository.setLastActivity(appId, "tool mcp__claude-in-chrome__navigate");
+
+        JobApplication row = applicationRepository.findByBatch(batchId).get(0);
+        assertThat(row.sessionId()).isEqualTo("session-uuid-123");
+        assertThat(row.logPath()).isEqualTo("logs/apply/batch-1-job-9.log");
+        assertThat(row.lastActivity()).isEqualTo("tool mcp__claude-in-chrome__navigate");
+    }
+
+    @Test
+    void updateDoesNotClearSessionLogPathOrLastActivity() {
+        long runId = newRun();
+        long jobId = insertJob(runId, 10L);
+        long batchId = applyBatchRepository.create(1L, false, 1, Instant.now());
+        long appId = applicationRepository.create(batchId, jobId, "queued");
+
+        applicationRepository.setSession(appId, "session-uuid-456", "logs/apply/batch-1-job-10.log");
+        applicationRepository.setLastActivity(appId, "tool navigate");
+
+        applicationRepository.update(appId, "submitted", "Application submitted", 0.35,
+                Instant.parse("2026-09-10T00:01:00Z"), Instant.parse("2026-09-10T00:02:00Z"));
+
+        JobApplication row = applicationRepository.findByBatch(batchId).get(0);
+        assertThat(row.status()).isEqualTo("submitted");
+        assertThat(row.sessionId()).isEqualTo("session-uuid-456");
+        assertThat(row.logPath()).isEqualTo("logs/apply/batch-1-job-10.log");
+        assertThat(row.lastActivity()).isEqualTo("tool navigate");
+    }
 }

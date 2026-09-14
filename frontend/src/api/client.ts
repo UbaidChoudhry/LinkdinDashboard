@@ -317,3 +317,9 @@ export async function getCurrentApplyBatch(): Promise<ApplyBatchResponse | null>
 export function cancelApplyBatch(id: number): Promise<void> {
   return request<void>(`/api/applications/${id}/cancel`, { method: "POST" });
 }
+
+/** URL for the plain-text transcript of one job's apply attempt (404 when there is none). The
+ * UI opens this directly in a new tab rather than fetching it. */
+export function applicationLogUrl(batchId: number, applicationId: number): string {
+  return `/api/applications/${batchId}/jobs/${applicationId}/log`;
+}

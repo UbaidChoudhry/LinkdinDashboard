@@ -287,6 +287,7 @@ apply:
   timeout: 10m                  # per job
   max-turns: 60
   max-budget-usd: 2.0
+  idle-timeout: 3m              # no browser action for this long = stuck, job killed
   max-description-chars: 4000
 ```
 
@@ -432,15 +433,31 @@ out of sight.
 **$0.30–$1.50 per application** depending on how many form fields and browser actions it takes.
 The batch view shows a running total from the CLI's own reported cost.
 
-**Watching it.** The Results tab shows live progress while a batch runs (which job, how many
-done, a Cancel button). For the full detail in a terminal:
+**Watching it, and unsticking it.** While a batch runs the Results tab shows which job is in
+progress and, under it, the last thing Claude did (`Claude: tool …navigate {"url": …}`), plus a
+Cancel button. A **Details** toggle lists every job in the batch with its notes, a **View log** link
+that opens the full per-job transcript, and a **Resume in terminal** command. Three levels of
+detail, from a terminal:
 
 ```bash
-tail -f logs/apply.log
+tail -f logs/apply.log                         # one line per browser action, every job
+less logs/apply/batch-<batch>-job-<jobId>.log   # the full transcript of one application
+claude --resume <sessionId> --chrome            # continue that exact Claude session and ask it
 ```
 
-That file never contains your resume text, your applicant profile, or the prompt sent to Claude —
-only job titles, outcomes and timings, the same discipline as `logs/ai-scan.log`.
+The third is the one to reach for when Claude gets stuck: each application runs in its own Claude
+session, the session id is kept on the job (copy the command from Details), and resuming it puts
+you in an interactive conversation with the same context — ask what blocked it, or tell it what to
+do next. The tabs it used are closed once the session ends, but it can reopen them.
+
+A job that produces no browser action for `apply.idle-timeout` (3 minutes) is killed and marked
+**Apply failed** with a "Stuck:" note — the usual cause is a native macOS file-picker dialog, which
+freezes the page, and the prompt now tells Claude never to click the button that opens one.
+
+`logs/apply.log` never contains your resume text, your applicant profile, or the prompt — only job
+titles, browser actions, outcomes and timings. The per-job transcripts under `logs/apply/` **do**
+contain the values Claude typed into form fields, because that is exactly what you need to see when
+debugging one; `logs/` is gitignored.
 
 ---
 

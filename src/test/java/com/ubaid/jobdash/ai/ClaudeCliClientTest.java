@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -222,5 +223,80 @@ class ClaudeCliClientTest {
         assertThat(result).isInstanceOf(CliJsonResult.Ok.class);
         String captured = Files.readString(capturedArgs).strip();
         assertThat(captured).contains("--safe-mode").contains("--restricted");
+    }
+
+    @Test
+    void streamingScriptYieldsEventsInOrderAndOkWithStructuredOutput() throws IOException {
+        Path script = stub("stream.sh", """
+                cat > /dev/null
+                echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__claude-in-chrome__navigate","input":{"url":"https://acme.com"}}]}}'
+                echo '{"type":"user","message":{"content":[{"type":"tool_result","is_error":false,"content":[{"type":"text","text":"navigated ok"}]}]}}'
+                echo '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.42,"duration_ms":1500,"structured_output":{"outcome":"submitted","summary":"done"}}'
+                """);
+        ClaudeCliClient client = new ClaudeCliClient(props(script.toString(), Duration.ofSeconds(10)),
+                tools.jackson.databind.json.JsonMapper.builder().build());
+
+        List<ClaudeCliClient.CliEvent> events = new CopyOnWriteArrayList<>();
+        ClaudeCliClient.StreamOptions options = new ClaudeCliClient.StreamOptions(
+                List.of("-p"), Duration.ofSeconds(10), Duration.ofSeconds(10), () -> false);
+
+        CliJsonResult result = client.runStreaming("dummy prompt", "{}", options, events::add);
+
+        assertThat(events).extracting(ClaudeCliClient.CliEvent::kind)
+                .containsExactly("tool", "tool_result", "done");
+        assertThat(events.get(0).text()).contains("mcp__claude-in-chrome__navigate");
+        assertThat(events.get(1).text()).isEqualTo("navigated ok");
+        assertThat(events.get(2).text()).isEqualTo("success");
+
+        assertThat(result).isInstanceOf(CliJsonResult.Ok.class);
+        CliJsonResult.Ok ok = (CliJsonResult.Ok) result;
+        assertThat(ok.structuredOutput().path("outcome").asString()).isEqualTo("submitted");
+        assertThat(ok.costUsd()).isEqualTo(0.42);
+        assertThat(ok.durationMs()).isEqualTo(1500);
+    }
+
+    @Test
+    void idleTimeoutKillsASilentScriptAndReturnsNoActivityMessage() throws IOException {
+        Path script = stub("idle.sh", """
+                cat > /dev/null
+                echo '{"type":"system","subtype":"init","session_id":"abc"}'
+                sleep 30
+                echo '{"type":"result","subtype":"success","is_error":false,"structured_output":{"ok":true}}'
+                """);
+        ClaudeCliClient client = new ClaudeCliClient(props(script.toString(), Duration.ofSeconds(30)),
+                tools.jackson.databind.json.JsonMapper.builder().build());
+
+        ClaudeCliClient.StreamOptions options = new ClaudeCliClient.StreamOptions(
+                List.of("-p"), Duration.ofSeconds(30), Duration.ofSeconds(2), () -> false);
+
+        long start = System.currentTimeMillis();
+        CliJsonResult result = client.runStreaming("dummy prompt", "{}", options, event -> { });
+        long elapsed = System.currentTimeMillis() - start;
+
+        assertThat(result).isInstanceOf(CliJsonResult.Failed.class);
+        assertThat(((CliJsonResult.Failed) result).message()).isEqualTo("no activity from claude for 2s - killed");
+        // Must have been killed near the 2s idle timeout, not left to run the full 30s sleep.
+        assertThat(elapsed).isLessThan(15_000);
+    }
+
+    @Test
+    void throwingListenerDoesNotChangeTheResult() throws IOException {
+        Path script = stub("stream-throwing-listener.sh", """
+                cat > /dev/null
+                echo '{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}'
+                echo '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.01,"duration_ms":100,"structured_output":{"ok":true}}'
+                """);
+        ClaudeCliClient client = new ClaudeCliClient(props(script.toString(), Duration.ofSeconds(10)),
+                tools.jackson.databind.json.JsonMapper.builder().build());
+
+        ClaudeCliClient.StreamOptions options = new ClaudeCliClient.StreamOptions(
+                List.of("-p"), Duration.ofSeconds(10), Duration.ofSeconds(10), () -> false);
+
+        CliJsonResult result = client.runStreaming("dummy prompt", "{}", options, event -> {
+            throw new RuntimeException("listener boom");
+        });
+
+        assertThat(result).isInstanceOf(CliJsonResult.Ok.class);
+        assertThat(((CliJsonResult.Ok) result).structuredOutput().path("ok").asBoolean()).isTrue();
     }
 }

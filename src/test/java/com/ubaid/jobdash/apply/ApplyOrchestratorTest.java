@@ -15,8 +15,12 @@ import com.ubaid.jobdash.store.JobListingRepository;
 import com.ubaid.jobdash.store.ResumeRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -24,6 +28,7 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -37,6 +42,9 @@ class ApplyOrchestratorTest extends AbstractStoreTest {
 
     private final Clock clock = Clock.fixed(Instant.parse("2026-09-17T00:00:00Z"), ZoneOffset.UTC);
 
+    @TempDir
+    Path tempDir;
+
     private ResumeRepository resumeRepository;
 
     @BeforeEach
@@ -45,7 +53,8 @@ class ApplyOrchestratorTest extends AbstractStoreTest {
     }
 
     private ApplyProperties props() {
-        return new ApplyProperties(true, "sonnet", Duration.ofSeconds(10), 60, 2.0, 4000);
+        return new ApplyProperties(true, "sonnet", Duration.ofSeconds(10), 60, 2.0, 4000,
+                Duration.ofMinutes(3), tempDir.resolve("apply-logs").toString());
     }
 
     private ApplyOrchestrator orchestrator(FakeCliClient cli) {
@@ -82,7 +91,11 @@ class ApplyOrchestratorTest extends AbstractStoreTest {
         return jobId;
     }
 
-    /** A fake CLI client whose 3-arg runStructured response is computed by the given function. */
+    /**
+     * A fake CLI client whose 4-arg runStreaming response is computed by the given function; before
+     * returning it, it emits two canned tool events to the listener - the second's text is what a
+     * test can expect to land in {@code last_activity}.
+     */
     private static final class FakeCliClient extends ClaudeCliClient {
         private final AtomicInteger invocations = new AtomicInteger();
         private final List<String> prompts = new ArrayList<>();
@@ -96,12 +109,15 @@ class ApplyOrchestratorTest extends AbstractStoreTest {
         }
 
         @Override
-        public CliJsonResult runStructured(String prompt, String jsonSchema, CliOptions options) {
+        public CliJsonResult runStreaming(String prompt, String jsonSchema, StreamOptions options,
+                                           Consumer<CliEvent> listener) {
             invocations.incrementAndGet();
             synchronized (prompts) {
                 prompts.add(prompt);
                 argsPerCall.add(options.args());
             }
+            listener.accept(new CliEvent("tool", "navigate https://acme.com"));
+            listener.accept(new CliEvent("tool", "click Apply button"));
             return responder.apply(prompt);
         }
 
@@ -281,5 +297,69 @@ class ApplyOrchestratorTest extends AbstractStoreTest {
 
         assertThat(cli.argsPerCall()).hasSize(1);
         assertThat(cli.argsPerCall().get(0)).contains("--chrome");
+    }
+
+    @Test
+    void argsUseStreamJsonWithSessionIdAndNoSessionPersistenceRemoved() throws InterruptedException {
+        long resumeId = insertResume();
+        saveProfile();
+        long runId = newRun();
+        long jobId = insertJob(runId, 10L, "greenhouse");
+
+        FakeCliClient cli = new FakeCliClient(prompt -> ok("needs_review", "stopped before submit"));
+        ApplyOrchestrator orchestrator = orchestrator(cli);
+
+        orchestrator.start(List.of(jobId), resumeId, false);
+        orchestrator.awaitLastBatch();
+
+        List<String> args = cli.argsPerCall().get(0);
+        assertThat(args).contains("--session-id");
+        assertThat(args).contains("stream-json");
+        assertThat(args).doesNotContain("--no-session-persistence");
+    }
+
+    @Test
+    void sessionIdLogPathAndLastActivityAreRecordedAndTranscriptFileIsWritten() throws InterruptedException, IOException {
+        long resumeId = insertResume();
+        saveProfile();
+        long runId = newRun();
+        long jobId = insertJob(runId, 11L, "greenhouse");
+
+        FakeCliClient cli = new FakeCliClient(prompt -> ok("needs_review", "stopped before submit"));
+        ApplyOrchestrator orchestrator = orchestrator(cli);
+
+        long batchId = orchestrator.start(List.of(jobId), resumeId, false);
+        orchestrator.awaitLastBatch();
+
+        JobApplication app = applicationRepository.findByBatch(batchId).get(0);
+        assertThat(app.sessionId()).isNotBlank();
+        assertThat(app.logPath()).isNotBlank();
+        assertThat(app.lastActivity()).isEqualTo("click Apply button");
+
+        Path transcript = Path.of(app.logPath());
+        assertThat(Files.exists(transcript)).isTrue();
+        List<String> lines = Files.readAllLines(transcript);
+        assertThat(lines).anyMatch(l -> l.contains("tool") && l.contains("navigate https://acme.com"));
+        assertThat(lines).anyMatch(l -> l.contains("tool") && l.contains("click Apply button"));
+    }
+
+    @Test
+    void noActivityFailureProducesStuckNotesWithResumeCommand() throws InterruptedException {
+        long resumeId = insertResume();
+        saveProfile();
+        long runId = newRun();
+        long jobId = insertJob(runId, 12L, "greenhouse");
+
+        FakeCliClient cli = new FakeCliClient(
+                prompt -> new CliJsonResult.Failed("no activity from claude for 180s - killed", -1));
+        ApplyOrchestrator orchestrator = orchestrator(cli);
+
+        long batchId = orchestrator.start(List.of(jobId), resumeId, false);
+        orchestrator.awaitLastBatch();
+
+        JobApplication app = applicationRepository.findByBatch(batchId).get(0);
+        assertThat(app.status()).isEqualTo("failed");
+        assertThat(app.notes()).startsWith("Stuck: no activity from claude for 180s - killed.");
+        assertThat(app.notes()).contains("claude --resume " + app.sessionId() + " --chrome");
     }
 }

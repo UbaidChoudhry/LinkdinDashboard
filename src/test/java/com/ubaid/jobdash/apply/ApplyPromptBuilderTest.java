@@ -74,4 +74,22 @@ class ApplyPromptBuilderTest {
         assertThat(prompt).doesNotContain("<p>").doesNotContain("<b>");
         assertThat(prompt).contains("Great role at Acme");
     }
+
+    @Test
+    void promptForbidsTheNativeFileDialogAndDescribesTheFailureOutcome() {
+        String prompt = builder.build(job("<p>Great role</p>"), resume(), Path.of("/data/resumes/1.pdf"),
+                profile(), false, 4000);
+
+        assertThat(prompt).contains("NEVER");
+        assertThat(prompt).contains("file-picker dialog");
+        assertThat(prompt).contains("native file dialog opened");
+    }
+
+    @Test
+    void promptRequiresAConcreteSummaryBeforeFinishing() {
+        String prompt = builder.build(job("<p>Great role</p>"), resume(), Path.of("/data/resumes/1.pdf"),
+                profile(), false, 4000);
+
+        assertThat(prompt).contains("Before finishing, whatever the outcome, set summary");
+    }
 }

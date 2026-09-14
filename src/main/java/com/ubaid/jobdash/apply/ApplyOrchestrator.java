@@ -17,12 +17,18 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.JsonNode;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -36,6 +42,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * up front fails the whole batch. {@link #start} kicks off {@link #runBatch} on a virtual thread
  * and returns immediately with the batch id - the caller (and the UI) polls the {@code apply_batch}
  * row for progress, there is no in-memory registry to keep in sync.
+ * <p>
+ * Each non-LinkedIn job's CLI call is a {@code --output-format stream-json} run with its own
+ * generated {@code --session-id}, so it stays resumable ({@code claude --resume <id> --chrome}) and
+ * observable in real time: every event the CLI emits is appended to a per-job transcript file
+ * under {@code apply.transcript-dir} (default {@code logs/apply/}) as it happens, rather than only
+ * being known once the whole call exits. <b>The per-job transcript WILL contain values Claude
+ * typed into form fields</b> - that is precisely what the user needs to debug a stuck application
+ * (the applicant's name, email, work-authorization answer, etc. can end up in a tool call's
+ * arguments) - {@code logs/} is gitignored, and this is a deliberate tradeoff distinct from the
+ * prompt/resume/profile text, which must still never reach {@code apply.log}.
  */
 @Service
 public class ApplyOrchestrator {
@@ -48,6 +64,11 @@ public class ApplyOrchestrator {
      * through this</b> - title, company, outcome, cost and timing only.
      */
     private static final Logger applyLog = LoggerFactory.getLogger("jobdash.apply");
+
+    /** {@code HH:mm:ss} in the machine's local zone - the transcript is read by a person alongside
+     * {@code logs/apply.log}, which logback stamps in local time; UTC here made the two disagree. */
+    private static final DateTimeFormatter TRANSCRIPT_TIME =
+            DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault());
 
     private final ClaudeCliClient cliClient;
     private final ApplyProperties properties;
@@ -203,19 +224,24 @@ public class ApplyOrchestrator {
                     Instant startedAt = clock.instant();
                     applicationRepository.update(applicationId, "filling", "", 0.0, startedAt, null);
 
+                    String sessionId = UUID.randomUUID().toString();
+                    Path transcriptPath = ensureTranscriptDir().resolve(
+                            "batch-" + batchId + "-job-" + jobId + ".log");
+                    applicationRepository.setSession(applicationId, sessionId, transcriptPath.toString());
+
                     Path resumeAbsolutePath = Path.of(resume.storedPath()).toAbsolutePath();
                     String prompt = promptBuilder.build(job, resume, resumeAbsolutePath, profile, submit,
                             properties.maxDescriptionChars());
-                    List<String> args = chromeArgs(properties, ApplyPromptBuilder.APPLY_JSON_SCHEMA);
-                    ClaudeCliClient.CliOptions options = new ClaudeCliClient.CliOptions(
-                            args, properties.timeout(), cancelled::get);
+                    List<String> args = chromeArgs(properties, ApplyPromptBuilder.APPLY_JSON_SCHEMA, sessionId);
+                    ClaudeCliClient.StreamOptions options = new ClaudeCliClient.StreamOptions(
+                            args, properties.timeout(), properties.idleTimeout(), cancelled::get);
 
                     long callStart = System.nanoTime();
-                    CliJsonResult result = cliClient.runStructured(prompt, ApplyPromptBuilder.APPLY_JSON_SCHEMA,
-                            options);
+                    CliJsonResult result = cliClient.runStreaming(prompt, ApplyPromptBuilder.APPLY_JSON_SCHEMA,
+                            options, event -> onEvent(jobId, applicationId, transcriptPath, event));
                     long tookMs = (System.nanoTime() - callStart) / 1_000_000;
 
-                    Outcome outcome = mapResult(result);
+                    Outcome outcome = mapResult(result, sessionId);
                     totalCostUsd += outcome.costUsd();
                     switch (outcome.status()) {
                         case "submitted" -> submittedCount++;
@@ -253,8 +279,57 @@ public class ApplyOrchestrator {
                 skippedCount, String.format("%.4f", totalCostUsd));
     }
 
+    /**
+     * Delivered one {@link ClaudeCliClient.CliEvent} at a time while a job's streaming CLI call is
+     * in flight: appends a timestamped line to the per-job transcript, mirrors {@code tool}/
+     * {@code tool_error} events (INFO) and {@code text} events (DEBUG) to {@code jobdash.apply},
+     * and records the latest activity text on the row so the UI can show live progress. Never
+     * throws - {@link ClaudeCliClient#runStreaming} already isolates listener failures, but every
+     * step here (file I/O, the repository call) is defensive on top of that.
+     */
+    private void onEvent(long jobId, long applicationId, Path transcriptPath, ClaudeCliClient.CliEvent event) {
+        String line = TRANSCRIPT_TIME.format(clock.instant()) + " " + event.kind() + " " + event.text();
+        appendToTranscript(transcriptPath, line);
+
+        switch (event.kind()) {
+            case "tool", "tool_error" -> applyLog.info("job {} {} {}", jobId, event.kind(), event.text());
+            case "text" -> applyLog.debug("job {} {} {}", jobId, event.kind(), event.text());
+            default -> {
+                // "done" (the final result line) - already surfaced via the batch's own outcome log.
+            }
+        }
+
+        if ("tool".equals(event.kind()) || "tool_error".equals(event.kind()) || "text".equals(event.kind())) {
+            try {
+                applicationRepository.setLastActivity(applicationId, event.text());
+            } catch (RuntimeException e) {
+                log.debug("failed to record last activity for application {}: {}", applicationId, e.toString());
+            }
+        }
+    }
+
+    private static void appendToTranscript(Path transcriptPath, String line) {
+        try {
+            Files.writeString(transcriptPath, line + System.lineSeparator(),
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (IOException e) {
+            log.debug("failed to append to apply transcript {}: {}", transcriptPath, e.toString());
+        }
+    }
+
+    /** Creates {@code apply.transcript-dir} if it doesn't already exist, and returns it. */
+    private Path ensureTranscriptDir() {
+        Path dir = Path.of(properties.transcriptDir());
+        try {
+            Files.createDirectories(dir);
+        } catch (IOException e) {
+            log.debug("failed to create apply transcript dir {}: {}", dir, e.toString());
+        }
+        return dir;
+    }
+
     /** Maps one CLI result into a status/notes/cost triple, never throwing. */
-    private static Outcome mapResult(CliJsonResult result) {
+    private static Outcome mapResult(CliJsonResult result, String sessionId) {
         return switch (result) {
             case CliJsonResult.Ok ok -> {
                 JsonNode structured = ok.structuredOutput();
@@ -275,9 +350,22 @@ public class ApplyOrchestrator {
             }
             case CliJsonResult.Timeout timeout ->
                     new Outcome("failed", "claude CLI timed out after " + timeout.afterMs() + "ms", 0.0);
-            case CliJsonResult.Failed failed -> new Outcome("failed", failed.message(), 0.0);
+            case CliJsonResult.Failed failed -> new Outcome("failed", stuckNotes(failed.message(), sessionId), 0.0);
             case CliJsonResult.CliNotFound notFound -> new Outcome("failed", notFound.message(), 0.0);
         };
+    }
+
+    /**
+     * A {@code Failed} whose message starts with "no activity" (the idle-timeout kill) gets a
+     * "Stuck:" note pointing at the resume command, so the UI can surface it directly - every
+     * other failure message is passed through unchanged.
+     */
+    private static String stuckNotes(String message, String sessionId) {
+        if (message == null || !message.startsWith("no activity")) {
+            return message;
+        }
+        return "Stuck: " + message + ". Resume the session in a terminal to see the page: "
+                + "claude --resume " + sessionId + " --chrome";
     }
 
     private static String joinUnanswered(JsonNode unanswered) {
@@ -292,16 +380,19 @@ public class ApplyOrchestrator {
     /**
      * The CLI flag list for the Chrome-driving apply call, isolated in its own package-visible
      * static method so it can be adjusted after a live probe without touching the rest of the
-     * orchestration logic.
+     * orchestration logic. {@code stream-json}/{@code --verbose} (rather than the whole-blob
+     * {@code json} format) is what makes live events possible, and {@code --session-id} (with no
+     * {@code --no-session-persistence}) is what makes the run resumable afterward.
      */
-    static List<String> chromeArgs(ApplyProperties p, String jsonSchema) {
+    static List<String> chromeArgs(ApplyProperties p, String jsonSchema, String sessionId) {
         return List.of(
                 "-p",
                 "--chrome",
                 "--model", p.model(),
-                "--output-format", "json",
+                "--output-format", "stream-json",
+                "--verbose",
                 "--json-schema", jsonSchema,
-                "--no-session-persistence",
+                "--session-id", sessionId,
                 "--strict-mcp-config",
                 "--tools", "Read",
                 "--allowedTools", "mcp__claude-in-chrome", "Read",

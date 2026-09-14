@@ -6,9 +6,11 @@ import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -16,6 +18,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 /**
  * Runs the local {@code claude} CLI, in restricted/safe mode with no session persistence, to
@@ -48,6 +51,25 @@ public class ClaudeCliClient {
      * kill an in-flight process promptly instead of only at the timeout.
      */
     public record CliOptions(List<String> args, Duration timeout, BooleanSupplier cancelled) {
+    }
+
+    /**
+     * One event surfaced while a {@link #runStreaming} call is in flight. {@code kind} is one of
+     * {@code text} (an assistant text chunk), {@code tool} (a tool_use call), {@code tool_result} /
+     * {@code tool_error} (a tool's result, split by {@code is_error}), or {@code done} (the final
+     * {@code result} line, carrying its {@code subtype}). {@code text} is always truncated to the
+     * first 300 characters of whatever the underlying stream line carried.
+     */
+    public record CliEvent(String kind, String text) {
+    }
+
+    /**
+     * Per-call overrides for {@link #runStreaming}, the stream-json analogue of {@link CliOptions}:
+     * {@code idleTimeout} additionally kills the process (independent of {@code timeout}) when no
+     * stdout line has arrived for that long - guards against a frozen page (e.g. a native OS file
+     * dialog) that leaves the CLI itself alive but silent.
+     */
+    public record StreamOptions(List<String> args, Duration timeout, Duration idleTimeout, BooleanSupplier cancelled) {
     }
 
     public ClaudeCliClient(AiProperties properties, ObjectMapper objectMapper) {
@@ -209,19 +231,147 @@ public class ClaudeCliClient {
     private CliJsonResult parse(String stdout, String stderr, int exitCode) {
         try {
             JsonNode root = objectMapper.readTree(stdout);
-            boolean isError = root.path("is_error").asBoolean(false);
-            JsonNode structured = root.get("structured_output");
-            if (isError || structured == null || structured.isNull()) {
-                String fallback = stderr.isBlank() ? "claude CLI reported an error" : stderr;
-                String message = root.path("result").asString(fallback);
-                return new CliJsonResult.Failed(message, exitCode);
-            }
-            double costUsd = root.path("total_cost_usd").asDouble(0.0);
-            long durationMs = root.path("duration_ms").asLong(0L);
-            return new CliJsonResult.Ok(structured, costUsd, durationMs);
+            return buildResult(root, stderr, exitCode);
         } catch (RuntimeException e) {
             log.debug("failed to parse claude CLI output: {}", e.toString());
             return new CliJsonResult.Failed("could not parse claude CLI output: " + e.getMessage(), exitCode);
+        }
+    }
+
+    /**
+     * Runs one {@code --output-format stream-json} CLI invocation, delivering a {@link CliEvent}
+     * to {@code listener} for every assistant text chunk, tool call, and tool result as they
+     * arrive on stdout, rather than only at exit — so an in-flight (or cancelled/killed) call
+     * leaves a trail of what Claude was doing. The final return value is built from the stream's
+     * last {@code result} line exactly like {@link #runStructured(String, String, CliOptions)}
+     * builds it from the whole-blob {@code json} format.
+     *
+     * <p>Same process/stdin/stderr-drain discipline as {@link #runStructured(String, String, CliOptions)}:
+     * never throws, stderr is drained concurrently with stdout so a full pipe can't deadlock the
+     * call, and cancellation kills the process and returns {@code Failed("cancelled", -1)}. In
+     * addition, the process is killed and {@code Failed("no activity from claude for <n>s - killed", -1)}
+     * is returned if no stdout line arrives for {@code options.idleTimeout()}.
+     */
+    public CliJsonResult runStreaming(String prompt, String jsonSchema, StreamOptions options,
+                                       Consumer<CliEvent> listener) {
+        List<String> command = new ArrayList<>();
+        command.add(properties.cliPath());
+        command.addAll(options.args());
+
+        Process process;
+        try {
+            process = new ProcessBuilder(command).start();
+        } catch (IOException e) {
+            String msg = String.valueOf(e.getMessage());
+            if (msg.contains("No such file") || msg.contains("error=2")) {
+                return new CliJsonResult.CliNotFound(
+                        "Claude CLI not found at '" + properties.cliPath()
+                                + "'. Install the Claude CLI, or set CLAUDE_CLI_PATH / ai.cli-path.");
+            }
+            log.debug("failed to start claude CLI: {}", msg);
+            return new CliJsonResult.Failed("failed to start claude CLI: " + msg, -1);
+        }
+
+        // Drain stdout and stderr concurrently with the process running, on separate threads,
+        // so a full stderr pipe can never block us while we wait on stdout (or vice versa).
+        LineDrain stdoutDrain = new LineDrain(process.getInputStream(), objectMapper, listener);
+        StreamDrain stderrDrain = new StreamDrain(process.getErrorStream());
+        Thread stdoutThread = new Thread(stdoutDrain, "claude-cli-stdout-stream");
+        Thread stderrThread = new Thread(stderrDrain, "claude-cli-stderr");
+        stdoutThread.start();
+        stderrThread.start();
+
+        try (OutputStream stdin = process.getOutputStream()) {
+            stdin.write(prompt.getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            log.debug("failed writing prompt to claude CLI stdin: {}", e.toString());
+        }
+
+        // Waited for in 1-second slices, as in runStructured, so cancellation and idle-timeout
+        // are both noticed promptly rather than only at the overall deadline.
+        long deadlineNanos = System.nanoTime() + options.timeout().toNanos();
+        long idleNanos = options.idleTimeout().toNanos();
+        boolean finished = false;
+        boolean cancelled = false;
+        boolean idleKilled = false;
+        try {
+            while (!finished && System.nanoTime() < deadlineNanos) {
+                if (options.cancelled().getAsBoolean()) {
+                    cancelled = true;
+                    break;
+                }
+                if (System.nanoTime() - stdoutDrain.lastEventNanos() > idleNanos) {
+                    idleKilled = true;
+                    break;
+                }
+                long remainingNanos = deadlineNanos - System.nanoTime();
+                long sliceMs = Math.min(TimeUnit.SECONDS.toMillis(1), TimeUnit.NANOSECONDS.toMillis(remainingNanos));
+                finished = process.waitFor(Math.max(0, sliceMs), TimeUnit.MILLISECONDS);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            process.destroyForcibly();
+            return new CliJsonResult.Failed("interrupted while waiting for claude CLI", -1);
+        }
+
+        if (cancelled) {
+            process.destroyForcibly();
+            joinQuietly(stdoutThread);
+            joinQuietly(stderrThread);
+            return new CliJsonResult.Failed("cancelled", -1);
+        }
+
+        if (idleKilled) {
+            process.destroyForcibly();
+            joinQuietly(stdoutThread);
+            joinQuietly(stderrThread);
+            return new CliJsonResult.Failed(
+                    "no activity from claude for " + options.idleTimeout().toSeconds() + "s - killed", -1);
+        }
+
+        if (!finished) {
+            process.destroyForcibly();
+            joinQuietly(stdoutThread);
+            joinQuietly(stderrThread);
+            return new CliJsonResult.Timeout(options.timeout().toMillis());
+        }
+
+        joinQuietly(stdoutThread);
+        joinQuietly(stderrThread);
+        int exitCode = process.exitValue();
+        String stderr = stderrDrain.text();
+
+        JsonNode resultLine = stdoutDrain.lastResult();
+        if (resultLine == null) {
+            String message = stderr.isBlank() ? "claude CLI produced no result" : stderr;
+            return new CliJsonResult.Failed(message, exitCode);
+        }
+        return buildResult(resultLine, stderr, exitCode);
+    }
+
+    /** Shared by {@link #parse} and {@link #runStreaming}: the {@code result}-line-shaped payload. */
+    private static CliJsonResult buildResult(JsonNode root, String stderr, int exitCode) {
+        boolean isError = root.path("is_error").asBoolean(false);
+        JsonNode structured = root.get("structured_output");
+        if (isError || structured == null || structured.isNull()) {
+            String fallback = stderr.isBlank() ? "claude CLI reported an error" : stderr;
+            String message = root.path("result").asString(fallback);
+            return new CliJsonResult.Failed(message, exitCode);
+        }
+        double costUsd = root.path("total_cost_usd").asDouble(0.0);
+        long durationMs = root.path("duration_ms").asLong(0L);
+        return new CliJsonResult.Ok(structured, costUsd, durationMs);
+    }
+
+    /**
+     * Delivers one event to the listener, never letting a listener's own bug break the CLI run
+     * it's merely observing.
+     */
+    private static void publishQuietly(Consumer<CliEvent> listener, CliEvent event) {
+        try {
+            listener.accept(event);
+        } catch (RuntimeException e) {
+            log.debug("claude CLI event listener threw: {}", e.toString());
         }
     }
 
@@ -255,6 +405,132 @@ public class ClaudeCliClient {
 
         String text() {
             return text;
+        }
+    }
+
+    /**
+     * Reads stdout LINE BY LINE (rather than to completion, like {@link StreamDrain}) on its own
+     * thread, parsing each line as one {@code stream-json} event, delivering 0..n {@link CliEvent}s
+     * to the listener as they arrive, and retaining the final {@code result} line for the caller
+     * to build its return value from. A line that isn't valid JSON is ignored (logged at debug) -
+     * it never breaks the run.
+     */
+    private static final class LineDrain implements Runnable {
+        private final InputStream in;
+        private final ObjectMapper objectMapper;
+        private final Consumer<CliEvent> listener;
+        private volatile JsonNode lastResult;
+        private volatile long lastEventNanos = System.nanoTime();
+
+        LineDrain(InputStream in, ObjectMapper objectMapper, Consumer<CliEvent> listener) {
+            this.in = in;
+            this.objectMapper = objectMapper;
+            this.listener = listener;
+        }
+
+        @Override
+        public void run() {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    lastEventNanos = System.nanoTime();
+                    processLine(line);
+                }
+            } catch (IOException e) {
+                log.debug("error draining claude CLI stdout stream: {}", e.toString());
+            }
+        }
+
+        private void processLine(String line) {
+            if (line.isBlank()) {
+                return;
+            }
+            JsonNode node;
+            try {
+                node = objectMapper.readTree(line);
+            } catch (RuntimeException e) {
+                log.debug("ignoring non-JSON line from claude CLI stdout: {}", e.toString());
+                return;
+            }
+            switch (node.path("type").asString("")) {
+                case "assistant" -> emitAssistantEvents(node);
+                case "user" -> emitUserEvents(node);
+                case "result" -> {
+                    lastResult = node;
+                    publishQuietly(listener, new CliEvent("done", node.path("subtype").asString("")));
+                }
+                default -> {
+                    // system/init, rate_limit_event, and anything else we don't yet know about.
+                }
+            }
+        }
+
+        private void emitAssistantEvents(JsonNode node) {
+            JsonNode content = node.path("message").path("content");
+            if (!content.isArray()) {
+                return;
+            }
+            for (JsonNode item : content) {
+                switch (item.path("type").asString("")) {
+                    case "text" -> publishQuietly(listener, new CliEvent("text", truncate(item.path("text").asString(""))));
+                    case "tool_use" -> {
+                        String name = item.path("name").asString("");
+                        JsonNode input = item.get("input");
+                        String rendered = name + " " + (input == null ? "{}" : input.toString());
+                        publishQuietly(listener, new CliEvent("tool", truncate(rendered)));
+                    }
+                    default -> {
+                        // ignore other content block types
+                    }
+                }
+            }
+        }
+
+        private void emitUserEvents(JsonNode node) {
+            JsonNode content = node.path("message").path("content");
+            if (!content.isArray()) {
+                return;
+            }
+            for (JsonNode item : content) {
+                if (!"tool_result".equals(item.path("type").asString(""))) {
+                    continue;
+                }
+                boolean isError = item.path("is_error").asBoolean(false);
+                String text = extractToolResultText(item.get("content"));
+                publishQuietly(listener, new CliEvent(isError ? "tool_error" : "tool_result", truncate(text)));
+            }
+        }
+
+        /** {@code tool_result}'s own content is either a plain string or {@code [{"type":"text","text":...}]}. */
+        private static String extractToolResultText(JsonNode content) {
+            if (content == null || content.isNull()) {
+                return "";
+            }
+            if (content.isString()) {
+                return content.asString("");
+            }
+            if (content.isArray()) {
+                StringBuilder text = new StringBuilder();
+                for (JsonNode item : content) {
+                    if ("text".equals(item.path("type").asString(""))) {
+                        text.append(item.path("text").asString(""));
+                    }
+                }
+                return text.toString();
+            }
+            return content.toString();
+        }
+
+        private static String truncate(String s) {
+            return s.length() <= 300 ? s : s.substring(0, 300);
+        }
+
+        JsonNode lastResult() {
+            return lastResult;
+        }
+
+        long lastEventNanos() {
+            return lastEventNanos;
         }
     }
 }

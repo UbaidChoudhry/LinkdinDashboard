@@ -97,6 +97,23 @@ public class ApplicationRepository {
         return byJobId;
     }
 
+    /** Records the CLI session id and transcript path for a job, set once before the CLI call starts. */
+    public void setSession(long id, String sessionId, String logPath) {
+        client.sql("update job_application set session_id = :sessionId, log_path = :logPath where id = :id")
+                .param("sessionId", sessionId)
+                .param("logPath", logPath)
+                .param("id", id)
+                .update();
+    }
+
+    /** Records the latest live activity text for a job, so the UI can show progress mid-run. */
+    public void setLastActivity(long id, String text) {
+        client.sql("update job_application set last_activity = :text where id = :id")
+                .param("text", text)
+                .param("id", id)
+                .update();
+    }
+
     static JobApplication mapRow(ResultSet rs, int rowNum) throws SQLException {
         return new JobApplication(
                 rs.getLong("id"),
@@ -106,7 +123,10 @@ public class ApplicationRepository {
                 rs.getString("notes"),
                 rs.getDouble("cost_usd"),
                 Timestamps.parse(rs.getString("started_at")),
-                Timestamps.parse(rs.getString("finished_at"))
+                Timestamps.parse(rs.getString("finished_at")),
+                rs.getString("session_id"),
+                rs.getString("last_activity"),
+                rs.getString("log_path")
         );
     }
 }

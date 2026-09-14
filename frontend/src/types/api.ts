@@ -295,6 +295,14 @@ export interface JobApplicationResponse {
   costUsd: number;
   startedAt: string | null;
   finishedAt: string | null;
+  /** Claude Code session id backing this job's attempt, if any. Lets the user continue that
+   * exact session in a terminal with `claude --resume <sessionId> --chrome`. */
+  sessionId: string | null;
+  /** The most recent thing Claude did, e.g. `tool mcp__claude-in-chrome__find {...}` or
+   * `tool_error ...`. Empty when there's nothing to show yet. */
+  lastActivity: string;
+  /** Whether a transcript is available at the log endpoint below. */
+  hasLog: boolean;
 }
 
 /** Mirrors web/dto/ApplyBatchResponse.java. */

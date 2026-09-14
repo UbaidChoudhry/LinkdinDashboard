@@ -1334,6 +1334,68 @@ tr.source-dead {
   color: var(--text);
 }
 
+/* The running-batch line: text (title + activity) beside the Cancel button. Top-aligned because
+   the text can now wrap to two lines (job line + activity line) while Cancel stays one line. */
+.apply-progress {
+  align-items: flex-start;
+}
+
+/* Claude's last action while a job is filling. Monospace/muted so it reads as a log line, not
+   prose; clipped to one line with an ellipsis and capped so it never widens the bucket bar. */
+.apply-activity {
+  display: block;
+  max-width: min(480px, 60vw);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--text);
+  opacity: 0.7;
+}
+
+/* Details toggle: a bordered block below the bucket bar, full width, wraps freely. Sits as an
+   ordinary flow element above .job-table-scroll - no fixed height, so it never disturbs the
+   results table's fill chain. */
+.apply-details {
+  flex-basis: 100%;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  font-size: 13px;
+  color: var(--text);
+}
+
+.apply-details-row {
+  padding: 8px 0;
+  overflow-wrap: anywhere;
+}
+
+.apply-details-row + .apply-details-row {
+  border-top: 1px solid var(--border);
+}
+
+.apply-details-row .apply-activity {
+  display: block;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.apply-details code {
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--accent-bg);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
 /* ---------------------------------------------------------------------------
    AI scan progress panel
    --------------------------------------------------------------------------- */

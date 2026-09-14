@@ -145,3 +145,8 @@ apply:
   max-budget-usd: 2.0
   # Job descriptions are truncated to this many characters before being sent to the CLI.
   max-description-chars: 4000
+  # A job with no CLI event for this long is killed and marked failed - e.g. a native OS file
+  # dialog has frozen the page.
+  idle-timeout: 3m
+  # Per-job stream-json transcripts (live observability + resumable sessions) are written here.
+  transcript-dir: logs/apply

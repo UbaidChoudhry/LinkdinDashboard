@@ -65,7 +65,13 @@ public class ApplyPromptBuilder {
                    form (it may be on the same page or a separate ATS page).
                 3. Locate the resume/CV upload field on the application form and upload the file at
                    the absolute path given below (RESUME FILE PATH). Do not type or paste resume text
-                   into a file upload field - use the actual file.
+                   into a file upload field - use the actual file. Use the browser file-upload tool on
+                   the resume <input type=file> element (it may be hidden behind an Attach / Upload /
+                   Browse / Choose file button; find the input with the page-reading tools). NEVER
+                   click a button that opens the operating system's file-picker dialog - that native
+                   dialog freezes the page and this run will be killed as stuck. If a native file
+                   dialog is already open, stop and set outcome failed with summary
+                   "native file dialog opened".
                 4. Fill every other form field. For each field, first check the APPLICANT PROFILE
                    below; if the profile doesn't answer it, check the RESUME TEXT below. If NEITHER
                    the profile nor the resume answers a question, leave that field blank and add the
@@ -88,6 +94,9 @@ public class ApplyPromptBuilder {
 
                 Always fill in "summary" with a short, concrete account of what happened (what you
                 filled, what stage you reached, and why, if it didn't reach a normal ending).
+
+                Before finishing, whatever the outcome, set summary to a concrete account: which page
+                you reached, which fields you filled, which action failed and the exact error text.
 
                 JOB URL: %s
                 TITLE: %s
