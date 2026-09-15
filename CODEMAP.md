@@ -496,5 +496,6 @@ Adzuna / h1bapi sources are driven through `StubHttpClient`, `SalaryRateLimiter`
 | Set up salary API keys | `SALARY_SETUP.md` — copy `.env.example` → `.env` |
 | Change how Claude fills out an application | `apply/ApplyPromptBuilder.java` — the prompt + `--json-schema` |
 | Change the CLI flags for the browser-driving invocation | `apply/ApplyOrchestrator.chromeArgs` |
+| Change which page Claude opens to apply (per ATS) | `apply/ApplyUrlResolver.java` - the direct, iframe-free form URL per source |
 | Find out why an application failed or got stuck | the row's **Details** in the Results tab: its notes, the last browser action, **View log** (the per-job transcript under `logs/apply/`), and the `claude --resume <sessionId> --chrome` command to continue that session and ask Claude directly. `logs/apply.log` has one line per browser action across all jobs |
 | Turn "Apply with Claude" off | `application.yml` → `apply.enabled: false` |

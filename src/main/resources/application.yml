@@ -138,11 +138,14 @@ apply:
   # resume, review/submit) takes much longer than a text-only scan call.
   timeout: 10m
   # Upper bound on browser actions (tool calls) Claude may take filling out one application -
-  # guards against an unresponsive page looping the agent indefinitely.
-  max-turns: 60
+  # guards against an unresponsive page looping the agent indefinitely. A real Greenhouse form
+  # with education, EEO, and custom questions took ~60 actions to get two-thirds through; 150
+  # leaves headroom to actually finish one.
+  max-turns: 150
   # Per-job cost ceiling passed to the CLI's own --max-budget-usd, so a single stuck application
   # can't run away; the batch's own summary sums the CLI-reported cost per job, never estimated.
-  max-budget-usd: 2.0
+  # Must cover that many actions, so it's raised alongside max-turns above.
+  max-budget-usd: 4.0
   # Job descriptions are truncated to this many characters before being sent to the CLI.
   max-description-chars: 4000
   # A job with no CLI event for this long is killed and marked failed - e.g. a native OS file

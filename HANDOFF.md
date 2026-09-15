@@ -1141,3 +1141,61 @@ why. Two changes, both verified with probes before building:
 The per-job transcripts under `logs/apply/` deliberately do **not** - they record the tool inputs,
 which include whatever Claude typed into the form, because a transcript without the typed values
 cannot explain a stuck form. `logs/` is gitignored; say so in any doc that points people at them.
+
+### The first real transcript: forms inside cross-origin iframes (2026-09-20)
+
+With streaming in place the original stall reproduced in full view (batch 2, `logs/apply/`,
+$0.88): Claude reached Stripe's application page, filled name / email / phone / location, and then
+could not find the resume field - **Stripe embeds the Greenhouse form in a cross-origin iframe**,
+and the extension's `find` / `read_page` only see the host page's accessibility tree. No ref for
+the `<input type=file>` means the upload tool has nothing to target, and the one visible route (the
+"Attach" button) opens the macOS file picker, which the prompt forbids. It stopped cleanly with a
+precise `summary`, which is exactly the behaviour the observability work was for.
+
+**The fix is a URL, not a browser trick.** Greenhouse serves every board's form as a standalone,
+iframe-free page at `https://job-boards.greenhouse.io/embed/job_app?for=<slug>&token=<jobId>`
+(verified for Stripe: 200, `id="resume" type="file"`, "Submit application" - even though Stripe
+redirects the *hosted* board URL `job-boards.greenhouse.io/stripe/jobs/<id>` back to its own site).
+Lever has `<jobUrl>/apply` (verified). `apply/ApplyUrlResolver` computes this **direct form URL**
+per job and the prompt tells Claude to open it first, falling back to the posting's own Apply link
+only if it fails. The Greenhouse slug comes from `jobUrl` when it is a hosted board URL, otherwise
+from `ats_company` by company name (`AtsCompanyRepository.findByAtsAndCompany`; every Greenhouse
+company in the database matched, 23/23). Workday has no such URL - see the limitation below.
+
+Two smaller findings from the same transcript, now prompt rules: the extension's `type` action
+sometimes does not register (Claude had to fall back to `key`, and then to re-verify each field),
+so the prompt says to prefer element refs over coordinates and to confirm each typed value; and
+the transcript's timestamps are now local time, like `apply.log`, after the first one came out in
+UTC next to a local-time log.
+
+**Known limitation: Workday requires a candidate account.** Four of the five jobs in the user's
+first batch were Workday postings. Workday's apply flow ("Apply Manually") sits behind a sign-in /
+create-account wall per tenant. The prompt tells Claude to stop with `failed / "Workday account
+required"` rather than create accounts on the user's behalf. Supporting Workday properly means
+deciding whether the applicant profile should hold a password for those accounts and whether
+Claude may create them - a product decision, deliberately not made here.
+
+### Second transcript: the upload works, then the laptop went to sleep (2026-09-20)
+
+Batch 3 - same Stripe posting, now sent to the direct Greenhouse form URL - **uploaded the resume
+on the 12th action** (`file_upload` on `ref_745`, "Uploaded 1 file(s) to file input: 3.pdf"),
+handled Greenhouse re-rendering the country dropdown after the upload, filled school / degree /
+residence, and answered the work-authorization and sponsorship questions from the profile. Then
+it ended `error_max_turns` at 60 actions with the form about two-thirds done, and the row said
+"claude CLI reported an error" at $0.00. Three things learned:
+
+- **`apply.max-turns: 60` was a guess and a real form needs more.** Now 150, with
+  `max-budget-usd` raised to 4.0 to match. A max-turns or max-budget ending is now reported as
+  what it is, keeps the CLI-reported cost (`CliJsonResult.Failed` gained a `costUsd`), and the
+  row's notes carry the `claude --resume <sessionId> --chrome` command - a partly filled form is
+  the best possible case for resuming the session and telling Claude to keep going.
+- **A 1355-second gap between two actions was the Mac sleeping, not a hung run.** `apply.log`
+  timed the job at 272 s of process time while the transcript spans 26 minutes of wall clock:
+  `System.nanoTime()` on macOS does not advance during sleep, so neither the 10-minute deadline
+  nor the 3-minute idle watchdog could fire, and the first action after waking failed with
+  "Couldn't determine which page this action targets" until the extension re-found its tab.
+  `ApplyOrchestrator` now runs `/usr/bin/caffeinate -i` for the lifetime of a batch (idle sleep
+  only; the display may still sleep). The timeouts are deliberately left on monotonic time - a
+  sleeping laptop should pause a job, not fail it.
+- **The extension's `type` action is unreliable on this form; `key` was not.** Already a prompt
+  rule ("confirm each typed value") since batch 2; batch 3 did exactly that and lost no fields.

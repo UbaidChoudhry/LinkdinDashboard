@@ -10,6 +10,7 @@ import com.ubaid.jobdash.domain.JobListing;
 import com.ubaid.jobdash.domain.Resume;
 import com.ubaid.jobdash.domain.UserStatus;
 import com.ubaid.jobdash.store.AbstractStoreTest;
+import com.ubaid.jobdash.store.AtsCompanyRepository;
 import com.ubaid.jobdash.store.JobCardInsert;
 import com.ubaid.jobdash.store.JobListingRepository;
 import com.ubaid.jobdash.store.ResumeRepository;
@@ -46,10 +47,12 @@ class ApplyOrchestratorTest extends AbstractStoreTest {
     Path tempDir;
 
     private ResumeRepository resumeRepository;
+    private AtsCompanyRepository atsCompanyRepository;
 
     @BeforeEach
     void setUpAdditional() {
         resumeRepository = new ResumeRepository(client);
+        atsCompanyRepository = new AtsCompanyRepository(client);
     }
 
     private ApplyProperties props() {
@@ -58,7 +61,8 @@ class ApplyOrchestratorTest extends AbstractStoreTest {
     }
 
     private ApplyOrchestrator orchestrator(FakeCliClient cli) {
-        return new ApplyOrchestrator(cli, props(), new ApplyPromptBuilder(), applyBatchRepository,
+        return new ApplyOrchestrator(cli, props(), new ApplyPromptBuilder(),
+                new ApplyUrlResolver(atsCompanyRepository), applyBatchRepository,
                 applicationRepository, jobListingRepository, resumeRepository, applicantProfileRepository, clock);
     }
 
@@ -344,6 +348,25 @@ class ApplyOrchestratorTest extends AbstractStoreTest {
     }
 
     @Test
+    void greenhouseJobPromptContainsDirectApplyFormUrlResolvedFromCatalog() throws InterruptedException {
+        long resumeId = insertResume();
+        saveProfile();
+        atsCompanyRepository.insertOne("greenhouse", "acme", "Acme Corp", null, null, true, "active",
+                Instant.now());
+        long runId = newRun();
+        long jobId = insertJob(runId, 13L, "greenhouse");
+
+        FakeCliClient cli = new FakeCliClient(prompt -> ok("needs_review", "stopped before submit"));
+        ApplyOrchestrator orchestrator = orchestrator(cli);
+
+        orchestrator.start(List.of(jobId), resumeId, false);
+        orchestrator.awaitLastBatch();
+
+        assertThat(cli.prompts()).hasSize(1);
+        assertThat(cli.prompts().get(0)).contains("DIRECT APPLY FORM URL: https://job-boards.greenhouse.io/embed/job_app?for=");
+    }
+
+    @Test
     void noActivityFailureProducesStuckNotesWithResumeCommand() throws InterruptedException {
         long resumeId = insertResume();
         saveProfile();
@@ -361,5 +384,99 @@ class ApplyOrchestratorTest extends AbstractStoreTest {
         assertThat(app.status()).isEqualTo("failed");
         assertThat(app.notes()).startsWith("Stuck: no activity from claude for 180s - killed.");
         assertThat(app.notes()).contains("claude --resume " + app.sessionId() + " --chrome");
+    }
+
+    @Test
+    void errorMaxTurnsFailureProducesResumeNoteAndCostFlowsToJobAndBatch() throws InterruptedException {
+        long resumeId = insertResume();
+        saveProfile();
+        long runId = newRun();
+        long jobId = insertJob(runId, 14L, "greenhouse");
+
+        FakeCliClient cli = new FakeCliClient(
+                prompt -> new CliJsonResult.Failed("claude stopped early: error_max_turns", -1, 1.25));
+        ApplyOrchestrator orchestrator = orchestrator(cli);
+
+        long batchId = orchestrator.start(List.of(jobId), resumeId, false);
+        orchestrator.awaitLastBatch();
+
+        JobApplication app = applicationRepository.findByBatch(batchId).get(0);
+        assertThat(app.status()).isEqualTo("failed");
+        assertThat(app.notes()).contains(
+                "Ran out of browser actions (apply.max-turns = " + props().maxTurns() + ")");
+        assertThat(app.notes()).contains("mostly filled");
+        assertThat(app.notes()).contains("claude --resume " + app.sessionId() + " --chrome");
+        assertThat(app.costUsd()).isEqualTo(1.25);
+
+        assertThat(applyBatchRepository.findById(batchId).orElseThrow().costUsd()).isEqualTo(1.25);
+    }
+
+    @Test
+    void errorMaxBudgetFailureProducesResumeNoteAndCostFlowsToJobAndBatch() throws InterruptedException {
+        long resumeId = insertResume();
+        saveProfile();
+        long runId = newRun();
+        long jobId = insertJob(runId, 15L, "greenhouse");
+
+        FakeCliClient cli = new FakeCliClient(
+                prompt -> new CliJsonResult.Failed("claude stopped early: error_max_budget", -1, 1.99));
+        ApplyOrchestrator orchestrator = orchestrator(cli);
+
+        long batchId = orchestrator.start(List.of(jobId), resumeId, false);
+        orchestrator.awaitLastBatch();
+
+        JobApplication app = applicationRepository.findByBatch(batchId).get(0);
+        assertThat(app.status()).isEqualTo("failed");
+        assertThat(app.notes()).contains(
+                "Hit the per-job cost cap (apply.max-budget-usd = " + props().maxBudgetUsd() + ")");
+        assertThat(app.notes()).contains("mostly filled");
+        assertThat(app.notes()).contains("claude --resume " + app.sessionId() + " --chrome");
+        assertThat(app.costUsd()).isEqualTo(1.99);
+
+        assertThat(applyBatchRepository.findById(batchId).orElseThrow().costUsd()).isEqualTo(1.99);
+    }
+
+    @Test
+    void keepAwakeIsStartedBeforeFirstJobAndStoppedAfterBatchEvenWhenAJobThrows() throws InterruptedException {
+        long resumeId = insertResume();
+        saveProfile();
+        long runId = newRun();
+        long firstJob = insertJob(runId, 16L, "greenhouse");
+        long secondJob = insertJob(runId, 17L, "greenhouse");
+
+        AtomicInteger startCount = new AtomicInteger();
+        AtomicInteger stopCount = new AtomicInteger();
+        List<String> events = new ArrayList<>();
+        ApplyOrchestrator.KeepAwakeStarter fakeStarter = () -> {
+            startCount.incrementAndGet();
+            events.add("start");
+            return () -> {
+                stopCount.incrementAndGet();
+                events.add("stop");
+            };
+        };
+
+        AtomicInteger callCount = new AtomicInteger();
+        FakeCliClient cli = new FakeCliClient(prompt -> {
+            if (callCount.incrementAndGet() == 1) {
+                throw new RuntimeException("boom");
+            }
+            return ok("needs_review", "filled the form");
+        });
+        ApplyOrchestrator orchestrator = new ApplyOrchestrator(cli, props(), new ApplyPromptBuilder(),
+                new ApplyUrlResolver(atsCompanyRepository), applyBatchRepository,
+                applicationRepository, jobListingRepository, resumeRepository, applicantProfileRepository, clock,
+                fakeStarter);
+
+        long batchId = orchestrator.start(List.of(firstJob, secondJob), resumeId, false);
+        orchestrator.awaitLastBatch();
+
+        assertThat(startCount.get()).isEqualTo(1);
+        assertThat(stopCount.get()).isEqualTo(1);
+        assertThat(events.get(0)).isEqualTo("start");
+        assertThat(events.get(events.size() - 1)).isEqualTo("stop");
+
+        List<JobApplication> apps = applicationRepository.findByBatch(batchId);
+        assertThat(apps).extracting(JobApplication::status).contains("failed");
     }
 }

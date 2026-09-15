@@ -7,6 +7,7 @@ import com.ubaid.jobdash.text.PromptText;
 import org.springframework.stereotype.Component;
 
 import java.nio.file.Path;
+import java.util.Optional;
 
 /**
  * Renders one job, one resume, one applicant profile, and the submit toggle into the prompt sent
@@ -40,9 +41,26 @@ public class ApplyPromptBuilder {
             }
             """;
 
-    /** Renders the full prompt text sent on stdin for one job's apply attempt. */
+    /**
+     * Renders the full prompt text sent on stdin for one job's apply attempt, with no direct
+     * application-form URL known. Kept for existing call sites; prefer the overload taking
+     * {@code directFormUrl} when one may be available.
+     */
     public String build(JobListing job, Resume resume, Path resumeAbsolutePath, ApplicantProfile profile,
                          boolean submit, int maxDescriptionChars) {
+        return build(job, resume, resumeAbsolutePath, profile, submit, maxDescriptionChars, Optional.empty());
+    }
+
+    /**
+     * Renders the full prompt text sent on stdin for one job's apply attempt. When
+     * {@code directFormUrl} is present, it names a standalone, top-level page that is the
+     * application form itself (no iframe) - e.g. Greenhouse's {@code embed/job_app} page or a
+     * Lever posting's {@code /apply} page - and the instructions tell Claude to try that first,
+     * since a company's own posting page may embed the real form in a cross-origin iframe that
+     * the page-reading tools cannot see into.
+     */
+    public String build(JobListing job, Resume resume, Path resumeAbsolutePath, ApplicantProfile profile,
+                         boolean submit, int maxDescriptionChars, Optional<String> directFormUrl) {
         String description = PromptText.truncate(PromptText.stripHtml(job.description()), maxDescriptionChars);
         String submitInstruction = submit
                 ? """
@@ -56,13 +74,29 @@ public class ApplyPromptBuilder {
                   open exactly as it is, and set "outcome" to "needs_review".\
                   """;
 
+        String openStep = directFormUrl.isPresent()
+                ? """
+                  1. If a DIRECT APPLY FORM URL is given, open THAT in a new tab first - it is the \
+                  application form as a standalone page with no iframe, so every field and the \
+                  resume file input are directly visible to your page-reading tools. Only if it \
+                  fails to load or shows no form, fall back to the JOB URL and its Apply link.
+                  2. Otherwise, open the job's URL (given below as JOB URL) in a NEW browser tab, then \
+                  find and follow the "Apply" link or button on that page to reach the application \
+                  form (it may be on the same page or a separate ATS page).\
+                  """
+                : """
+                  1. Open the job's URL (given below as JOB URL) in a NEW browser tab.
+                  2. Find and follow the "Apply" link or button on that page to reach the application
+                     form (it may be on the same page or a separate ATS page).\
+                  """;
+
+        String directFormUrlLine = directFormUrl.map(url -> "\nDIRECT APPLY FORM URL: " + url).orElse("");
+
         return """
                 You are applying to a job posting on behalf of a candidate, using the Claude-in-Chrome
                 browser extension. Follow these steps in order:
 
-                1. Open the job's URL (given below as JOB URL) in a NEW browser tab.
-                2. Find and follow the "Apply" link or button on that page to reach the application
-                   form (it may be on the same page or a separate ATS page).
+                %s
                 3. Locate the resume/CV upload field on the application form and upload the file at
                    the absolute path given below (RESUME FILE PATH). Do not type or paste resume text
                    into a file upload field - use the actual file. Use the browser file-upload tool on
@@ -85,6 +119,19 @@ public class ApplyPromptBuilder {
 
                 %s
 
+                The application form may sit inside a cross-origin iframe on the company's own site;
+                if find/read_page cannot see the form's fields, do not keep trying coordinates - go to
+                the DIRECT APPLY FORM URL (or stop with outcome failed, summary "form in cross-origin
+                iframe, no direct URL"), never click Attach/Browse.
+
+                Prefer element references from find/read_page and the form-filling tools over screen
+                coordinates; after typing into a field, confirm the value actually appears (zoom or
+                read the field) before moving on - typed text has been observed not to register.
+
+                Workday postings: click Apply, then "Apply Manually". If Workday asks you to sign in
+                or create an account, stop with outcome failed and summary "Workday account required" -
+                never create an account.
+
                 If the job posting is closed, expired, or the page returns a 404 / "not found", stop
                 immediately and set "outcome" to "not_found".
 
@@ -98,7 +145,7 @@ public class ApplyPromptBuilder {
                 Before finishing, whatever the outcome, set summary to a concrete account: which page
                 you reached, which fields you filled, which action failed and the exact error text.
 
-                JOB URL: %s
+                JOB URL: %s%s
                 TITLE: %s
                 COMPANY: %s
                 LOCATION: %s
@@ -122,8 +169,10 @@ public class ApplyPromptBuilder {
                 RESUME TEXT:
                 %s
                 """.formatted(
+                openStep,
                 submitInstruction,
                 nullToEmpty(job.jobUrl()),
+                directFormUrlLine,
                 nullToEmpty(job.title()),
                 nullToEmpty(job.company()),
                 nullToEmpty(job.location()),

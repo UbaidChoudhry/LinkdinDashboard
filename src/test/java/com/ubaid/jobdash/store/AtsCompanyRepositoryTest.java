@@ -174,6 +174,31 @@ class AtsCompanyRepositoryTest extends AbstractStoreTest {
         assertThat(result).isEmpty();
     }
 
+    @Test
+    void findByAtsAndCompanyMatchesCaseInsensitivelyAndPrefersEnabled() {
+        Optional<AtsCompany> found = repository.findByAtsAndCompany("greenhouse", "AIRBNB");
+        assertThat(found).isPresent();
+        assertThat(found.get().slug()).isEqualTo("airbnb");
+        assertThat(found.get().company()).isEqualTo("Airbnb");
+
+        assertThat(repository.findByAtsAndCompany("greenhouse", "NoSuchCompany")).isEmpty();
+        assertThat(repository.findByAtsAndCompany("lever", "Airbnb")).isEmpty();
+    }
+
+    @Test
+    void findByAtsAndCompanyPrefersEnabledRowOverDisabledDuplicate() {
+        long airbnbId = onlyId(repository.list("greenhouse", "airbnb", false, 1, 0));
+        long unverifiedId = repository.insertOne("greenhouse", "airbnb-alt", "Airbnb", null, null,
+                        false, "unverified", Instant.parse("2026-02-01T00:00:00Z"))
+                .orElseThrow();
+
+        Optional<AtsCompany> found = repository.findByAtsAndCompany("greenhouse", "airbnb");
+        assertThat(found).isPresent();
+        assertThat(found.get().id()).isEqualTo(airbnbId);
+        assertThat(found.get().enabled()).isTrue();
+        assertThat(unverifiedId).isNotEqualTo(airbnbId);
+    }
+
     private static long onlyId(List<AtsCompany> rows) {
         assertThat(rows).hasSize(1);
         return rows.getFirst().id();

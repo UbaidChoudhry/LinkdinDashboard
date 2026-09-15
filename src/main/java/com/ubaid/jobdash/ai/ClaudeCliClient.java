@@ -349,14 +349,32 @@ public class ClaudeCliClient {
         return buildResult(resultLine, stderr, exitCode);
     }
 
-    /** Shared by {@link #parse} and {@link #runStreaming}: the {@code result}-line-shaped payload. */
+    /**
+     * Shared by {@link #parse} and {@link #runStreaming}: the {@code result}-line-shaped payload.
+     * A {@code subtype} starting with {@code error_} (e.g. {@code error_max_turns},
+     * {@code error_max_budget}) is the CLI's own way of saying it stopped itself before finishing -
+     * that's surfaced in the message (with the {@code result} text appended when present) rather
+     * than swallowed behind a generic "reported an error", and {@code total_cost_usd} is always
+     * carried into {@code Failed.costUsd} since a stopped-early run still spent real money.
+     */
     private static CliJsonResult buildResult(JsonNode root, String stderr, int exitCode) {
         boolean isError = root.path("is_error").asBoolean(false);
         JsonNode structured = root.get("structured_output");
         if (isError || structured == null || structured.isNull()) {
-            String fallback = stderr.isBlank() ? "claude CLI reported an error" : stderr;
-            String message = root.path("result").asString(fallback);
-            return new CliJsonResult.Failed(message, exitCode);
+            double costUsd = root.path("total_cost_usd").asDouble(0.0);
+            String subtype = root.path("subtype").asString("");
+            String resultText = root.path("result").asString("");
+            String message;
+            if (subtype.startsWith("error_")) {
+                message = "claude stopped early: " + subtype;
+                if (!resultText.isBlank()) {
+                    message += " - " + resultText;
+                }
+            } else {
+                String fallback = stderr.isBlank() ? "claude CLI reported an error" : stderr;
+                message = root.path("result").asString(fallback);
+            }
+            return new CliJsonResult.Failed(message, exitCode, costUsd);
         }
         double costUsd = root.path("total_cost_usd").asDouble(0.0);
         long durationMs = root.path("duration_ms").asLong(0L);

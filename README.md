@@ -285,8 +285,8 @@ apply:
   enabled: true
   model: sonnet
   timeout: 10m                  # per job
-  max-turns: 60
-  max-budget-usd: 2.0
+  max-turns: 150                # browser actions per job; a full Greenhouse form needs ~100
+  max-budget-usd: 4.0           # per job
   idle-timeout: 3m              # no browser action for this long = stuck, job killed
   max-description-chars: 4000
 ```
@@ -415,6 +415,13 @@ real, logged-in LinkedIn account, and this project's one non-negotiable rule (se
 [How it gets the data](#how-it-gets-the-data)) is that account must never be exposed to
 automation. Only Greenhouse / Lever / Workday postings get the Claude-driven flow.
 
+**Where Claude is sent.** Greenhouse and Lever both serve the application form as a standalone
+page (Greenhouse's `embed/job_app` URL, Lever's `/apply`), so Claude opens that directly instead
+of the company's own careers page - several companies (Stripe, for one) embed the form in a
+cross-origin iframe there, which the browser extension cannot see into. **Workday postings need a
+candidate account** on each company's Workday tenant; Claude will not create one, so those end as
+**Apply failed** with "Workday account required" until you have signed up there yourself.
+
 **Prerequisites**, one-time:
 
 - Google Chrome (or another Chromium browser — Edge, Brave, etc.)
@@ -430,7 +437,10 @@ Claude drives your **real** Chrome window, opening tabs you can watch — nothin
 out of sight.
 
 **Cost.** Each application is its own `claude -p --chrome` invocation, so expect roughly
-**$0.30–$1.50 per application** depending on how many form fields and browser actions it takes.
+**$1–$3 per application** depending on how many form fields and browser actions it takes (a full
+Greenhouse form with education and EEO questions is 80–120 browser actions). Keep the laptop
+awake: the batch runs `caffeinate -i` itself, but a closed lid still sleeps the machine and pauses
+the job until it wakes.
 The batch view shows a running total from the CLI's own reported cost.
 
 **Watching it, and unsticking it.** While a batch runs the Results tab shows which job is in

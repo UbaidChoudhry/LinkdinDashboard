@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -91,5 +92,47 @@ class ApplyPromptBuilderTest {
                 profile(), false, 4000);
 
         assertThat(prompt).contains("Before finishing, whatever the outcome, set summary");
+    }
+
+    @Test
+    void directFormUrlPresentAddsUrlLineAndOpenItFirstInstruction() {
+        String prompt = builder.build(job("<p>Great role</p>"), resume(), Path.of("/data/resumes/1.pdf"),
+                profile(), false, 4000,
+                Optional.of("https://job-boards.greenhouse.io/embed/job_app?for=stripe&token=123"));
+
+        assertThat(prompt).contains(
+                "DIRECT APPLY FORM URL: https://job-boards.greenhouse.io/embed/job_app?for=stripe&token=123");
+        assertThat(prompt).contains("If a DIRECT APPLY FORM URL is given, open THAT in a new tab first");
+        assertThat(prompt).contains("Only if it fails to load or shows no form, fall back to the JOB URL");
+    }
+
+    @Test
+    void directFormUrlAbsentOmitsUrlLineAndKeepsTodaysWording() {
+        String prompt = builder.build(job("<p>Great role</p>"), resume(), Path.of("/data/resumes/1.pdf"),
+                profile(), false, 4000, Optional.empty());
+
+        assertThat(prompt).doesNotContain("DIRECT APPLY FORM URL:");
+        assertThat(prompt).doesNotContain("If a DIRECT APPLY FORM URL is given");
+        assertThat(prompt).contains("1. Open the job's URL (given below as JOB URL) in a NEW browser tab.");
+    }
+
+    @Test
+    void promptWarnsAboutCrossOriginIframesAndForbidsCoordinateGuessing() {
+        String prompt = builder.build(job("<p>Great role</p>"), resume(), Path.of("/data/resumes/1.pdf"),
+                profile(), false, 4000);
+
+        assertThat(prompt).contains("cross-origin iframe");
+        assertThat(prompt).contains("never click Attach/Browse");
+        assertThat(prompt).contains("Prefer element references from find/read_page and the form-filling tools");
+        assertThat(prompt).contains("typed text has been observed not to register");
+    }
+
+    @Test
+    void promptIncludesWorkdayAccountRequiredRule() {
+        String prompt = builder.build(job("<p>Great role</p>"), resume(), Path.of("/data/resumes/1.pdf"),
+                profile(), false, 4000);
+
+        assertThat(prompt).contains("Workday postings: click Apply, then \"Apply Manually\"");
+        assertThat(prompt).contains("Workday account required");
     }
 }

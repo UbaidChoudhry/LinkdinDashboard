@@ -280,6 +280,45 @@ class ClaudeCliClientTest {
     }
 
     @Test
+    void errorMaxTurnsBufferedYieldsFailedWithSubtypeMessageAndCost() throws IOException {
+        Path script = stub("max-turns.sh", """
+                cat > /dev/null
+                cat <<'EOF'
+                {"type":"result","subtype":"error_max_turns","is_error":true,"total_cost_usd":1.25}
+                EOF
+                """);
+        ClaudeCliClient client = new ClaudeCliClient(props(script.toString(), Duration.ofSeconds(10)),
+                tools.jackson.databind.json.JsonMapper.builder().build());
+
+        CliJsonResult result = client.runStructured("dummy prompt", "{}");
+
+        assertThat(result).isInstanceOf(CliJsonResult.Failed.class);
+        CliJsonResult.Failed failed = (CliJsonResult.Failed) result;
+        assertThat(failed.message()).contains("error_max_turns");
+        assertThat(failed.costUsd()).isEqualTo(1.25);
+    }
+
+    @Test
+    void errorMaxTurnsStreamingYieldsFailedWithSubtypeMessageAndCost() throws IOException {
+        Path script = stub("max-turns-stream.sh", """
+                cat > /dev/null
+                echo '{"type":"result","subtype":"error_max_turns","is_error":true,"total_cost_usd":1.25}'
+                """);
+        ClaudeCliClient client = new ClaudeCliClient(props(script.toString(), Duration.ofSeconds(10)),
+                tools.jackson.databind.json.JsonMapper.builder().build());
+
+        ClaudeCliClient.StreamOptions options = new ClaudeCliClient.StreamOptions(
+                List.of("-p"), Duration.ofSeconds(10), Duration.ofSeconds(10), () -> false);
+
+        CliJsonResult result = client.runStreaming("dummy prompt", "{}", options, event -> { });
+
+        assertThat(result).isInstanceOf(CliJsonResult.Failed.class);
+        CliJsonResult.Failed failed = (CliJsonResult.Failed) result;
+        assertThat(failed.message()).contains("error_max_turns");
+        assertThat(failed.costUsd()).isEqualTo(1.25);
+    }
+
+    @Test
     void throwingListenerDoesNotChangeTheResult() throws IOException {
         Path script = stub("stream-throwing-listener.sh", """
                 cat > /dev/null

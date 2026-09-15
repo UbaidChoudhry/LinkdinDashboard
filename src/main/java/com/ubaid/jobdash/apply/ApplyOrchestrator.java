@@ -14,6 +14,7 @@ import com.ubaid.jobdash.store.ResumeRepository;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.JsonNode;
 
@@ -70,15 +71,51 @@ public class ApplyOrchestrator {
     private static final DateTimeFormatter TRANSCRIPT_TIME =
             DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault());
 
+    /**
+     * Something started for the duration of a batch and stopped when it's done - in production,
+     * the running {@code caffeinate} process; in tests, a fake that just records the calls.
+     */
+    interface KeepAwake {
+        void stop();
+    }
+
+    /** Starts a {@link KeepAwake} for one batch. Package-visible so tests can substitute a fake. */
+    @FunctionalInterface
+    interface KeepAwakeStarter {
+        KeepAwake start();
+    }
+
+    private static final KeepAwake NO_OP_KEEP_AWAKE = () -> { };
+
+    /**
+     * {@code caffeinate -i} (not {@code -d}) prevents only idle sleep for as long as the process
+     * lives - the display may still sleep, but the Mac itself won't, so an hours-long batch of
+     * Claude-in-Chrome applications isn't cut off mid-form by the machine going to sleep. Absent
+     * on non-Mac systems, so this is a no-op wherever the binary isn't there or fails to start.
+     */
+    private static final KeepAwakeStarter DEFAULT_KEEP_AWAKE_STARTER = () -> {
+        try {
+            if (Files.isExecutable(Path.of("/usr/bin/caffeinate"))) {
+                Process process = new ProcessBuilder("/usr/bin/caffeinate", "-i").start();
+                return process::destroy;
+            }
+        } catch (IOException e) {
+            log.debug("failed to start caffeinate: {}", e.toString());
+        }
+        return NO_OP_KEEP_AWAKE;
+    };
+
     private final ClaudeCliClient cliClient;
     private final ApplyProperties properties;
     private final ApplyPromptBuilder promptBuilder;
+    private final ApplyUrlResolver applyUrlResolver;
     private final ApplyBatchRepository applyBatchRepository;
     private final ApplicationRepository applicationRepository;
     private final JobListingRepository jobListingRepository;
     private final ResumeRepository resumeRepository;
     private final ApplicantProfileRepository applicantProfileRepository;
     private final Clock clock;
+    private final KeepAwakeStarter keepAwakeStarter;
 
     /** The batch currently in flight, if any - its cancel flag lives here, not in the DB. */
     private volatile InFlight inFlight;
@@ -86,20 +123,39 @@ public class ApplyOrchestrator {
     /** The most recently spawned batch thread - exposed only so tests can join it deterministically. */
     private volatile Thread lastBatchThread;
 
+    @Autowired
     public ApplyOrchestrator(ClaudeCliClient cliClient, ApplyProperties properties,
-                              ApplyPromptBuilder promptBuilder, ApplyBatchRepository applyBatchRepository,
+                              ApplyPromptBuilder promptBuilder, ApplyUrlResolver applyUrlResolver,
+                              ApplyBatchRepository applyBatchRepository,
                               ApplicationRepository applicationRepository, JobListingRepository jobListingRepository,
                               ResumeRepository resumeRepository, ApplicantProfileRepository applicantProfileRepository,
                               Clock clock) {
+        this(cliClient, properties, promptBuilder, applyUrlResolver, applyBatchRepository, applicationRepository,
+                jobListingRepository, resumeRepository, applicantProfileRepository, clock,
+                DEFAULT_KEEP_AWAKE_STARTER);
+    }
+
+    /**
+     * Package-visible seam for tests: lets a test substitute a fake {@link KeepAwakeStarter} so it
+     * can assert start/stop without spawning the real {@code caffeinate} binary.
+     */
+    ApplyOrchestrator(ClaudeCliClient cliClient, ApplyProperties properties,
+                       ApplyPromptBuilder promptBuilder, ApplyUrlResolver applyUrlResolver,
+                       ApplyBatchRepository applyBatchRepository,
+                       ApplicationRepository applicationRepository, JobListingRepository jobListingRepository,
+                       ResumeRepository resumeRepository, ApplicantProfileRepository applicantProfileRepository,
+                       Clock clock, KeepAwakeStarter keepAwakeStarter) {
         this.cliClient = cliClient;
         this.properties = properties;
         this.promptBuilder = promptBuilder;
+        this.applyUrlResolver = applyUrlResolver;
         this.applyBatchRepository = applyBatchRepository;
         this.applicationRepository = applicationRepository;
         this.jobListingRepository = jobListingRepository;
         this.resumeRepository = resumeRepository;
         this.applicantProfileRepository = applicantProfileRepository;
         this.clock = clock;
+        this.keepAwakeStarter = keepAwakeStarter;
     }
 
     /**
@@ -193,84 +249,93 @@ public class ApplyOrchestrator {
         double totalCostUsd = 0.0;
         String finalStatus = "ok";
 
-        for (int i = 0; i < jobIds.size(); i++) {
-            long jobId = jobIds.get(i);
-            long applicationId = applicationIds.get(i);
+        KeepAwake keepAwake = keepAwakeStarter.start();
+        try {
+            for (int i = 0; i < jobIds.size(); i++) {
+                long jobId = jobIds.get(i);
+                long applicationId = applicationIds.get(i);
 
-            if (cancelled.get()) {
-                finalStatus = "cancelled";
-                break;
-            }
+                if (cancelled.get()) {
+                    finalStatus = "cancelled";
+                    break;
+                }
 
-            JobListing job = jobListingRepository.findById(jobId).orElse(null);
-            if (job == null) {
-                failedCount++;
-                applicationRepository.update(applicationId, "failed", "job no longer exists", 0.0,
-                        clock.instant(), clock.instant());
+                JobListing job = jobListingRepository.findById(jobId).orElse(null);
+                if (job == null) {
+                    failedCount++;
+                    applicationRepository.update(applicationId, "failed", "job no longer exists", 0.0,
+                            clock.instant(), clock.instant());
+                    done++;
+                    applyBatchRepository.updateProgress(batchId, done, submittedCount, needsReviewCount, failedCount,
+                            skippedCount, totalCostUsd);
+                    continue;
+                }
+
+                try {
+                    if ("linkedin".equals(job.source())) {
+                        skippedCount++;
+                        applicationRepository.update(applicationId, "skipped", "LinkedIn: apply manually", 0.0,
+                                clock.instant(), clock.instant());
+                        applyLog.info("job {} \"{}\" at \"{}\" SKIPPED (LinkedIn - apply manually)",
+                                jobId, job.title(), job.company());
+                    } else {
+                        Instant startedAt = clock.instant();
+                        applicationRepository.update(applicationId, "filling", "", 0.0, startedAt, null);
+
+                        String sessionId = UUID.randomUUID().toString();
+                        Path transcriptPath = ensureTranscriptDir().resolve(
+                                "batch-" + batchId + "-job-" + jobId + ".log");
+                        applicationRepository.setSession(applicationId, sessionId, transcriptPath.toString());
+
+                        Optional<String> directFormUrl = applyUrlResolver.directFormUrl(job);
+                        appendToTranscript(transcriptPath, TRANSCRIPT_TIME.format(clock.instant()) + " info "
+                                + directFormUrl.map(url -> "direct form url: " + url).orElse("no direct form url"));
+
+                        Path resumeAbsolutePath = Path.of(resume.storedPath()).toAbsolutePath();
+                        String prompt = promptBuilder.build(job, resume, resumeAbsolutePath, profile, submit,
+                                properties.maxDescriptionChars(), directFormUrl);
+                        List<String> args = chromeArgs(properties, ApplyPromptBuilder.APPLY_JSON_SCHEMA, sessionId);
+                        ClaudeCliClient.StreamOptions options = new ClaudeCliClient.StreamOptions(
+                                args, properties.timeout(), properties.idleTimeout(), cancelled::get);
+
+                        long callStart = System.nanoTime();
+                        CliJsonResult result = cliClient.runStreaming(prompt, ApplyPromptBuilder.APPLY_JSON_SCHEMA,
+                                options, event -> onEvent(jobId, applicationId, transcriptPath, event));
+                        long tookMs = (System.nanoTime() - callStart) / 1_000_000;
+
+                        Outcome outcome = mapResult(result, sessionId);
+                        totalCostUsd += outcome.costUsd();
+                        switch (outcome.status()) {
+                            case "submitted" -> submittedCount++;
+                            case "needs_review" -> needsReviewCount++;
+                            default -> failedCount++;
+                        }
+
+                        Instant finishedAt = clock.instant();
+                        applicationRepository.update(applicationId, outcome.status(), outcome.notes(),
+                                outcome.costUsd(), startedAt, finishedAt);
+
+                        if ("submitted".equals(outcome.status())) {
+                            jobListingRepository.setUserStatus(jobId, UserStatus.APPLIED, finishedAt);
+                        }
+
+                        applyLog.info("job {} \"{}\" at \"{}\" outcome={} cost=${} {}ms",
+                                jobId, job.title(), job.company(), outcome.status(),
+                                String.format("%.4f", outcome.costUsd()), tookMs);
+                    }
+                } catch (RuntimeException e) {
+                    failedCount++;
+                    log.warn("apply job {} threw: {}", jobId, e.toString());
+                    applicationRepository.update(applicationId, "failed", "unexpected error: " + e.getMessage(), 0.0,
+                            clock.instant(), clock.instant());
+                }
+
                 done++;
                 applyBatchRepository.updateProgress(batchId, done, submittedCount, needsReviewCount, failedCount,
                         skippedCount, totalCostUsd);
-                continue;
             }
-
-            try {
-                if ("linkedin".equals(job.source())) {
-                    skippedCount++;
-                    applicationRepository.update(applicationId, "skipped", "LinkedIn: apply manually", 0.0,
-                            clock.instant(), clock.instant());
-                    applyLog.info("job {} \"{}\" at \"{}\" SKIPPED (LinkedIn - apply manually)",
-                            jobId, job.title(), job.company());
-                } else {
-                    Instant startedAt = clock.instant();
-                    applicationRepository.update(applicationId, "filling", "", 0.0, startedAt, null);
-
-                    String sessionId = UUID.randomUUID().toString();
-                    Path transcriptPath = ensureTranscriptDir().resolve(
-                            "batch-" + batchId + "-job-" + jobId + ".log");
-                    applicationRepository.setSession(applicationId, sessionId, transcriptPath.toString());
-
-                    Path resumeAbsolutePath = Path.of(resume.storedPath()).toAbsolutePath();
-                    String prompt = promptBuilder.build(job, resume, resumeAbsolutePath, profile, submit,
-                            properties.maxDescriptionChars());
-                    List<String> args = chromeArgs(properties, ApplyPromptBuilder.APPLY_JSON_SCHEMA, sessionId);
-                    ClaudeCliClient.StreamOptions options = new ClaudeCliClient.StreamOptions(
-                            args, properties.timeout(), properties.idleTimeout(), cancelled::get);
-
-                    long callStart = System.nanoTime();
-                    CliJsonResult result = cliClient.runStreaming(prompt, ApplyPromptBuilder.APPLY_JSON_SCHEMA,
-                            options, event -> onEvent(jobId, applicationId, transcriptPath, event));
-                    long tookMs = (System.nanoTime() - callStart) / 1_000_000;
-
-                    Outcome outcome = mapResult(result, sessionId);
-                    totalCostUsd += outcome.costUsd();
-                    switch (outcome.status()) {
-                        case "submitted" -> submittedCount++;
-                        case "needs_review" -> needsReviewCount++;
-                        default -> failedCount++;
-                    }
-
-                    Instant finishedAt = clock.instant();
-                    applicationRepository.update(applicationId, outcome.status(), outcome.notes(),
-                            outcome.costUsd(), startedAt, finishedAt);
-
-                    if ("submitted".equals(outcome.status())) {
-                        jobListingRepository.setUserStatus(jobId, UserStatus.APPLIED, finishedAt);
-                    }
-
-                    applyLog.info("job {} \"{}\" at \"{}\" outcome={} cost=${} {}ms",
-                            jobId, job.title(), job.company(), outcome.status(),
-                            String.format("%.4f", outcome.costUsd()), tookMs);
-                }
-            } catch (RuntimeException e) {
-                failedCount++;
-                log.warn("apply job {} threw: {}", jobId, e.toString());
-                applicationRepository.update(applicationId, "failed", "unexpected error: " + e.getMessage(), 0.0,
-                        clock.instant(), clock.instant());
-            }
-
-            done++;
-            applyBatchRepository.updateProgress(batchId, done, submittedCount, needsReviewCount, failedCount,
-                    skippedCount, totalCostUsd);
+        } finally {
+            keepAwake.stop();
         }
 
         applyBatchRepository.finish(batchId, finalStatus, clock.instant());
@@ -329,7 +394,7 @@ public class ApplyOrchestrator {
     }
 
     /** Maps one CLI result into a status/notes/cost triple, never throwing. */
-    private static Outcome mapResult(CliJsonResult result, String sessionId) {
+    private Outcome mapResult(CliJsonResult result, String sessionId) {
         return switch (result) {
             case CliJsonResult.Ok ok -> {
                 JsonNode structured = ok.structuredOutput();
@@ -350,22 +415,40 @@ public class ApplyOrchestrator {
             }
             case CliJsonResult.Timeout timeout ->
                     new Outcome("failed", "claude CLI timed out after " + timeout.afterMs() + "ms", 0.0);
-            case CliJsonResult.Failed failed -> new Outcome("failed", stuckNotes(failed.message(), sessionId), 0.0);
+            case CliJsonResult.Failed failed ->
+                    new Outcome("failed", stuckNotes(failed.message(), sessionId), failed.costUsd());
             case CliJsonResult.CliNotFound notFound -> new Outcome("failed", notFound.message(), 0.0);
         };
     }
 
     /**
      * A {@code Failed} whose message starts with "no activity" (the idle-timeout kill) gets a
-     * "Stuck:" note pointing at the resume command, so the UI can surface it directly - every
+     * "Stuck:" note, and one containing {@code error_max_turns} or {@code error_max_budget} (the
+     * CLI stopping itself early) gets a note explaining which ceiling was hit - each points at the
+     * resume command so the user can pick the application back up where Claude left off. Every
      * other failure message is passed through unchanged.
      */
-    private static String stuckNotes(String message, String sessionId) {
-        if (message == null || !message.startsWith("no activity")) {
+    private String stuckNotes(String message, String sessionId) {
+        if (message == null) {
             return message;
         }
-        return "Stuck: " + message + ". Resume the session in a terminal to see the page: "
-                + "claude --resume " + sessionId + " --chrome";
+        String resumeHint = "claude --resume " + sessionId + " --chrome then tell Claude to keep filling "
+                + "the application.";
+        if (message.contains("error_max_turns")) {
+            return "Ran out of browser actions (apply.max-turns = " + properties.maxTurns()
+                    + ") before the form was finished; it is probably mostly filled. Continue it yourself: "
+                    + resumeHint;
+        }
+        if (message.contains("error_max_budget")) {
+            return "Hit the per-job cost cap (apply.max-budget-usd = " + properties.maxBudgetUsd()
+                    + ") before the form was finished; it is probably mostly filled. Continue it yourself: "
+                    + resumeHint;
+        }
+        if (message.startsWith("no activity")) {
+            return "Stuck: " + message + ". Resume the session in a terminal to see the page: "
+                    + "claude --resume " + sessionId + " --chrome";
+        }
+        return message;
     }
 
     private static String joinUnanswered(JsonNode unanswered) {

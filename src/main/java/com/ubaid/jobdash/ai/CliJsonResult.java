@@ -24,7 +24,15 @@ public sealed interface CliJsonResult {
     record Timeout(long afterMs) implements CliJsonResult {
     }
 
-    /** The CLI ran but reported an error, or its output could not be parsed. */
-    record Failed(String message, int exitCode) implements CliJsonResult {
+    /**
+     * The CLI ran but reported an error, or its output could not be parsed. {@code costUsd} is
+     * whatever {@code total_cost_usd} the CLI reported before stopping early (0.0 when the CLI
+     * never got that far, e.g. a missing binary or malformed output) - a stopped-early run still
+     * burned real spend that the caller must not silently record as $0.
+     */
+    record Failed(String message, int exitCode, double costUsd) implements CliJsonResult {
+        public Failed(String message, int exitCode) {
+            this(message, exitCode, 0.0);
+        }
     }
 }

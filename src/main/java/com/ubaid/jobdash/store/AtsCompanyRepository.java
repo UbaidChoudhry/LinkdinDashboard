@@ -103,6 +103,24 @@ public class AtsCompanyRepository {
                 .optional();
     }
 
+    /**
+     * Finds a catalog row for the given ATS whose {@code company} matches case-insensitively —
+     * used to resolve a job listing's Greenhouse board slug when the job's own {@code jobUrl}
+     * doesn't carry it. Prefers an enabled row, then the lowest id, when more than one matches.
+     */
+    public Optional<AtsCompany> findByAtsAndCompany(String ats, String company) {
+        return client.sql("""
+                        select * from ats_company
+                        where ats = :ats and lower(company) = lower(:company)
+                        order by enabled desc, id
+                        limit 1
+                        """)
+                .param("ats", ats)
+                .param("company", company)
+                .query(AtsCompanyRepository::mapRow)
+                .optional();
+    }
+
     public int setEnabled(long id, boolean enabled) {
         return client.sql("update ats_company set enabled = :enabled where id = :id")
                 .param("enabled", enabled ? 1 : 0)
