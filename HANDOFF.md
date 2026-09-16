@@ -1199,3 +1199,69 @@ it ended `error_max_turns` at 60 actions with the form about two-thirds done, an
   sleeping laptop should pause a job, not fail it.
 - **The extension's `type` action is unreliable on this form; `key` was not.** Already a prompt
   rule ("confirm each typed value") since batch 2; batch 3 did exactly that and lost no fields.
+
+### Why an application took 66 browser actions, and the plan-first prompt (2026-09-20)
+
+Batch 4's transcript (the first complete `needs_review`, $1.40, 4 min 10 s) shows where the time
+went: **15 screenshots, 15 scrolls, 18 coordinate clicks, 8 batched actions, 3 raw `type`s - and
+exactly one `read_page` and zero `form_input` calls**, plus 38 narration turns, at 3.8 s per turn.
+Claude drove the form the way a person with a mouse would: scroll, screenshot, click the field,
+type, screenshot to check, scroll again. Each of those is a model turn with its own API round-trip,
+so the cost is turns, not typing.
+
+The fix is structural, in two parts:
+
+- **Read the questions before opening the browser.** Greenhouse's direct form page is fully
+  server-rendered (labels, selects with their options, `required` markers), and Lever's `/apply`
+  page carries `.application-label`s. `apply/FormQuestionPrefetcher` GETs the direct form URL
+  with jsoup and hands the prompt a `FORM QUESTIONS` list; unit-tested against saved fixtures
+  (`fixtures/greenhouse_embed_stripe.html`, `fixtures/lever_apply_shieldai.html`), never live.
+  The live page stays authoritative - dynamic questions can still appear.
+- **Plan first, fill by reference, batch.** The prompt now mandates: one `read_page` to enumerate
+  fields and refs, ONE message with the complete plan (every field → value or "blank
+  (unanswered)"), then `form_input` by ref in `browser_batch`es of up to eight, `file_upload` on
+  the file-input ref, click/type/screenshot only for widgets `form_input` cannot set, one
+  `read_page` verification pass, no screenshots after routine actions and no narration between
+  them. The extension itself nags "Prefer browser_batch" on every single-call turn - the
+  transcripts are full of that reminder being ignored because the prompt never asked for it.
+
+### Questions Claude cannot answer become a table, and every batch writes a report
+
+The profile's free-text "how to answer anything else" box is replaced by `profile_answer` (V14):
+one row per question, keyed on `QuestionKey.normalize` (lowercase, whitespace-collapsed, trailing
+`* ? :` stripped) so "Do you opt-in to receive WhatsApp messages? *" and its unstarred twin are one
+row. When a job's structured result lists `unanswered` questions, `ApplyOrchestrator` records each
+as `pending` (or bumps `asked_count` / `last_company` on an existing row - an answered row is never
+flipped back), the job still ends `needs_review` with its tab open, and the batch moves on. Answered
+rows go into the prompt as `KNOWN ANSWERS`, pending ones as "still unanswered, leave blank"; so
+the loop closes the first time the user fills in an answer on the Resumes tab. Pre-existing free
+text is migrated into a single "General notes" row - nothing typed there is lost.
+
+At batch end the orchestrator writes `logs/apply/batch-<id>-report.md` (jobs, outcomes, cost,
+which tabs were left open, the `claude --resume` command per job, and the new pending questions),
+stores its path and the new-question count on `apply_batch`, and the Results tab shows it as the
+end-of-run report with a pointer to the Resumes tab. `GET /api/applications/{id}/report` serves it.
+
+**Measured, same Stripe form, submit off (2026-09-20):**
+
+| Run | Prompt | Actions | Screenshots | Batched calls | Wall clock | Cost |
+|---|---|---|---|---|---|---|
+| batch 4 | original | 66 | 15 | 8 | 4:10 | $1.40 |
+| batch 5 | plan-first + pre-read questions | 79 | 18 | 2 | 4:53 | $1.67 |
+| batch 6 | + one-batch keyboard technique per dropdown, screenshot ban, `--effort medium` | **53** | **5** | 21 | **4:01** | **$1.24** |
+
+Plan-first alone did not help: the transcript shows `form_input` set all six text fields in one
+batched call (68 s from page open to text fields done, upload included) and then **eight custom
+dropdown widgets** (School, Degree, country of residence, phone country, three Yes/No selects,
+the location autocomplete) ate three and a half minutes - School alone was 68 s of "type slowly",
+scroll the list, screenshot, click. `form_input` cannot set these; the cure is the keyboard: click
+the control, type the option text, Enter, in ONE `browser_batch`, verify by reading the field back.
+That, plus banning screenshots except the final one, is batch 6. The remaining floor is one model
+turn per widget plus the page reads; the ~4 s per turn is API latency, hence `apply.effort`
+(default `medium`, passed as `--effort`) as the last lever - `low` is faster and untested for
+form-filling judgment.
+
+**Question keys must ignore the model's annotations.** Batch 6 recorded "Gender (voluntary EEO)"
+next to batch 5's "Gender": the prompt asks for the label's exact text, but the model still adds
+parentheticals. `QuestionKey.normalize` now strips trailing parenthetical groups, and the prompt
+says no annotations - both, because one of them will be ignored again.

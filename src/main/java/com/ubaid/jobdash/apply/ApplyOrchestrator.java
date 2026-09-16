@@ -4,12 +4,14 @@ import com.ubaid.jobdash.ai.ClaudeCliClient;
 import com.ubaid.jobdash.ai.CliJsonResult;
 import com.ubaid.jobdash.domain.ApplicantProfile;
 import com.ubaid.jobdash.domain.JobListing;
+import com.ubaid.jobdash.domain.ProfileAnswer;
 import com.ubaid.jobdash.domain.Resume;
 import com.ubaid.jobdash.domain.UserStatus;
 import com.ubaid.jobdash.store.ApplicantProfileRepository;
 import com.ubaid.jobdash.store.ApplicationRepository;
 import com.ubaid.jobdash.store.ApplyBatchRepository;
 import com.ubaid.jobdash.store.JobListingRepository;
+import com.ubaid.jobdash.store.ProfileAnswerRepository;
 import com.ubaid.jobdash.store.ResumeRepository;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
@@ -71,6 +73,10 @@ public class ApplyOrchestrator {
     private static final DateTimeFormatter TRANSCRIPT_TIME =
             DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault());
 
+    /** Date/time header format for the end-of-run markdown report - local time, same as {@link #TRANSCRIPT_TIME}. */
+    private static final DateTimeFormatter REPORT_TIME =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.systemDefault());
+
     /**
      * Something started for the duration of a batch and stopped when it's done - in production,
      * the running {@code caffeinate} process; in tests, a fake that just records the calls.
@@ -114,6 +120,8 @@ public class ApplyOrchestrator {
     private final JobListingRepository jobListingRepository;
     private final ResumeRepository resumeRepository;
     private final ApplicantProfileRepository applicantProfileRepository;
+    private final ProfileAnswerRepository profileAnswerRepository;
+    private final FormQuestionPrefetcher formQuestionPrefetcher;
     private final Clock clock;
     private final KeepAwakeStarter keepAwakeStarter;
 
@@ -129,10 +137,11 @@ public class ApplyOrchestrator {
                               ApplyBatchRepository applyBatchRepository,
                               ApplicationRepository applicationRepository, JobListingRepository jobListingRepository,
                               ResumeRepository resumeRepository, ApplicantProfileRepository applicantProfileRepository,
-                              Clock clock) {
+                              ProfileAnswerRepository profileAnswerRepository,
+                              FormQuestionPrefetcher formQuestionPrefetcher, Clock clock) {
         this(cliClient, properties, promptBuilder, applyUrlResolver, applyBatchRepository, applicationRepository,
-                jobListingRepository, resumeRepository, applicantProfileRepository, clock,
-                DEFAULT_KEEP_AWAKE_STARTER);
+                jobListingRepository, resumeRepository, applicantProfileRepository, profileAnswerRepository,
+                formQuestionPrefetcher, clock, DEFAULT_KEEP_AWAKE_STARTER);
     }
 
     /**
@@ -144,6 +153,7 @@ public class ApplyOrchestrator {
                        ApplyBatchRepository applyBatchRepository,
                        ApplicationRepository applicationRepository, JobListingRepository jobListingRepository,
                        ResumeRepository resumeRepository, ApplicantProfileRepository applicantProfileRepository,
+                       ProfileAnswerRepository profileAnswerRepository, FormQuestionPrefetcher formQuestionPrefetcher,
                        Clock clock, KeepAwakeStarter keepAwakeStarter) {
         this.cliClient = cliClient;
         this.properties = properties;
@@ -154,6 +164,8 @@ public class ApplyOrchestrator {
         this.jobListingRepository = jobListingRepository;
         this.resumeRepository = resumeRepository;
         this.applicantProfileRepository = applicantProfileRepository;
+        this.profileAnswerRepository = profileAnswerRepository;
+        this.formQuestionPrefetcher = formQuestionPrefetcher;
         this.clock = clock;
         this.keepAwakeStarter = keepAwakeStarter;
     }
@@ -247,7 +259,10 @@ public class ApplyOrchestrator {
         int failedCount = 0;
         int skippedCount = 0;
         double totalCostUsd = 0.0;
+        int newQuestionsCount = 0;
         String finalStatus = "ok";
+        List<ReportRow> reportRows = new ArrayList<>();
+        List<PendingReportEntry> pendingEntries = new ArrayList<>();
 
         KeepAwake keepAwake = keepAwakeStarter.start();
         try {
@@ -265,6 +280,7 @@ public class ApplyOrchestrator {
                     failedCount++;
                     applicationRepository.update(applicationId, "failed", "job no longer exists", 0.0,
                             clock.instant(), clock.instant());
+                    reportRows.add(new ReportRow("job #" + jobId, "", "failed", 0.0, false, null));
                     done++;
                     applyBatchRepository.updateProgress(batchId, done, submittedCount, needsReviewCount, failedCount,
                             skippedCount, totalCostUsd);
@@ -276,6 +292,7 @@ public class ApplyOrchestrator {
                         skippedCount++;
                         applicationRepository.update(applicationId, "skipped", "LinkedIn: apply manually", 0.0,
                                 clock.instant(), clock.instant());
+                        reportRows.add(new ReportRow(job.title(), job.company(), "skipped", 0.0, false, null));
                         applyLog.info("job {} \"{}\" at \"{}\" SKIPPED (LinkedIn - apply manually)",
                                 jobId, job.title(), job.company());
                     } else {
@@ -291,9 +308,16 @@ public class ApplyOrchestrator {
                         appendToTranscript(transcriptPath, TRANSCRIPT_TIME.format(clock.instant()) + " info "
                                 + directFormUrl.map(url -> "direct form url: " + url).orElse("no direct form url"));
 
+                        List<String> formQuestions = directFormUrl.map(formQuestionPrefetcher::prefetch)
+                                .orElse(List.of());
+                        appendToTranscript(transcriptPath, TRANSCRIPT_TIME.format(clock.instant()) + " info "
+                                + "pre-read " + formQuestions.size() + " form questions");
+
+                        List<ProfileAnswer> answers = profileAnswerRepository.list();
+
                         Path resumeAbsolutePath = Path.of(resume.storedPath()).toAbsolutePath();
                         String prompt = promptBuilder.build(job, resume, resumeAbsolutePath, profile, submit,
-                                properties.maxDescriptionChars(), directFormUrl);
+                                properties.maxDescriptionChars(), directFormUrl, answers, formQuestions);
                         List<String> args = chromeArgs(properties, ApplyPromptBuilder.APPLY_JSON_SCHEMA, sessionId);
                         ClaudeCliClient.StreamOptions options = new ClaudeCliClient.StreamOptions(
                                 args, properties.timeout(), properties.idleTimeout(), cancelled::get);
@@ -319,6 +343,19 @@ public class ApplyOrchestrator {
                             jobListingRepository.setUserStatus(jobId, UserStatus.APPLIED, finishedAt);
                         }
 
+                        for (String question : outcome.unanswered()) {
+                            ProfileAnswerRepository.Recorded recorded = profileAnswerRepository.recordUnanswered(
+                                    question, jobId, job.company(), finishedAt);
+                            if (recorded.created()) {
+                                newQuestionsCount++;
+                            }
+                            pendingEntries.add(new PendingReportEntry(question, job.title(), job.company()));
+                        }
+
+                        String resumeCommand = "claude --resume " + sessionId + " --chrome";
+                        reportRows.add(new ReportRow(job.title(), job.company(), outcome.status(), outcome.costUsd(),
+                                "needs_review".equals(outcome.status()), resumeCommand));
+
                         applyLog.info("job {} \"{}\" at \"{}\" outcome={} cost=${} {}ms",
                                 jobId, job.title(), job.company(), outcome.status(),
                                 String.format("%.4f", outcome.costUsd()), tookMs);
@@ -328,6 +365,7 @@ public class ApplyOrchestrator {
                     log.warn("apply job {} threw: {}", jobId, e.toString());
                     applicationRepository.update(applicationId, "failed", "unexpected error: " + e.getMessage(), 0.0,
                             clock.instant(), clock.instant());
+                    reportRows.add(new ReportRow(job.title(), job.company(), "failed", 0.0, false, null));
                 }
 
                 done++;
@@ -338,10 +376,17 @@ public class ApplyOrchestrator {
             keepAwake.stop();
         }
 
-        applyBatchRepository.finish(batchId, finalStatus, clock.instant());
-        applyLog.info("batch {} DONE status={} done={}/{} submitted={} needs-review={} failed={} skipped={} cost=${}",
+        Instant finishInstant = clock.instant();
+        applyBatchRepository.finish(batchId, finalStatus, finishInstant);
+
+        Path reportPath = writeReport(batchId, submit, finishInstant, reportRows, pendingEntries, submittedCount,
+                needsReviewCount, failedCount, skippedCount, totalCostUsd);
+        applyBatchRepository.setReport(batchId, newQuestionsCount, reportPath == null ? null : reportPath.toString());
+
+        applyLog.info("batch {} DONE status={} done={}/{} submitted={} needs-review={} failed={} skipped={} "
+                        + "new-questions={} cost=${}",
                 batchId, finalStatus, done, jobIds.size(), submittedCount, needsReviewCount, failedCount,
-                skippedCount, String.format("%.4f", totalCostUsd));
+                skippedCount, newQuestionsCount, String.format("%.4f", totalCostUsd));
     }
 
     /**
@@ -393,14 +438,15 @@ public class ApplyOrchestrator {
         return dir;
     }
 
-    /** Maps one CLI result into a status/notes/cost triple, never throwing. */
+    /** Maps one CLI result into a status/notes/cost/unanswered-list quadruple, never throwing. */
     private Outcome mapResult(CliJsonResult result, String sessionId) {
         return switch (result) {
             case CliJsonResult.Ok ok -> {
                 JsonNode structured = ok.structuredOutput();
                 String outcome = structured.path("outcome").asString("failed");
                 String summary = structured.path("summary").asString("");
-                String unanswered = joinUnanswered(structured.get("unanswered"));
+                List<String> unansweredList = unansweredList(structured.get("unanswered"));
+                String unanswered = String.join("; ", unansweredList);
                 String notes = unanswered.isEmpty() ? summary : summary + " Unanswered: " + unanswered;
                 String status = switch (outcome) {
                     case "submitted" -> "submitted";
@@ -411,13 +457,13 @@ public class ApplyOrchestrator {
                 String finalNotes = "not_found".equals(outcome) && summary.isEmpty()
                         ? "Posting not found (closed or 404)"
                         : notes;
-                yield new Outcome(status, finalNotes, ok.costUsd());
+                yield new Outcome(status, finalNotes, ok.costUsd(), unansweredList);
             }
             case CliJsonResult.Timeout timeout ->
-                    new Outcome("failed", "claude CLI timed out after " + timeout.afterMs() + "ms", 0.0);
+                    new Outcome("failed", "claude CLI timed out after " + timeout.afterMs() + "ms", 0.0, List.of());
             case CliJsonResult.Failed failed ->
-                    new Outcome("failed", stuckNotes(failed.message(), sessionId), failed.costUsd());
-            case CliJsonResult.CliNotFound notFound -> new Outcome("failed", notFound.message(), 0.0);
+                    new Outcome("failed", stuckNotes(failed.message(), sessionId), failed.costUsd(), List.of());
+            case CliJsonResult.CliNotFound notFound -> new Outcome("failed", notFound.message(), 0.0, List.of());
         };
     }
 
@@ -451,13 +497,13 @@ public class ApplyOrchestrator {
         return message;
     }
 
-    private static String joinUnanswered(JsonNode unanswered) {
+    private static List<String> unansweredList(JsonNode unanswered) {
         if (unanswered == null || !unanswered.isArray() || unanswered.isEmpty()) {
-            return "";
+            return List.of();
         }
         List<String> items = new ArrayList<>();
         unanswered.forEach(n -> items.add(n.asString("")));
-        return String.join("; ", items);
+        return items;
     }
 
     /**
@@ -480,12 +526,73 @@ public class ApplyOrchestrator {
                 "--tools", "Read",
                 "--allowedTools", "mcp__claude-in-chrome", "Read",
                 "--max-turns", String.valueOf(p.maxTurns()),
-                "--max-budget-usd", String.valueOf(p.maxBudgetUsd()));
+                "--max-budget-usd", String.valueOf(p.maxBudgetUsd()),
+                "--effort", p.effort());
     }
 
     private record InFlight(long batchId, AtomicBoolean cancelled) {
     }
 
-    private record Outcome(String status, String notes, double costUsd) {
+    private record Outcome(String status, String notes, double costUsd, List<String> unanswered) {
+    }
+
+    /** One row of the end-of-run report's job table. {@code resumeCommand} is null for skipped/missing jobs. */
+    private record ReportRow(String title, String company, String outcome, double costUsd, boolean tabLeftOpen,
+                              String resumeCommand) {
+    }
+
+    /** One question recorded as unanswered during this batch, for the report's questions section. */
+    private record PendingReportEntry(String question, String jobTitle, String company) {
+    }
+
+    /**
+     * Writes {@code logs/apply/batch-<id>-report.md} (or wherever {@code apply.transcript-dir}
+     * points) summarizing every job's outcome and every question recorded as unanswered this run,
+     * and returns its path - or null if writing it failed (best-effort, like everything else in
+     * this class). {@code REPORT_TIME} formats the header's date in the same local zone as the
+     * transcripts and {@code apply.log}.
+     */
+    private Path writeReport(long batchId, boolean submit, Instant now, List<ReportRow> reportRows,
+                              List<PendingReportEntry> pendingEntries, int submittedCount, int needsReviewCount,
+                              int failedCount, int skippedCount, double totalCostUsd) {
+        Path path = ensureTranscriptDir().resolve("batch-" + batchId + "-report.md");
+        StringBuilder md = new StringBuilder();
+        md.append("# Apply batch ").append(batchId).append(" - ").append(REPORT_TIME.format(now))
+                .append(" (submit: ").append(submit ? "on" : "off").append(")\n\n");
+
+        md.append("## Jobs\n\n");
+        md.append("| Title | Company | Outcome | Cost | Tab left open | Resume |\n");
+        md.append("|---|---|---|---|---|---|\n");
+        for (ReportRow row : reportRows) {
+            md.append("| ").append(row.title()).append(" | ").append(row.company()).append(" | ")
+                    .append(row.outcome()).append(" | $").append(String.format("%.2f", row.costUsd()))
+                    .append(" | ").append(row.tabLeftOpen() ? "yes" : "no").append(" | ")
+                    .append(row.resumeCommand() == null ? "" : "`" + row.resumeCommand() + "`").append(" |\n");
+        }
+
+        if (!pendingEntries.isEmpty()) {
+            md.append("\n## Questions Claude could not answer\n\n");
+            for (PendingReportEntry entry : pendingEntries) {
+                md.append("- \"").append(entry.question()).append("\" - asked while applying to ")
+                        .append(entry.jobTitle()).append(" at ").append(entry.company()).append("\n");
+            }
+            md.append("\nAnswer these in the Resumes tab → Applicant profile → Questions & answers; "
+                    + "the next batch will use them.\n");
+        }
+
+        md.append("\n## Totals\n\n");
+        md.append("- Jobs: ").append(reportRows.size()).append("\n");
+        md.append("- Submitted: ").append(submittedCount).append(", Needs review: ").append(needsReviewCount)
+                .append(", Failed: ").append(failedCount).append(", Skipped: ").append(skippedCount).append("\n");
+        md.append("- New questions: ").append(pendingEntries.size()).append("\n");
+        md.append("- Total cost: $").append(String.format("%.2f", totalCostUsd)).append("\n");
+
+        try {
+            Files.writeString(path, md.toString());
+            return path;
+        } catch (IOException e) {
+            log.debug("failed to write apply batch report {}: {}", path, e.toString());
+            return null;
+        }
     }
 }

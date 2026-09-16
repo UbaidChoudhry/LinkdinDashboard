@@ -153,3 +153,6 @@ apply:
   idle-timeout: 3m
   # Per-job stream-json transcripts (live observability + resumable sessions) are written here.
   transcript-dir: logs/apply
+  # Passed as --effort. Each browser action is a model turn, so per-turn thinking is a large
+  # share of an application's wall clock; medium keeps form-filling judgment, low is faster.
+  effort: medium

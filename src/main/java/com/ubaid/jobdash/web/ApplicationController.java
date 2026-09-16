@@ -7,20 +7,26 @@ import com.ubaid.jobdash.domain.ApplicantProfile;
 import com.ubaid.jobdash.domain.ApplyBatch;
 import com.ubaid.jobdash.domain.JobApplication;
 import com.ubaid.jobdash.domain.JobListing;
+import com.ubaid.jobdash.domain.ProfileAnswer;
 import com.ubaid.jobdash.domain.Resume;
 import com.ubaid.jobdash.store.ApplicantProfileRepository;
 import com.ubaid.jobdash.store.ApplicationRepository;
 import com.ubaid.jobdash.store.ApplyBatchRepository;
 import com.ubaid.jobdash.store.JobListingRepository;
+import com.ubaid.jobdash.store.ProfileAnswerRepository;
 import com.ubaid.jobdash.store.ResumeRepository;
 import com.ubaid.jobdash.web.dto.ApplicantProfileRequest;
 import com.ubaid.jobdash.web.dto.ApplicantProfileResponse;
 import com.ubaid.jobdash.web.dto.ApplyBatchResponse;
 import com.ubaid.jobdash.web.dto.ApplyRequest;
 import com.ubaid.jobdash.web.dto.JobApplicationResponse;
+import com.ubaid.jobdash.web.dto.ProfileAnswerCreateRequest;
+import com.ubaid.jobdash.web.dto.ProfileAnswerResponse;
+import com.ubaid.jobdash.web.dto.ProfileAnswerUpdateRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -49,6 +55,7 @@ import java.util.Optional;
 public class ApplicationController {
 
     private final ApplicantProfileRepository applicantProfileRepository;
+    private final ProfileAnswerRepository profileAnswerRepository;
     private final ApplyBatchRepository applyBatchRepository;
     private final ApplicationRepository applicationRepository;
     private final ResumeRepository resumeRepository;
@@ -59,6 +66,7 @@ public class ApplicationController {
     private final Clock clock;
 
     public ApplicationController(ApplicantProfileRepository applicantProfileRepository,
+                                  ProfileAnswerRepository profileAnswerRepository,
                                   ApplyBatchRepository applyBatchRepository,
                                   ApplicationRepository applicationRepository,
                                   ResumeRepository resumeRepository,
@@ -68,6 +76,7 @@ public class ApplicationController {
                                   AiProperties aiProperties,
                                   Clock clock) {
         this.applicantProfileRepository = applicantProfileRepository;
+        this.profileAnswerRepository = profileAnswerRepository;
         this.applyBatchRepository = applyBatchRepository;
         this.applicationRepository = applicationRepository;
         this.resumeRepository = resumeRepository;
@@ -113,6 +122,49 @@ public class ApplicationController {
 
     private static String nullToEmpty(String s) {
         return s == null ? "" : s;
+    }
+
+    // ---- profile answers ("Questions & answers") -----------------------------------------------
+
+    @GetMapping("/api/profile/answers")
+    public List<ProfileAnswerResponse> listAnswers() {
+        return profileAnswerRepository.list().stream().map(ProfileAnswerResponse::of).toList();
+    }
+
+    @PostMapping("/api/profile/answers")
+    public ResponseEntity<ProfileAnswerResponse> createAnswer(
+            @RequestBody(required = false) ProfileAnswerCreateRequest body) {
+        if (body == null || body.question() == null || body.question().isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "question is required.");
+        }
+        String answer = nullToEmpty(body.answer());
+        String key = com.ubaid.jobdash.apply.QuestionKey.normalize(body.question());
+        Optional<ProfileAnswer> existing = profileAnswerRepository.findByKey(key);
+        if (existing.isPresent()) {
+            profileAnswerRepository.setAnswer(existing.get().id(), answer, clock.instant());
+            ProfileAnswer updated = profileAnswerRepository.findById(existing.get().id()).orElseThrow();
+            return ResponseEntity.ok(ProfileAnswerResponse.of(updated));
+        }
+        String status = answer.isBlank() ? "pending" : "answered";
+        long id = profileAnswerRepository.insert(body.question(), answer, status, null, "", clock.instant());
+        ProfileAnswer created = profileAnswerRepository.findById(id).orElseThrow();
+        return ResponseEntity.status(HttpStatus.CREATED).body(ProfileAnswerResponse.of(created));
+    }
+
+    @PutMapping("/api/profile/answers/{id}")
+    public ProfileAnswerResponse updateAnswer(@PathVariable long id,
+                                               @RequestBody(required = false) ProfileAnswerUpdateRequest body) {
+        String answer = body == null ? "" : nullToEmpty(body.answer());
+        profileAnswerRepository.setAnswer(id, answer, clock.instant());
+        return profileAnswerRepository.findById(id)
+                .map(ProfileAnswerResponse::of)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "No profile answer found with id " + id + "."));
+    }
+
+    @DeleteMapping("/api/profile/answers/{id}")
+    public ResponseEntity<Void> deleteAnswer(@PathVariable long id) {
+        profileAnswerRepository.delete(id);
+        return ResponseEntity.noContent().build();
     }
 
     // ---- apply batches ------------------------------------------------------------------------
@@ -180,6 +232,29 @@ public class ApplicationController {
     @GetMapping("/api/applications")
     public List<ApplyBatchResponse> recent(@RequestParam(name = "limit", defaultValue = "20") int limit) {
         return applyBatchRepository.findRecent(limit).stream().map(this::toResponse).toList();
+    }
+
+    /**
+     * Serves a batch's end-of-run markdown report (see {@link ApplyOrchestrator#runBatch}) - 404s
+     * when the batch has none (never finished, or the write failed) or the file was since removed.
+     */
+    @GetMapping(value = "/api/applications/{id}/report", produces = "text/markdown")
+    public ResponseEntity<String> report(@PathVariable long id) {
+        ApplyBatch batch = applyBatchRepository.findById(id)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "No apply batch found with id " + id + "."));
+        if (batch.reportPath() == null || batch.reportPath().isBlank()) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "No report recorded for this batch.");
+        }
+        Path reportPath = Path.of(batch.reportPath());
+        if (!Files.exists(reportPath)) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "Apply batch report file is missing.");
+        }
+        try {
+            String content = Files.readString(reportPath, StandardCharsets.UTF_8);
+            return ResponseEntity.ok().contentType(MediaType.valueOf("text/markdown; charset=utf-8")).body(content);
+        } catch (IOException e) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "Could not read apply batch report: " + e.getMessage());
+        }
     }
 
     /**

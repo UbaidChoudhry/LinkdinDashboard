@@ -36,6 +36,7 @@ public abstract class AbstractStoreTest {
     protected ApplicantProfileRepository applicantProfileRepository;
     protected ApplyBatchRepository applyBatchRepository;
     protected ApplicationRepository applicationRepository;
+    protected ProfileAnswerRepository profileAnswerRepository;
 
     @BeforeEach
     void migrateFreshDatabase() {
@@ -65,5 +66,6 @@ public abstract class AbstractStoreTest {
         this.applicantProfileRepository = new ApplicantProfileRepository(client);
         this.applyBatchRepository = new ApplyBatchRepository(client);
         this.applicationRepository = new ApplicationRepository(client);
+        this.profileAnswerRepository = new ProfileAnswerRepository(client);
     }
 }

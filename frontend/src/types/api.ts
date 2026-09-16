@@ -321,4 +321,27 @@ export interface ApplyBatchResponse {
   startedAt: string;
   finishedAt: string | null;
   jobs: JobApplicationResponse[];
+  /** How many new profile questions this batch left pending for the user to answer. */
+  newQuestions: number;
+  /** Whether an end-of-run markdown report is available at GET .../report. */
+  hasReport: boolean;
+}
+
+/**
+ * A saved answer to a question Claude has hit while filling out an application (or one the user
+ * added by hand). Replaces the old free-text ApplicantProfile.extraAnswers field: when Claude
+ * meets a question it cannot answer it records it here as "pending" (with the company it came
+ * from and how many times it's been asked); the user answers it once and every later application
+ * reuses it. Mirrors web/dto/ProfileAnswerResponse.java.
+ */
+export interface ProfileAnswer {
+  id: number;
+  question: string;
+  answer: string;
+  status: "answered" | "pending";
+  askedCount: number;
+  lastJobId: number | null;
+  lastCompany: string;
+  createdAt: string;
+  updatedAt: string;
 }

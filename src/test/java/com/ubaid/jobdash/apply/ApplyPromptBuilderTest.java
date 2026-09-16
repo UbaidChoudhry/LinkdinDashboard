@@ -3,12 +3,14 @@ package com.ubaid.jobdash.apply;
 import com.ubaid.jobdash.domain.ApplicantProfile;
 import com.ubaid.jobdash.domain.FilterVerdict;
 import com.ubaid.jobdash.domain.JobListing;
+import com.ubaid.jobdash.domain.ProfileAnswer;
 import com.ubaid.jobdash.domain.Resume;
 import com.ubaid.jobdash.domain.UserStatus;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -134,5 +136,54 @@ class ApplyPromptBuilderTest {
 
         assertThat(prompt).contains("Workday postings: click Apply, then \"Apply Manually\"");
         assertThat(prompt).contains("Workday account required");
+    }
+
+    @Test
+    void promptDescribesThePlanFirstWorkflow() {
+        String prompt = builder.build(job("<p>Great role</p>"), resume(), Path.of("/data/resumes/1.pdf"),
+                profile(), false, 4000, Optional.empty(), List.of(), List.of());
+
+        assertThat(prompt).contains("Call read_page ONCE");
+        assertThat(prompt).contains("In ONE message, before filling anything, write out the complete plan");
+        assertThat(prompt).contains("grouping up to 8");
+        assertThat(prompt).contains("browser-batch call");
+        assertThat(prompt).contains("Do one verification pass with read_page (not screenshots)");
+        assertThat(prompt).contains("Narrate nothing between actions");
+        assertThat(prompt).contains("handle each one in ONE browser-batch: click the control, type the exact option");
+        assertThat(prompt).contains("Take NO screenshots except one at the very end");
+    }
+
+    @Test
+    void knownAnswersRenderAndPendingQuestionsRenderSeparately() {
+        List<ProfileAnswer> answers = List.of(
+                new ProfileAnswer(1, "Portfolio link?", "https://ada.dev", "answered", 0, null, "", Instant.now(),
+                        Instant.now()),
+                new ProfileAnswer(2, "Desired start date?", "", "pending", 2, 5L, "Acme", Instant.now(),
+                        Instant.now()));
+
+        String prompt = builder.build(job("<p>Great role</p>"), resume(), Path.of("/data/resumes/1.pdf"),
+                profile(), false, 4000, Optional.empty(), answers, List.of());
+
+        assertThat(prompt).contains("KNOWN ANSWERS (use these verbatim when a form question matches):");
+        assertThat(prompt).contains("Q: Portfolio link?");
+        assertThat(prompt).contains("A: https://ada.dev");
+        assertThat(prompt).contains("PREVIOUSLY FLAGGED, STILL UNANSWERED (leave blank, list in \"unanswered\" again):");
+        assertThat(prompt).contains("Desired start date?");
+    }
+
+    @Test
+    void formQuestionsSectionRendersWhenPresentAndIsAbsentWhenEmpty() {
+        String withQuestions = builder.build(job("<p>Great role</p>"), resume(), Path.of("/data/resumes/1.pdf"),
+                profile(), false, 4000, Optional.empty(), List.of(), List.of("First Name [required]", "School"));
+
+        assertThat(withQuestions).contains("FORM QUESTIONS (pre-read from the page - the live page is authoritative):");
+        assertThat(withQuestions).contains("First Name [required]");
+        assertThat(withQuestions).contains("School");
+
+        String withoutQuestions = builder.build(job("<p>Great role</p>"), resume(), Path.of("/data/resumes/1.pdf"),
+                profile(), false, 4000, Optional.empty(), List.of(), List.of());
+
+        assertThat(withoutQuestions).doesNotContain(
+                "FORM QUESTIONS (pre-read from the page - the live page is authoritative):");
     }
 }

@@ -29,6 +29,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -82,6 +83,8 @@ class JobDashApiTest {
     private ApplicationRepository applicationRepository;
     @Autowired
     private ResumeRepository resumeRepository;
+    @Autowired
+    private com.ubaid.jobdash.store.ProfileAnswerRepository profileAnswerRepository;
 
     @BeforeEach
     void resetData() {
@@ -92,6 +95,7 @@ class JobDashApiTest {
         client.sql("delete from company_blocklist").update();
         client.sql("delete from job_application").update();
         client.sql("delete from apply_batch").update();
+        client.sql("delete from profile_answer").update();
         client.sql("delete from applicant_profile").update();
         client.sql("delete from resume").update();
         circuitStateStore.save(CircuitSnapshot.initial());
@@ -609,6 +613,100 @@ class JobDashApiTest {
                         .content("{\"fullName\":\"\",\"email\":\"jane@example.com\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").exists());
+    }
+
+    // ---- profile answers ("Questions & answers") ---------------------------------------------
+
+    @Test
+    void postAnswerCreatesRowThenGetRoundTripsPendingFirst() throws Exception {
+        mockMvc.perform(post("/api/profile/answers")
+                        .contentType("application/json")
+                        .content("{\"question\":\"Desired start date?\",\"answer\":\"\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.question").value("Desired start date?"))
+                .andExpect(jsonPath("$.status").value("pending"));
+
+        mockMvc.perform(post("/api/profile/answers")
+                        .contentType("application/json")
+                        .content("{\"question\":\"Portfolio link?\",\"answer\":\"https://ada.dev\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("answered"));
+
+        mockMvc.perform(get("/api/profile/answers"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].status").value("pending"))
+                .andExpect(jsonPath("$[1].status").value("answered"));
+    }
+
+    @Test
+    void postAnswerWithBlankQuestionReturns400() throws Exception {
+        mockMvc.perform(post("/api/profile/answers")
+                        .contentType("application/json")
+                        .content("{\"question\":\"\",\"answer\":\"x\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").exists());
+    }
+
+    @Test
+    void postDuplicateQuestionUpdatesExistingRowAndReturns200() throws Exception {
+        mockMvc.perform(post("/api/profile/answers")
+                        .contentType("application/json")
+                        .content("{\"question\":\"Salary expectation?\",\"answer\":\"\"}"))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(post("/api/profile/answers")
+                        .contentType("application/json")
+                        .content("{\"question\":\"salary expectation\",\"answer\":\"$150k\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.answer").value("$150k"))
+                .andExpect(jsonPath("$.status").value("answered"));
+
+        assertThat(profileAnswerRepository.list()).hasSize(1);
+    }
+
+    @Test
+    void putAnswerWithBlankAnswerSetsStatusPending() throws Exception {
+        long id = profileAnswerRepository.insert("Notice period?", "2 weeks", "answered", null, "", Instant.now());
+
+        mockMvc.perform(put("/api/profile/answers/" + id)
+                        .contentType("application/json")
+                        .content("{\"answer\":\"\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("pending"));
+    }
+
+    @Test
+    void deleteAnswerReturns204() throws Exception {
+        long id = profileAnswerRepository.insert("Some question", "answer", "answered", null, "", Instant.now());
+
+        mockMvc.perform(delete("/api/profile/answers/" + id))
+                .andExpect(status().isNoContent());
+
+        assertThat(profileAnswerRepository.list()).isEmpty();
+    }
+
+    // ---- apply batch report -------------------------------------------------------------------
+
+    @Test
+    void reportEndpointReturns404BeforeReportThenServesItAfterSetReport() throws Exception {
+        saveProfile();
+        long resumeId = insertResume(true);
+        long run = createRunRow(Instant.now());
+        long job = insertJob(90, run, "Engineer", "Acme", Instant.now());
+        setVerdictPass(job);
+
+        long batchId = applyBatchRepository.create(resumeId, false, 1, Instant.now());
+
+        mockMvc.perform(get("/api/applications/" + batchId + "/report"))
+                .andExpect(status().isNotFound());
+
+        Path reportPath = tempDir.resolve("batch-" + batchId + "-report.md");
+        java.nio.file.Files.writeString(reportPath, "# Apply batch " + batchId + "\n\nsome content\n");
+        applyBatchRepository.setReport(batchId, 1, reportPath.toString());
+
+        mockMvc.perform(get("/api/applications/" + batchId + "/report"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("some content")));
     }
 
     // ---- apply batches -----------------------------------------------------------------------

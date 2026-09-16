@@ -57,13 +57,14 @@ class ApplyOrchestratorTest extends AbstractStoreTest {
 
     private ApplyProperties props() {
         return new ApplyProperties(true, "sonnet", Duration.ofSeconds(10), 60, 2.0, 4000,
-                Duration.ofMinutes(3), tempDir.resolve("apply-logs").toString());
+                Duration.ofMinutes(3), tempDir.resolve("apply-logs").toString(), "medium");
     }
 
     private ApplyOrchestrator orchestrator(FakeCliClient cli) {
         return new ApplyOrchestrator(cli, props(), new ApplyPromptBuilder(),
                 new ApplyUrlResolver(atsCompanyRepository), applyBatchRepository,
-                applicationRepository, jobListingRepository, resumeRepository, applicantProfileRepository, clock);
+                applicationRepository, jobListingRepository, resumeRepository, applicantProfileRepository,
+                profileAnswerRepository, new FakeFormQuestionPrefetcher(), clock);
     }
 
     private long insertResume() {
@@ -142,10 +143,27 @@ class ApplyOrchestratorTest extends AbstractStoreTest {
         }
     }
 
+    /** Never touches the network: returns a fixed canned form-questions list for every URL. */
+    private static final class FakeFormQuestionPrefetcher extends FormQuestionPrefetcher {
+        @Override
+        public List<String> prefetch(String directFormUrl) {
+            return List.of("Pre-read question one", "Pre-read question two");
+        }
+    }
+
     private static CliJsonResult ok(String outcome, String summary) {
         return new CliJsonResult.Ok(
                 JsonMapper.builder().build().readTree(
                         "{\"outcome\":\"" + outcome + "\",\"summary\":\"" + summary + "\"}"),
+                0.10, 1000);
+    }
+
+    private static CliJsonResult okWithUnanswered(String outcome, String summary, List<String> unanswered) {
+        String quoted = unanswered.stream().map(q -> "\"" + q + "\"").collect(java.util.stream.Collectors.joining(","));
+        return new CliJsonResult.Ok(
+                JsonMapper.builder().build().readTree(
+                        "{\"outcome\":\"" + outcome + "\",\"summary\":\"" + summary + "\",\"unanswered\":[" + quoted
+                                + "]}"),
                 0.10, 1000);
     }
 
@@ -465,8 +483,8 @@ class ApplyOrchestratorTest extends AbstractStoreTest {
         });
         ApplyOrchestrator orchestrator = new ApplyOrchestrator(cli, props(), new ApplyPromptBuilder(),
                 new ApplyUrlResolver(atsCompanyRepository), applyBatchRepository,
-                applicationRepository, jobListingRepository, resumeRepository, applicantProfileRepository, clock,
-                fakeStarter);
+                applicationRepository, jobListingRepository, resumeRepository, applicantProfileRepository,
+                profileAnswerRepository, new FakeFormQuestionPrefetcher(), clock, fakeStarter);
 
         long batchId = orchestrator.start(List.of(firstJob, secondJob), resumeId, false);
         orchestrator.awaitLastBatch();
@@ -478,5 +496,47 @@ class ApplyOrchestratorTest extends AbstractStoreTest {
 
         List<JobApplication> apps = applicationRepository.findByBatch(batchId);
         assertThat(apps).extracting(JobApplication::status).contains("failed");
+    }
+
+    @Test
+    void unansweredQuestionsAreRecordedRepeatsAreBumpedAndReportIsWritten() throws InterruptedException, IOException {
+        long resumeId = insertResume();
+        saveProfile();
+        profileAnswerRepository.insert("Portfolio link?", "https://ada.dev", "answered", null, "", Instant.now());
+        long runId = newRun();
+        long firstJob = insertJob(runId, 20L, "greenhouse");
+        long secondJob = insertJob(runId, 21L, "greenhouse");
+
+        AtomicInteger callCount = new AtomicInteger();
+        FakeCliClient cli = new FakeCliClient(prompt -> {
+            if (callCount.incrementAndGet() == 1) {
+                return okWithUnanswered("needs_review", "filled most of it",
+                        List.of("Do you require sponsorship?", "What is your desired start date?"));
+            }
+            return okWithUnanswered("needs_review", "filled most of it",
+                    List.of("Do you require sponsorship?"));
+        });
+        ApplyOrchestrator orchestrator = orchestrator(cli);
+
+        long batchId = orchestrator.start(List.of(firstJob, secondJob), resumeId, false);
+        orchestrator.awaitLastBatch();
+
+        assertThat(cli.prompts().get(0)).contains("https://ada.dev");
+
+        assertThat(profileAnswerRepository.findByKey("do you require sponsorship").orElseThrow().askedCount())
+                .isEqualTo(1);
+        assertThat(profileAnswerRepository.list().stream().filter(a -> "pending".equals(a.status())).count())
+                .isEqualTo(2);
+
+        com.ubaid.jobdash.domain.ApplyBatch batch = applyBatchRepository.findById(batchId).orElseThrow();
+        assertThat(batch.newQuestions()).isEqualTo(2);
+        assertThat(batch.reportPath()).isNotBlank();
+
+        Path reportPath = Path.of(batch.reportPath());
+        assertThat(Files.exists(reportPath)).isTrue();
+        String report = Files.readString(reportPath);
+        assertThat(report).contains("Do you require sponsorship?");
+        assertThat(report).contains("What is your desired start date?");
+        assertThat(report).contains("claude --resume");
     }
 }

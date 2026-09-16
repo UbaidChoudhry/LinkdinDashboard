@@ -2,11 +2,13 @@ package com.ubaid.jobdash.apply;
 
 import com.ubaid.jobdash.domain.ApplicantProfile;
 import com.ubaid.jobdash.domain.JobListing;
+import com.ubaid.jobdash.domain.ProfileAnswer;
 import com.ubaid.jobdash.domain.Resume;
 import com.ubaid.jobdash.text.PromptText;
 import org.springframework.stereotype.Component;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -61,6 +63,23 @@ public class ApplyPromptBuilder {
      */
     public String build(JobListing job, Resume resume, Path resumeAbsolutePath, ApplicantProfile profile,
                          boolean submit, int maxDescriptionChars, Optional<String> directFormUrl) {
+        return build(job, resume, resumeAbsolutePath, profile, submit, maxDescriptionChars, directFormUrl,
+                List.of(), List.of());
+    }
+
+    /**
+     * The full prompt, additionally carrying the applicant's saved {@code profile_answer} rows and
+     * the server pre-read {@code formQuestions} (see {@link FormQuestionPrefetcher}) - the two
+     * pieces that let Claude decide every answer <i>before</i> opening a browser tab, per the
+     * plan-first workflow below. {@code answers} splits into a "use these verbatim" list (answered
+     * rows) and a "don't ask again, just leave it blank" list (rows still pending from an earlier
+     * batch); either section is omitted from the prompt when empty. {@code formQuestions} is
+     * merged with the live {@code read_page} result in step 3 below - the live page always wins
+     * where they disagree, since it reflects the form exactly as Claude will interact with it.
+     */
+    public String build(JobListing job, Resume resume, Path resumeAbsolutePath, ApplicantProfile profile,
+                         boolean submit, int maxDescriptionChars, Optional<String> directFormUrl,
+                         List<ProfileAnswer> answers, List<String> formQuestions) {
         String description = PromptText.truncate(PromptText.stripHtml(job.description()), maxDescriptionChars);
         String submitInstruction = submit
                 ? """
@@ -92,30 +111,54 @@ public class ApplyPromptBuilder {
 
         String directFormUrlLine = directFormUrl.map(url -> "\nDIRECT APPLY FORM URL: " + url).orElse("");
 
+        String knownAnswers = knownAnswersSection(answers);
+        String pendingQuestions = pendingQuestionsSection(answers);
+        String formQuestionsSection = formQuestionsSection(formQuestions);
+
         return """
                 You are applying to a job posting on behalf of a candidate, using the Claude-in-Chrome
-                browser extension. Follow these steps in order:
+                browser extension. Plan the whole form before touching it, then fill it fast: read
+                once, decide everything, act in batches. Follow these steps in order:
 
                 %s
-                3. Locate the resume/CV upload field on the application form and upload the file at
-                   the absolute path given below (RESUME FILE PATH). Do not type or paste resume text
-                   into a file upload field - use the actual file. Use the browser file-upload tool on
-                   the resume <input type=file> element (it may be hidden behind an Attach / Upload /
-                   Browse / Choose file button; find the input with the page-reading tools). NEVER
-                   click a button that opens the operating system's file-picker dialog - that native
-                   dialog freezes the page and this run will be killed as stuck. If a native file
-                   dialog is already open, stop and set outcome failed with summary
-                   "native file dialog opened".
-                4. Fill every other form field. For each field, first check the APPLICANT PROFILE
-                   below; if the profile doesn't answer it, check the RESUME TEXT below. If NEITHER
-                   the profile nor the resume answers a question, leave that field blank and add the
-                   exact question text to the "unanswered" array in your result - do not guess.
-                5. Never invent an answer to a work-authorization, sponsorship, salary-expectation, or
-                   EEO/demographic question. Only use what the applicant profile or resume actually
-                   states; if neither states it, leave it blank and list it in "unanswered".
-                6. Do not paste the resume text into a cover-letter or free-text field. If a cover
-                   letter is required, write two or three short sentences from the resume and the
-                   posting; if it is optional, leave it empty.
+                3. Call read_page ONCE, with the interactive-elements filter, to enumerate every field
+                   on the form and its element reference. Merge this with FORM QUESTIONS below when
+                   given - the two should mostly agree, and the live read_page result is authoritative
+                   wherever they don't (the page may have changed, or a field may be conditional).
+                4. In ONE message, before filling anything, write out the complete plan: for every
+                   field, the exact value you will enter, or "blank (unanswered)". Decide each value
+                   in this order - KNOWN ANSWERS below (verbatim), then the APPLICANT PROFILE, then
+                   the RESUME TEXT. Never guess a work-authorization, sponsorship, salary-expectation,
+                   or EEO/demographic/personal-preference answer that neither source actually states -
+                   leave it blank in the plan and add the question's label text EXACTLY as it appears on
+                   the form to the "unanswered" array - no added notes, categories or parentheses
+                   (write "Gender", not "Gender (voluntary EEO)"), so repeat questions match the
+                   saved answer next time.
+                5. Fill the form by element reference, using the form-filling tool, grouping up to 8
+                   actions into each browser-batch call. Upload the resume at the absolute path given
+                   below (RESUME FILE PATH) using the file-upload tool on the resume <input type=file>
+                   element (it may be hidden behind an Attach / Upload / Browse / Choose file button;
+                   find the input with the page-reading tools). Do not type or paste resume text into
+                   a file upload field - use the actual file. NEVER click a button that opens the
+                   operating system's file-picker dialog - that native dialog freezes the page and
+                   this run will be killed as stuck. If a native file dialog is already open, stop and
+                   set outcome failed with summary "native file dialog opened".
+                   Custom dropdowns and autocompletes (School, Degree, country, Yes/No selects,
+                   location pickers - anything the form-filling tool cannot set) cost the most time,
+                   so handle each one in ONE browser-batch: click the control, type the exact option
+                   text (or the first distinctive words of it), wait 1 second, press Enter. Never
+                   scroll inside a dropdown list, never type "slowly", and never screenshot to look
+                   for an option - if Enter picked the wrong value, read the field back and retry
+                   once with a more specific string. Ask read_page for a large max_chars so one call
+                   covers the whole form instead of one call per scroll position.
+                6. Do one verification pass with read_page (not screenshots) after filling, and fix
+                   only the fields that don't match your plan. Do not paste the resume text into a
+                   cover-letter or free-text field - if a cover letter is required, write two or three
+                   short sentences from the resume and the posting; if it is optional, leave it empty.
+                7. Take NO screenshots except one at the very end to confirm the review step - verify
+                   values by reading the fields back, not by looking. Narrate nothing between actions;
+                   narrate only the plan (step 4) and the final summary. Every extra screenshot or
+                   sentence is a full model turn and the biggest cost in this task.
 
                 %s
 
@@ -153,7 +196,7 @@ public class ApplyPromptBuilder {
                 %s
 
                 RESUME FILE PATH: %s
-
+                %s
                 APPLICANT PROFILE:
                 Full name: %s
                 Email: %s
@@ -164,8 +207,8 @@ public class ApplyPromptBuilder {
                 Work authorization: %s
                 Requires sponsorship: %s
                 Salary expectation: %s
-                Other notes / how to answer anything else: %s
 
+                %s%s
                 RESUME TEXT:
                 %s
                 """.formatted(
@@ -178,6 +221,7 @@ public class ApplyPromptBuilder {
                 nullToEmpty(job.location()),
                 description,
                 resumeAbsolutePath.toAbsolutePath(),
+                formQuestionsSection,
                 nullToEmpty(profile.fullName()),
                 nullToEmpty(profile.email()),
                 nullToEmpty(profile.phone()),
@@ -187,8 +231,54 @@ public class ApplyPromptBuilder {
                 nullToEmpty(profile.workAuthorization()),
                 profile.requiresSponsorship() ? "Yes" : "No",
                 nullToEmpty(profile.salaryExpectation()),
-                nullToEmpty(profile.extraAnswers()),
+                knownAnswers,
+                pendingQuestions,
                 nullToEmpty(resume.contentText()));
+    }
+
+    /** {@code KNOWN ANSWERS} section: answered {@code profile_answer} rows, verbatim. Empty string when none. */
+    private static String knownAnswersSection(List<ProfileAnswer> answers) {
+        List<ProfileAnswer> answered = answers.stream().filter(a -> "answered".equals(a.status())).toList();
+        if (answered.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder("KNOWN ANSWERS (use these verbatim when a form question matches):\n");
+        for (ProfileAnswer a : answered) {
+            sb.append("Q: ").append(a.question()).append("\nA: ").append(a.answer()).append("\n");
+        }
+        return sb.append("\n").toString();
+    }
+
+    /**
+     * {@code PREVIOUSLY FLAGGED} section: questions an earlier batch already recorded as
+     * unanswered - Claude leaves these blank again rather than re-deciding them, and still lists
+     * them in "unanswered" so the count/last-asked tracking in {@code profile_answer} stays
+     * accurate. Empty string when none.
+     */
+    private static String pendingQuestionsSection(List<ProfileAnswer> answers) {
+        List<ProfileAnswer> pending = answers.stream().filter(a -> "pending".equals(a.status())).toList();
+        if (pending.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder(
+                "PREVIOUSLY FLAGGED, STILL UNANSWERED (leave blank, list in \"unanswered\" again):\n");
+        for (ProfileAnswer a : pending) {
+            sb.append("- ").append(a.question()).append("\n");
+        }
+        return sb.append("\n").toString();
+    }
+
+    /** {@code FORM QUESTIONS} section: the server pre-read from {@link FormQuestionPrefetcher}. Empty string when none. */
+    private static String formQuestionsSection(List<String> formQuestions) {
+        if (formQuestions == null || formQuestions.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder(
+                "\nFORM QUESTIONS (pre-read from the page - the live page is authoritative):\n");
+        for (String q : formQuestions) {
+            sb.append("- ").append(q).append("\n");
+        }
+        return sb.toString();
     }
 
     private static String nullToEmpty(String s) {

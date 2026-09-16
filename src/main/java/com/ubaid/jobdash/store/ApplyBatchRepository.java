@@ -85,6 +85,18 @@ public class ApplyBatchRepository {
                 .update();
     }
 
+    /**
+     * Records how many new {@code profile_answer} rows this batch's run created and where its
+     * end-of-run markdown report was written. Called once, after {@link #finish}.
+     */
+    public void setReport(long id, int newQuestions, String reportPath) {
+        client.sql("update apply_batch set new_questions = :newQuestions, report_path = :reportPath where id = :id")
+                .param("newQuestions", newQuestions)
+                .param("reportPath", reportPath)
+                .param("id", id)
+                .update();
+    }
+
     /** The most recent batches, newest first, for a history view. */
     public List<ApplyBatch> findRecent(int limit) {
         return client.sql("select * from apply_batch order by id desc limit :limit")
@@ -107,7 +119,9 @@ public class ApplyBatchRepository {
                 rs.getInt("skipped"),
                 rs.getDouble("cost_usd"),
                 Timestamps.parse(rs.getString("started_at")),
-                Timestamps.parse(rs.getString("finished_at"))
+                Timestamps.parse(rs.getString("finished_at")),
+                rs.getInt("new_questions"),
+                rs.getString("report_path")
         );
     }
 }

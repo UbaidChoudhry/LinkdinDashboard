@@ -435,6 +435,7 @@ location_verdict     Claude's US/not-US call per distinct location string, no TT
 applicant_profile    single row (id=1): work authorization, sponsorship, salary, etc. (V12)
 apply_batch           one row per "Apply with Claude" click: status, per-outcome counters (V12)
 job_application       one row per job per attempt: status, notes, cost; session_id, last_activity, log_path (V13) drive the live activity line, the transcript link and the resume command
+profile_answer        question → answer table behind the applicant profile; pending rows are questions Claude could not answer (V14)
 ```
 
 Two indexes worth knowing about:
@@ -497,5 +498,8 @@ Adzuna / h1bapi sources are driven through `StubHttpClient`, `SalaryRateLimiter`
 | Change how Claude fills out an application | `apply/ApplyPromptBuilder.java` — the prompt + `--json-schema` |
 | Change the CLI flags for the browser-driving invocation | `apply/ApplyOrchestrator.chromeArgs` |
 | Change which page Claude opens to apply (per ATS) | `apply/ApplyUrlResolver.java` - the direct, iframe-free form URL per source |
+| Change how form questions are pre-read from the page | `apply/FormQuestionPrefetcher.java` (jsoup over the direct form URL; fixtures in `src/test/resources/fixtures/`) |
+| Add or answer a question Claude keeps hitting | Resumes tab → Questions & answers, or `profile_answer` via `ProfileAnswerRepository`; keyed by `apply/QuestionKey` |
+| Read a batch's end-of-run report | `logs/apply/batch-<id>-report.md`, or Show run report on the Results tab |
 | Find out why an application failed or got stuck | the row's **Details** in the Results tab: its notes, the last browser action, **View log** (the per-job transcript under `logs/apply/`), and the `claude --resume <sessionId> --chrome` command to continue that session and ask Claude directly. `logs/apply.log` has one line per browser action across all jobs |
 | Turn "Apply with Claude" off | `application.yml` → `apply.enabled: false` |

@@ -4,6 +4,7 @@ import {
   applicationLogUrl,
   cancelApplyBatch,
   getApplyBatch,
+  getApplyReport,
   getCurrentApplyBatch,
   startApplications,
 } from "../api/client";
@@ -68,6 +69,7 @@ function DetailsRow({ job, batchId }: { job: JobApplicationResponse; batchId: nu
       <strong>
         {job.title} — {job.company}
       </strong>
+      {job.status === "needs_review" && <div className="apply-note">Tab left open for you to finish.</div>}
       {job.notes && <div>{job.notes}</div>}
       {showActivity && <div className="apply-activity">Claude: {job.lastActivity}</div>}
       {job.hasLog && (
@@ -83,6 +85,48 @@ function DetailsRow({ job, batchId }: { job: JobApplicationResponse; batchId: nu
           <CopyResumeButton sessionId={job.sessionId} />
         </div>
       )}
+    </div>
+  );
+}
+
+function RunReport({ batchId }: { batchId: number }) {
+  const [visible, setVisible] = useState(false);
+  const [report, setReport] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleShow() {
+    setVisible(true);
+    if (report != null) return;
+    setLoading(true);
+    setError(null);
+    try {
+      setReport(await getApplyReport(batchId));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to load the run report.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="apply-report-section">
+      {!visible ? (
+        <button type="button" className="secondary" onClick={handleShow}>
+          Show run report
+        </button>
+      ) : (
+        <button type="button" className="secondary" onClick={() => setVisible(false)}>
+          Hide
+        </button>
+      )}
+      {visible && loading && <p className="muted">Loading…</p>}
+      {visible && error && (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      )}
+      {visible && report != null && <pre className="apply-report">{report}</pre>}
     </div>
   );
 }
@@ -230,7 +274,17 @@ export function ApplyControls({ eligibleJobIds, linkedinCount, onFinished }: App
         )}
 
         {!running && batch && batch.status !== "running" && (
-          <span className="apply-note">{summaryLine(batch)}</span>
+          <span className="apply-note">
+            {summaryLine(batch)}
+            {batch.newQuestions > 0 && (
+              <>
+                {" · "}
+                <strong>{batch.newQuestions}</strong> new question
+                {batch.newQuestions === 1 ? "" : "s"} need your answer → Resumes tab, Applicant
+                profile
+              </>
+            )}
+          </span>
         )}
 
         {batch && (
@@ -248,6 +302,7 @@ export function ApplyControls({ eligibleJobIds, linkedinCount, onFinished }: App
 
       {batch && showDetails && (
         <div className="apply-details">
+          {batch.hasReport && <RunReport batchId={batch.id} />}
           <p className="apply-note">
             Stuck? Open the log, or resume the session in a terminal and ask Claude what blocked
             it — the browser tabs it used are gone once the session ends, but it can reopen them.

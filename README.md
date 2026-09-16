@@ -407,8 +407,20 @@ moves straight to **Applied**.
 **The applicant profile.** A resume answers "what have you done," not "are you authorized to work
 here" or "what's your salary expectation" — those need a real answer, and Claude is never allowed
 to guess one. Fill in the **applicant profile** form at the bottom of the **Resumes** tab once
-(name, contact info, links, work authorization, sponsorship, salary expectation, and a free-text
-field for anything else you're regularly asked) and every application draws on it.
+(name, contact info, links, work authorization, sponsorship, salary expectation) and every
+application draws on it.
+
+**Questions & answers.** Under the profile is a table of question → answer. Any question an
+application asks that neither the profile nor the resume answers is added there as **Pending**
+(with the company that asked and how often), the application still finishes as Needs review with
+its tab open, and the batch moves on. Answer a pending question once and every later application
+uses that answer verbatim. Remote-work preference, messaging opt-ins and the voluntary EEO
+questions are the usual first entries.
+
+**End-of-run report.** When a batch finishes, the Results tab shows how many new questions need
+answers and a **Show run report** button: every job's outcome and cost, which tabs were left open
+for you, the resume-in-terminal command per job, and the list of new questions. The same report
+is written to `logs/apply/batch-<id>-report.md`.
 
 **LinkedIn rows are skipped, listed as "Apply manually."** Applying through LinkedIn needs your
 real, logged-in LinkedIn account, and this project's one non-negotiable rule (see
@@ -435,6 +447,11 @@ candidate account** on each company's Workday tenant; Claude will not create one
 
 Claude drives your **real** Chrome window, opening tabs you can watch — nothing runs headless or
 out of sight.
+
+**Speed.** A full Greenhouse form is about 50 browser actions and 4 minutes: text fields go in
+one batched call, and the time is the custom dropdowns (school, degree, country, yes/no), each
+of which is a model turn or two. `apply.effort` (default `medium`) is the lever if you want it
+faster at some risk to judgment.
 
 **Cost.** Each application is its own `claude -p --chrome` invocation, so expect roughly
 **$1–$3 per application** depending on how many form fields and browser actions it takes (a full

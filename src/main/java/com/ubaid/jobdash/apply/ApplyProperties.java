@@ -21,6 +21,7 @@ public record ApplyProperties(
         double maxBudgetUsd,
         int maxDescriptionChars,
         Duration idleTimeout,
-        String transcriptDir
+        String transcriptDir,
+        String effort
 ) {
 }

@@ -14,6 +14,7 @@ import type {
   JobResponse,
   JobTab,
   JobSourceName,
+  ProfileAnswer,
   ResumeResponse,
   RunIdResponse,
   RunResponse,
@@ -322,4 +323,36 @@ export function cancelApplyBatch(id: number): Promise<void> {
  * UI opens this directly in a new tab rather than fetching it. */
 export function applicationLogUrl(batchId: number, applicationId: number): string {
   return `/api/applications/${batchId}/jobs/${applicationId}/log`;
+}
+
+/** The end-of-run markdown report for a batch (404 when it has none). */
+export function getApplyReport(batchId: number): Promise<string> {
+  return request<string>(`/api/applications/${batchId}/report`, undefined, true);
+}
+
+// --- Profile answers (question/answer table replacing ApplicantProfile.extraAnswers) ------
+
+/** Pending rows first. */
+export function listProfileAnswers(): Promise<ProfileAnswer[]> {
+  return request<ProfileAnswer[]>("/api/profile/answers");
+}
+
+/** 201 for a new question, 200 if it already existed and was updated. */
+export function addProfileAnswer(question: string, answer: string): Promise<ProfileAnswer> {
+  return request<ProfileAnswer>("/api/profile/answers", {
+    method: "POST",
+    body: JSON.stringify({ question, answer }),
+  });
+}
+
+/** A blank answer flips the row back to "pending". */
+export function setProfileAnswer(id: number, answer: string): Promise<ProfileAnswer> {
+  return request<ProfileAnswer>(`/api/profile/answers/${id}`, {
+    method: "PUT",
+    body: JSON.stringify({ answer }),
+  });
+}
+
+export function deleteProfileAnswer(id: number): Promise<void> {
+  return request<void>(`/api/profile/answers/${id}`, { method: "DELETE" });
 }
