@@ -98,7 +98,7 @@ class DetailFetchServiceTest {
         return new JobListing(jobId, String.valueOf(4000000000L + jobId), "linkedin", "Engineer " + jobId, "Acme",
                 "New York, NY", T0, T0, T0, RUN_ID, "https://www.linkedin.com/jobs/view/" + jobId, null,
                 FilterVerdict.PASS, 1, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, false, null, null);
+                null, null, null, null, false, null, null, null, null);
     }
 
     @Test
@@ -115,7 +115,7 @@ class DetailFetchServiceTest {
         String expectedHash = DetailParser.hashOf("We build distributed systems.\nRequirements: Java.");
         for (long id : List.of(1L, 2L, 3L)) {
             verify(jobListingRepository).applyDetail(eq(id), eq("We build distributed systems.\nRequirements: Java."),
-                    eq(expectedHash), any());
+                    eq(expectedHash), any(), any());
         }
         verify(jobListingRepository, never()).markDetailGone(anyLong(), any());
         assertThat(f.http.requestsSeen()).hasSize(3);
@@ -141,7 +141,7 @@ class DetailFetchServiceTest {
 
         assertThat(status).isEqualTo("ok");
         verify(jobListingRepository).markDetailGone(eq(1L), any());
-        verify(jobListingRepository, never()).applyDetail(anyLong(), any(), any(), any());
+        verify(jobListingRepository, never()).applyDetail(anyLong(), any(), any(), any(), any());
         assertThat(f.registry.progress(RUN_ID).orElseThrow().detailsDone()).isEqualTo(1);
     }
 
@@ -154,7 +154,7 @@ class DetailFetchServiceTest {
         String status = f.service.fetchForRun(RUN_ID, () -> false);
 
         assertThat(status).isEqualTo("blocked");
-        verify(jobListingRepository, never()).applyDetail(anyLong(), any(), any(), any());
+        verify(jobListingRepository, never()).applyDetail(anyLong(), any(), any(), any(), any());
         verify(jobListingRepository, never()).markDetailGone(anyLong(), any());
         assertThat(f.http.requestsSeen()).as("no further request after the block").hasSize(1);
         assertThat(f.circuitStore.load().state()).isEqualTo(com.ubaid.jobdash.http.CircuitState.OPEN);
@@ -169,7 +169,7 @@ class DetailFetchServiceTest {
         String status = f.service.fetchForRun(RUN_ID, () -> false);
 
         assertThat(status).isEqualTo("capped");
-        verify(jobListingRepository, times(1)).applyDetail(anyLong(), any(), any(), any());
+        verify(jobListingRepository, times(1)).applyDetail(anyLong(), any(), any(), any(), any());
         assertThat(f.http.requestsSeen()).hasSize(1);
     }
 
@@ -183,8 +183,8 @@ class DetailFetchServiceTest {
         String status = f.service.fetchForRun(RUN_ID, () -> false);
 
         assertThat(status).isEqualTo("ok");
-        verify(jobListingRepository, never()).applyDetail(eq(1L), any(), any(), any());
-        verify(jobListingRepository).applyDetail(eq(2L), any(), any(), any());
+        verify(jobListingRepository, never()).applyDetail(eq(1L), any(), any(), any(), any());
+        verify(jobListingRepository).applyDetail(eq(2L), any(), any(), any(), any());
         assertThat(f.registry.progress(RUN_ID).orElseThrow().detailsDone()).isEqualTo(1);
         assertThat(f.registry.progress(RUN_ID).orElseThrow().requestsMade()).isEqualTo(9);
     }
@@ -207,7 +207,7 @@ class DetailFetchServiceTest {
         f.http.enqueue(new StubHttpResponse(200, DETAIL_BODY, null));
 
         assertThat(f.service.fetchForRun(RUN_ID, () -> false)).isEqualTo("ok");
-        verify(jobListingRepository).applyDetail(eq(1L), any(), any(), any());
+        verify(jobListingRepository).applyDetail(eq(1L), any(), any(), any(), any());
     }
 
     @Test

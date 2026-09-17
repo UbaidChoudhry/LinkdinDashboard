@@ -53,6 +53,7 @@ public class ApplyPromptBuilder {
         return build(job, resume, resumeAbsolutePath, profile, submit, maxDescriptionChars, Optional.empty());
     }
 
+
     /**
      * Renders the full prompt text sent on stdin for one job's apply attempt. When
      * {@code directFormUrl} is present, it names a standalone, top-level page that is the
@@ -79,6 +80,20 @@ public class ApplyPromptBuilder {
      */
     public String build(JobListing job, Resume resume, Path resumeAbsolutePath, ApplicantProfile profile,
                          boolean submit, int maxDescriptionChars, Optional<String> directFormUrl,
+                         List<ProfileAnswer> answers, List<String> formQuestions) {
+        return build(job, resume, resumeAbsolutePath, profile, submit, maxDescriptionChars, job.jobUrl(),
+                directFormUrl, answers, formQuestions);
+    }
+
+    /**
+     * The full prompt, additionally accepting an explicit {@code postingUrl} to render as
+     * {@code JOB URL:} instead of {@code job.jobUrl()}. Used for a matched LinkedIn row, where the
+     * posting Claude actually opens is the resolved company-site {@code apply_url} - LinkedIn
+     * itself is never opened for applying (see {@code ApplyOrchestrator}). Every other overload
+     * keeps compiling by delegating here with {@code job.jobUrl()}.
+     */
+    public String build(JobListing job, Resume resume, Path resumeAbsolutePath, ApplicantProfile profile,
+                         boolean submit, int maxDescriptionChars, String postingUrl, Optional<String> directFormUrl,
                          List<ProfileAnswer> answers, List<String> formQuestions) {
         String description = PromptText.truncate(PromptText.stripHtml(job.description()), maxDescriptionChars);
         String submitInstruction = submit
@@ -171,16 +186,22 @@ public class ApplyPromptBuilder {
                 coordinates; after typing into a field, confirm the value actually appears (zoom or
                 read the field) before moving on - typed text has been observed not to register.
 
-                Workday postings: click Apply, then "Apply Manually". If Workday asks you to sign in
-                or create an account, stop with outcome failed and summary "Workday account required" -
-                never create an account.
+                Workday postings: click Apply, then "Apply Manually". If you are already signed in, \
+                continue. If Workday shows a sign-in page, this rule overrides the login-wall rule below: \
+                click the email/username field and use the Bitwarden inline autofill menu that appears \
+                under it; if no menu appears, press Cmd+Shift+L (Bitwarden autofill), wait 2 seconds, and \
+                read the fields back. If both fields are now filled, sign in and continue. If they stay \
+                empty, stop with outcome failed and summary "Workday: no Bitwarden login for this site". \
+                If Bitwarden asks to unlock the vault, stop with outcome failed and summary "Bitwarden \
+                vault is locked - unlock it and retry". Never create an account and never type a password \
+                yourself.
 
                 If the job posting is closed, expired, or the page returns a 404 / "not found", stop
                 immediately and set "outcome" to "not_found".
 
-                If you hit a blocker you cannot get past - a login wall, a CAPTCHA, an unavoidable
-                required field with no answer available - stop, set "outcome" to "failed", and explain
-                the blocker in "summary".
+                Otherwise, if you hit a blocker you cannot get past - a login wall, a CAPTCHA, an
+                unavoidable required field with no answer available - stop, set "outcome" to "failed",
+                and explain the blocker in "summary".
 
                 Always fill in "summary" with a short, concrete account of what happened (what you
                 filled, what stage you reached, and why, if it didn't reach a normal ending).
@@ -214,7 +235,7 @@ public class ApplyPromptBuilder {
                 """.formatted(
                 openStep,
                 submitInstruction,
-                nullToEmpty(job.jobUrl()),
+                nullToEmpty(postingUrl),
                 directFormUrlLine,
                 nullToEmpty(job.title()),
                 nullToEmpty(job.company()),

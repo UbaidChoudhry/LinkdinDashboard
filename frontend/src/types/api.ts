@@ -22,6 +22,14 @@ export interface JobResponse {
   detailStatus: string | null;
   applyUrl: string | null;
   applyDomain: string | null;
+  /**
+   * LinkedIn-only: "onsite" means the posting is LinkedIn Easy Apply; "offsite" means it links out
+   * to an external application (which the run may or may not have matched to `applyUrl`/
+   * `applyDomain` below). Null for non-LinkedIn rows and rows not yet classified.
+   */
+  applyKind?: string | null;
+  /** Notes on how `applyUrl`/`applyDomain` were matched to the company's own ATS board, if at all. */
+  applyMatchNote?: string | null;
   salaryMin: number | null;
   salaryMax: number | null;
   salarySource?: string | null;
@@ -58,6 +66,7 @@ export type RunStatus =
   | "running"
   | "fetching_details"
   | "scanning"
+  | "matching"
   | "no_sources"
   | "ok"
   | "capped"

@@ -48,7 +48,9 @@ public record JobResponse(
         Boolean locationUs,
         Boolean locationConfident,
         String applicationStatus,
-        String applicationNotes
+        String applicationNotes,
+        String applyKind,
+        String applyMatchNote
 ) {
 
     /** Builds a response with no AI match context - {@code aiRecommended}/{@code aiReason} are null. */
@@ -95,7 +97,9 @@ public record JobResponse(
                 job.locationUs(),
                 job.locationConfident(),
                 application == null ? null : application.status(),
-                application == null ? null : application.notes()
+                application == null ? null : application.notes(),
+                job.applyKind(),
+                job.applyMatchNote()
         );
     }
 }

@@ -1305,6 +1305,35 @@ tr.source-dead {
   column instead of wrapping. `overflow-wrap: anywhere` covers the long unbroken tokens that turn
   up in job descriptions (URLs, "C++/Python/Kubernetes" runs).
 */
+.apply-target-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: none;
+  vertical-align: middle;
+}
+
+.apply-target-link:hover {
+  text-decoration: underline;
+}
+
+.apply-kind-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  vertical-align: middle;
+  opacity: 0.75;
+}
+
 .ai-reason {
   display: -webkit-box;
   -webkit-line-clamp: 2;

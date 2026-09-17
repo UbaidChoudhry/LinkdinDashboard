@@ -253,8 +253,8 @@ export function ApplyControls({ eligibleJobIds, linkedinCount, onFinished }: App
 
         {linkedinCount > 0 && (
           <span className="apply-note">
-            {linkedinCount} LinkedIn job{linkedinCount === 1 ? "" : "s"} will be skipped — apply to
-            those manually.
+            {linkedinCount} LinkedIn job{linkedinCount === 1 ? "" : "s"} have no external apply link (Easy Apply, closed, or not resolved yet) -
+            apply to those manually.
           </span>
         )}
 

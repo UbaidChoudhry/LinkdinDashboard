@@ -506,18 +506,82 @@ public class JobListingRepository {
      *
      * @return 1 if the job existed and was updated, 0 otherwise
      */
-    public int applyDetail(long jobId, String description, String descriptionHash, Instant fetchedAt) {
+    public int applyDetail(long jobId, String description, String descriptionHash, String applyKind, Instant fetchedAt) {
         return client.sql("""
                         update job_listing
-                        set description = :description, description_hash = :hash,
+                        set description = :description, description_hash = :hash, apply_kind = :applyKind,
                             detail_fetched_at = :fetchedAt, detail_status = 'ok'
                         where job_id = :id
                         """)
                 .param("description", description)
                 .param("hash", descriptionHash)
+                .param("applyKind", applyKind)
                 .param("fetchedAt", Timestamps.toText(fetchedAt))
                 .param("id", jobId)
                 .update();
+    }
+
+    /**
+     * Writes the LinkedIn->ATS matcher's decision for one job: the direct apply link (
+     * {@code apply_url}/{@code apply_domain}, same columns an ATS row's own source populates) and
+     * the note explaining why. Only {@code job_listing.description} is refreshed on a later
+     * upsert (see {@link #upsertAll}), so these columns survive re-sweeps once set.
+     *
+     * @return 1 if the job existed and was updated, 0 otherwise
+     */
+    public int setApplyTarget(long jobId, String applyUrl, String applyDomain, String note) {
+        return client.sql("""
+                        update job_listing
+                        set apply_url = :applyUrl, apply_domain = :applyDomain, apply_match_note = :note
+                        where job_id = :id
+                        """)
+                .param("applyUrl", applyUrl)
+                .param("applyDomain", applyDomain)
+                .param("note", note)
+                .param("id", jobId)
+                .update();
+    }
+
+    /**
+     * Writes only the matcher's note for a job it could not match - {@code apply_url}/
+     * {@code apply_domain} are left null, so the row stays "apply manually".
+     *
+     * @return 1 if the job existed and was updated, 0 otherwise
+     */
+    /** Sets {@code apply_kind} (onsite = Easy Apply, offsite = external apply) on one row. */
+    public int setApplyKind(long jobId, String applyKind) {
+        return client.sql("update job_listing set apply_kind = :kind where job_id = :id")
+                .param("kind", applyKind)
+                .param("id", jobId)
+                .update();
+    }
+
+    public int setApplyMatchNote(long jobId, String note) {
+        return client.sql("update job_listing set apply_match_note = :note where job_id = :id")
+                .param("note", note)
+                .param("id", jobId)
+                .update();
+    }
+
+    /**
+     * LinkedIn rows from one run whose external apply link the LinkedIn link resolver should read: not yet triaged,
+     * no apply link yet, carrying a real description (a scan-eligible row, same shape as
+     * {@link #findScannableByRun}), and not confidently non-US.
+     */
+    public List<JobListing> findLinkedInUnmatchedByRun(long runId) {
+        return client.sql("""
+                        select * from job_listing
+                        where source = 'linkedin' and last_seen_run_id = :runId and user_status is null
+                          and apply_url is null
+                          and description is not null and trim(description) != ''
+                          -- Hide only a CONFIDENTLY non-US row; unclassified and low-confidence
+                          -- rows stay eligible. coalesce is load-bearing - see the note above.
+                          and not (coalesce(location_us, 1) = 0 and coalesce(location_confident, 0) = 1)
+                        order by posted_at desc
+                        """)
+                .param("runId", runId)
+                .query(JobListingRepository::mapRow)
+                .list();
     }
 
     /**
@@ -577,7 +641,9 @@ public class JobListingRepository {
                 // Tri-state: NULL means "not classified yet", which is NOT the same as "not US".
                 // getBoolean() would flatten NULL to false and hide every unclassified row.
                 nullableBool(rs, "location_us"),
-                nullableBool(rs, "location_confident")
+                nullableBool(rs, "location_confident"),
+                rs.getString("apply_kind"),
+                rs.getString("apply_match_note")
         );
     }
 }

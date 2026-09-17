@@ -394,7 +394,7 @@ rejects it with a 400, and `findScannableByRun` only returns rows with a non-bla
 | Endpoint | `boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true` | `api.lever.co/v0/postings/{slug}?mode=json` | `POST {host}/wday/cxs/{tenant}/{site}/jobs` |
 | Requests per company | **1** (whole board) | **1** (whole board) | **1 + N** |
 | Native id | integer | **UUID string** | `JR2015623` |
-| Description | `content`, **HTML-entity-escaped** | `descriptionPlain` + real-HTML `description` | detail response only |
+| Description | `content`, **HTML-entity-escaped** | `descriptionPlain` (intro ONLY) + `lists[]` (sections, HTML) + `additionalPlain` - all three, see §13 | detail response only |
 | Real posted date | `first_published` | `createdAt`, **epoch millis** | detail's `startDate` only |
 | Keyword filtering | local | local | **server-side** (`searchText`) |
 | Dead slug | HTTP 404 `{"status":404,...}` | HTTP 404 `{"ok":false,...}` | site unresolvable |
@@ -1265,3 +1265,161 @@ form-filling judgment.
 next to batch 5's "Gender": the prompt asks for the label's exact text, but the model still adds
 parentheticals. `QuestionKey.normalize` now strips trailing parenthetical groups, and the prompt
 says no annotations - both, because one of them will be ignored again.
+
+## 13. LinkedIn postings → their real apply link (2026-09-21)
+
+**§12 said LinkedIn rows are skipped because applying through LinkedIn needs the user's own
+logged-in account - that rule is untouched.** What changed is that most recommended jobs come
+from LinkedIn (92 of 97 in the bucket this was built against), and every one of them used to end
+"Apply manually" even when the posting itself is really just a redirect to the company's own
+careers site. This section reads that redirect's real destination straight off the LinkedIn
+posting page - no catalog, no cross-referencing, no LinkedIn account exposed to anything beyond a
+browser tab a human is watching.
+
+### The redirect route is closed for a guest - verified before building anything else
+
+The obvious shortcut - read the offsite posting's destination URL off the page and send Claude
+there - was checked live first (two requests, budget at 0/1000, before spending any implementation
+effort) and does not exist for an unauthenticated request. The guest fragment the app already
+fetches (`/jobs-guest/jobs/api/jobPosting/{id}`) has a sign-in-modal Apply button with no `href`
+(§2 already said so), and the public `/jobs/view/{id}` page - checked on an onsite posting
+(4296091740) and an offsite one (4356164535), ~300 KB each - carries no `applyUrl` or
+`externalApply` element either, only the `joinUrlWithRedirect` sign-up link. That redirect is only
+reachable with a logged-in session - which is exactly why the two approaches below exist, first a
+catalog match that avoided a logged-in session entirely, then (once that was judged too weak) a
+resolver that accepts needing one, on a burner account. See below.
+
+### The apply-kind marker, free from the same fragment
+
+The fragment does carry one useful, free signal: whether the LinkedIn posting itself is Easy
+Apply. `source.linkedin.DetailParser.applyKindOf` reads it two ways - `onsite` when an Apply
+button's `data-tracking-control-name` equals `public_jobs_apply-link-onsite`; `offsite` when any
+`div.contextual-sign-in-modal`'s `data-impression-id` starts with
+`public_jobs_apply-link-offsite` (matched as a prefix, not an exact modal - unrelated sign-in
+modals for save/AI-summary/etc. coexist in the same fragment). Stored as `job_listing.apply_kind`
+(`V15__linkedin_apply_target.sql`). **It is informational only - nothing downstream filters on
+it except to skip the resolver entirely for `onsite` rows**, since an Easy Apply posting has no
+redirect to read in the first place. Its only other consumer is the UI's muted "Easy Apply" tag
+on a row that stays unresolved, so the user knows a redirect was never possible rather than
+wondering why nothing showed up.
+
+### What was built first, and why it was removed
+
+The first approach, built and shipped the same day, never sent LinkedIn a request at all: cross-
+reference each recommended LinkedIn posting against the `ats_company` catalog by exact company
+name, then score it against that company's actual Greenhouse/Lever/Workday postings
+(`apply/LinkedInAtsMatcher`, `apply/PostingMatcher`, `apply/LinkedInMatchProperties` - requisition
+id first, then Dice description similarity with a margin requirement, then a title/location tie-
+break, then a single-candidate fallback below the text threshold). It worked exactly as designed
+and was still not good enough: the first live measurement (run 29, after a Re-scan) matched only
+**11 of the 39** recommended LinkedIn jobs. The other 28 failed at the very first step, company
+lookup, because the company simply isn't in the `ats_company` catalog - Deloitte, JPMorgan, AWS,
+Google and Walmart among them, none of which run a Greenhouse/Lever/Workday board at all, or run
+one under a name/slug this project has never imported. No amount of tuning the scoring thresholds
+fixes a company that was never in the catalog to begin with, and the user judged an 11/39 hit rate
+too low to be worth the matcher's complexity. All three classes were deleted, along with the
+`apply.linkedin-match` config block and the `SourceQuery.maxDetails`/`SourcedJob.requisitionId`
+adapter additions that existed only to feed it.
+
+**One thing the matcher surfaced stayed, because it was a real bug unrelated to matching:**
+`LeverJobSource` only ever read a posting's `descriptionPlain` field, which Lever fills with just
+the intro (119 of 490 words on the Wealthfront posting that exposed this) - `lists` (every
+Responsibilities/Requirements section, as HTML) and `additionalPlain` (the closing) were both
+being silently dropped. Against the concatenation of all three the Wealthfront posting scored
+1.00 similarity against itself instead of 0.40. `LeverJobSource.fullDescription` now joins all
+three in page order (`LeverJobSourceTest.descriptionConcatenatesIntroListSectionsAndClosingText`).
+This had also been silently starving the AI scan (§9) of three quarters of every Lever posting's
+text since it was built - verdicts already cached in `ai_match` for Lever jobs predate the fix and
+won't be re-scored until a new resume or a targeted rescan.
+
+### The replacement: reading the real apply link out of a signed-in Chrome
+
+`apply/LinkedInApplyLinkResolver` (`@Service`) runs in the matcher's old slot - after the scan, in
+both the run and resume paths, and after a manual Re-scan - and, for the run's recommended
+LinkedIn rows that still have no apply link (skipping rows already known `apply_kind='onsite'`,
+i.e. Easy Apply), drives the same Claude-in-Chrome CLI invocation Apply with Claude uses
+(`apply/ApplyOrchestrator.chromeArgs`) in batches of `apply.linkedin-links.batch-size` (8)
+postings per call, capped at `max-per-run` (40); each batch is its own session with a transcript
+at `logs/apply/links-run-<run>-batch-<n>.log`.
+
+**The probe result, verbatim, that made this viable:** on a signed-in `/jobs/view/{id}` page the
+Apply button's `href` is `https://www.linkedin.com/safety/go/?url=<url-encoded destination>` -
+Claude reads it and URL-decodes it with the javascript tool, **without clicking it**. Measured on
+2 postings: 21 turns, $0.30, both external - an iHeartMedia Workday `…/apply?source=Linkedin` URL
+and a jobbol.com.br vacancy. Easy Apply postings have no such button at all, so they're recognized
+by the existing onsite/offsite marker above and never sent to Chrome.
+
+**This needs a signed-in LinkedIn session, which §2's rule was written to prevent exposing to
+automation - so it runs against a burner account, never the user's own.** That's the user's
+explicit choice, made the same day the matcher was removed: read-only, never-click behavior on a
+throwaway account is judged an acceptable trade for a real hit rate, where the matcher's zero-
+LinkedIn-traffic guarantee bought only 11/39. Nothing about §2's protection of the *real* account
+changes, and nothing is ever submitted, applied to, or changed on any account, burner included -
+the resolver only reads and decodes a redirect.
+
+Results land on the row exactly where a matcher match used to: `apply_url`, `apply_domain`
+(`greenhouse`/`lever`/`workday` by host, otherwise the destination host itself, e.g.
+`jobbol.com.br`), `apply_kind='offsite'`, `apply_match_note` "linkedin apply link (href)" -
+`apply/ApplyUrlResolver` then turns a Greenhouse hosted URL into the iframe-free embed form and a
+Lever URL into `/apply`, same as any native ATS row; other hosts are opened as-is. **If the page
+turns out to be a sign-in wall**, the phase stops outright and every row still unresolved that run
+gets the note "LinkedIn is not signed in in Chrome - sign in to the burner account and Re-scan" -
+a manual Re-scan afterward re-runs this phase against whichever recommended rows still have no
+apply link, the same as it always did for the matcher. A CLI failure on one batch notes that batch
+and continues to the next; a missing CLI binary or a disconnected extension stops the whole phase.
+
+**Cost:** roughly $0.15 per posting resolved one at a time; batches of 8 bring that down because
+the ~25k-token fixed overhead per `claude` invocation (§9) is paid once per batch, not once per
+posting. Config: `apply.linkedin-links: enabled, batch-size 8, max-per-run 40, max-turns 120,
+max-budget-usd 2.0, timeout 10m`.
+
+### Where the `matching` phase sits in the run, and why it had to touch the scanning checklist
+
+`RunOrchestrator` runs the resolver as phase 6, after the AI resume scan and before `finishRun`,
+in both `executeRun` (a normal run) and `executeResume` (the §10 Retry-after-cooldown path also
+scans, so it also resolves) - gated on `apply.linkedin-links.enabled` and skipped on cancellation,
+wrapped in the same try/catch idiom as `fetchDetailsSafely`/`classifyLocations` so a resolver
+failure can never turn a successful run into a failed one. It publishes the same in-flight status
+the matcher used, `matching`, which - like every in-flight status before it - had to be added to
+the **entire** `scanning` checklist, not just the obvious spot: `RunController.IN_FLIGHT_STATUSES`,
+`SweepProgress`'s javadoc, and on the frontend both `runStatus.ts`'s `IN_FLIGHT_STATUSES` *and*
+`RUN_STATUS_INFO` (missing the second one means the UI falls through to a raw "Run ended with
+status matching" instead of a friendly label) plus `types/api.ts`'s `RunStatus` union. This
+checklist cost was already paid when the matcher first added the status, so the resolver reused
+the name rather than adding a second one for what is, from the run's perspective, the same slot.
+`MatchController.scan`'s manual **Re-scan** path (the `runId` branch) calls the resolver the same
+way after its scan completes; the `jobIds` rescan branch (re-scoring specific jobs, no run in
+scope) skips it - there's no `runId` to resolve against, and that's documented in a comment rather
+than left silent.
+
+### Open items
+
+- **Bitwarden autofill is unverified against a live Workday tenant.** Task 0 of the plan called
+  for probing `claude -p --chrome` against a real Workday sign-in page with a saved Bitwarden
+  login, vault unlocked, to see whether the inline autofill menu or Cmd+Shift+L actually reaches
+  Bitwarden's extension UI (which is not page DOM, so whether the Chrome extension's tools can
+  even see it was an open question). That probe needs a tenant the user has a login for and has
+  not been run. The prompt rule (§5 in the plan) ships untested; treat the Workday apply path the
+  same way §12 treats a from-scratch Workday account today - watch the first real transcript
+  before trusting it. Unaffected by the matcher's removal: a Workday `apply_url` can now arrive
+  via the resolver above just as it used to arrive via a match, and either way it reaches the same
+  untested Bitwarden prompt rule in `ApplyPromptBuilder`.
+
+**First live run of the resolver (run 29, Re-scan, 2026-09-21):** candidates=39, external=32,
+easy-apply=2, closed=5, unresolved=0, 5 batches of 8, 172 browser actions in total, 705 s wall
+clock, **$2.25**, and `request_log` unchanged at 1561 before and after - the backend made no
+LinkedIn request; every read went through the signed-in Chrome. Every link came from the
+`safety/go/?url=` href (no clicks were needed). What the 32 destinations look like: 2 Workday, 4
+Greenhouse (plus one `grnh.se` short link that redirects to Greenhouse and is stored as its own
+host), 6 `amazon.jobs`, 3 `jpmorganchase.contacthr.com`, two iCIMS tenants, and a long tail of
+company career sites and tracking redirectors (`rr.jobsyn.org`, `ars2.equest.com`,
+`click.appcast.io`). Redirectors are stored as given; Apply with Claude opens them and follows
+wherever they land, and `ApplyUrlResolver` only rewrites hosts it recognises (Greenhouse, Lever).
+The catalog matcher this replaced had found 11 of the same 39.
+
+**`V15__linkedin_apply_target.sql`'s header still names `LinkedInAtsMatcher`, on purpose.** I
+corrected that comment after the migration had already run against the user's database, and the
+next boot failed Flyway validation ("Migration checksum mismatch for migration version 15") -
+Flyway checksums the whole file, comments included. Reverting the two lines byte-for-byte fixed
+it. The §5 rule "never hand-edit a shipped migration" covers comments too; explain history here,
+not in the migration.

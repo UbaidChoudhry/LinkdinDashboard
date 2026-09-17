@@ -88,6 +88,29 @@ class LeverJobSourceTest extends AbstractStoreTest {
     }
 
     @Test
+    void descriptionConcatenatesIntroListSectionsAndClosingText() {
+        // Lever splits a posting across descriptionPlain (intro), lists (the Responsibilities /
+        // Requirements sections, HTML) and additionalPlain (closing). Reading only the first field
+        // dropped three quarters of a real posting - see LeverJobSource.fullDescription.
+        http.enqueue(new StubHttpResponse(200, loadFixture("lever_postings.json"), null));
+
+        SourceFetchResult.Ok ok = (SourceFetchResult.Ok) source(props()).fetch(query(null, null, 0));
+        SourcedJob job = ok.jobs().stream()
+                .filter(j -> j.title().equals("Backend Software Engineer - Application Development"))
+                .findFirst().orElseThrow();
+
+        assertThat(job.description())
+                .contains("A World-Changing Company")
+                .contains("Core Responsiblities")
+                .contains("Architecting, developing, and maintaining")
+                .contains("Life at Palantir")
+                .doesNotContain("<li>");
+        assertThat(job.description().indexOf("Core Responsiblities"))
+                .isGreaterThan(job.description().indexOf("A World-Changing Company"))
+                .isLessThan(job.description().indexOf("Life at Palantir"));
+    }
+
+    @Test
     void httpOkWithEmptyArrayIsOkWithZeroJobsNotDeadSlug() {
         http.enqueue(new StubHttpResponse(200, "[]", null));
 

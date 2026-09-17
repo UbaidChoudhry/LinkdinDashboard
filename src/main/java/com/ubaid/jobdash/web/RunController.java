@@ -53,7 +53,8 @@ public class RunController {
     private static final long SSE_TIMEOUT_MS = Duration.ofMinutes(30).toMillis();
     private static final List<String> VALID_SOURCES = List.of("linkedin", "greenhouse", "lever", "workday");
     /** Statuses a run passes through before reaching a terminal one. Mirror of the frontend's IN_FLIGHT_STATUSES. */
-    private static final List<String> IN_FLIGHT_STATUSES = List.of("running", "fetching_details", "scanning");
+    private static final List<String> IN_FLIGHT_STATUSES =
+            List.of("running", "fetching_details", "scanning", "matching");
 
     private final RunOrchestrator runOrchestrator;
     private final RunProgressRegistry runProgressRegistry;

@@ -42,12 +42,17 @@ class ApplyUrlResolverTest {
     }
 
     private static JobListing job(String source, String sourceJobId, String company, String jobUrl) {
+        return job(source, sourceJobId, company, jobUrl, null, null);
+    }
+
+    private static JobListing job(String source, String sourceJobId, String company, String jobUrl,
+                                   String applyDomain, String applyUrl) {
         return new JobListing(
                 1L, sourceJobId, source, "Backend Engineer", company, "Remote",
                 Instant.parse("2026-08-27T00:00:00Z"), Instant.parse("2026-08-27T00:00:00Z"),
                 Instant.parse("2026-08-27T00:00:00Z"), 1L, jobUrl, "https://company.com",
-                FilterVerdict.PASS, 1, null, (UserStatus) null, null, null, null, null, null,
-                "desc", "hash", null, null, null, null, false, null, null);
+                FilterVerdict.PASS, 1, null, (UserStatus) null, null, null, null, applyUrl, applyDomain,
+                "desc", "hash", null, null, null, null, false, null, null, null, null);
     }
 
     @Test
@@ -145,11 +150,57 @@ class ApplyUrlResolverTest {
     }
 
     @Test
-    void linkedinResolvesToEmpty() {
+    void linkedinWithNoApplyDomainResolvesToEmpty() {
         StubAtsCompanyRepository repo = new StubAtsCompanyRepository(Optional.empty());
         ApplyUrlResolver resolver = new ApplyUrlResolver(repo);
 
         JobListing job = job("linkedin", "1", "Acme", "https://www.linkedin.com/jobs/view/1");
+
+        assertThat(resolver.directFormUrl(job)).isEmpty();
+    }
+
+    @Test
+    void linkedinLinkToAHostedGreenhousePostingBecomesTheEmbedForm() {
+        StubAtsCompanyRepository repo = new StubAtsCompanyRepository(Optional.empty());
+        ApplyUrlResolver resolver = new ApplyUrlResolver(repo);
+
+        JobListing job = job("linkedin", "1", "Stripe", "https://www.linkedin.com/jobs/view/1",
+                "greenhouse", "https://boards.greenhouse.io/stripe/jobs/6042172?gh_src=linkedin");
+
+        assertThat(resolver.directFormUrl(job))
+                .contains("https://job-boards.greenhouse.io/embed/job_app?for=stripe&token=6042172");
+        assertThat(repo.queried).as("a LinkedIn row with a stored apply_url never re-queries the catalog").isFalse();
+    }
+
+    @Test
+    void linkedinLinkAlreadyAnEmbedFormOrAShortLinkIsKeptOrLeftAlone() {
+        ApplyUrlResolver resolver = new ApplyUrlResolver(new StubAtsCompanyRepository(Optional.empty()));
+
+        assertThat(resolver.directFormUrl(job("linkedin", "1", "Stripe", "https://www.linkedin.com/jobs/view/1",
+                "greenhouse", "https://job-boards.greenhouse.io/embed/job_app?for=stripe&token=42")))
+                .contains("https://job-boards.greenhouse.io/embed/job_app?for=stripe&token=42");
+        assertThat(resolver.directFormUrl(job("linkedin", "1", "CLEAR", "https://www.linkedin.com/jobs/view/1",
+                "grnh.se", "https://grnh.se/70ehaj5i1us"))).isEmpty();
+    }
+
+    @Test
+    void linkedinLinkToALeverPostingGetsApplyAppendedOnce() {
+        ApplyUrlResolver resolver = new ApplyUrlResolver(new StubAtsCompanyRepository(Optional.empty()));
+        String posting = "https://jobs.lever.co/wealthfront/f5a0963a-ca1a-4140-b9e6-dbf6072093fe";
+
+        assertThat(resolver.directFormUrl(job("linkedin", "1", "Wealthfront", "https://www.linkedin.com/jobs/view/1",
+                "lever", posting + "?lever-source=LinkedIn"))).contains(posting + "/apply");
+        assertThat(resolver.directFormUrl(job("linkedin", "1", "Wealthfront", "https://www.linkedin.com/jobs/view/1",
+                "lever", posting + "/apply"))).contains(posting + "/apply");
+    }
+
+    @Test
+    void linkedinMatchedToWorkdayResolvesToEmpty() {
+        StubAtsCompanyRepository repo = new StubAtsCompanyRepository(Optional.empty());
+        ApplyUrlResolver resolver = new ApplyUrlResolver(repo);
+
+        JobListing job = job("linkedin", "1", "NVIDIA", "https://www.linkedin.com/jobs/view/1",
+                "workday", "https://nvidia.wd5.myworkdayjobs.com/job/1");
 
         assertThat(resolver.directFormUrl(job)).isEmpty();
     }

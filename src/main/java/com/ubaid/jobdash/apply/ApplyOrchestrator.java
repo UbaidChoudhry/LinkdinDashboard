@@ -288,21 +288,30 @@ public class ApplyOrchestrator {
                 }
 
                 try {
-                    if ("linkedin".equals(job.source())) {
+                    if ("linkedin".equals(job.source()) && job.applyDomain() == null) {
                         skippedCount++;
-                        applicationRepository.update(applicationId, "skipped", "LinkedIn: apply manually", 0.0,
+                        applicationRepository.update(applicationId, "skipped",
+                                "LinkedIn: no company-site match - apply manually", 0.0,
                                 clock.instant(), clock.instant());
                         reportRows.add(new ReportRow(job.title(), job.company(), "skipped", 0.0, false, null));
-                        applyLog.info("job {} \"{}\" at \"{}\" SKIPPED (LinkedIn - apply manually)",
+                        applyLog.info("job {} \"{}\" at \"{}\" SKIPPED (LinkedIn - no company-site match)",
                                 jobId, job.title(), job.company());
                     } else {
                         Instant startedAt = clock.instant();
                         applicationRepository.update(applicationId, "filling", "", 0.0, startedAt, null);
 
+                        boolean matchedLinkedin = "linkedin".equals(job.source()) && job.applyDomain() != null;
+                        String postingUrl = matchedLinkedin ? job.applyUrl() : job.jobUrl();
+
                         String sessionId = UUID.randomUUID().toString();
                         Path transcriptPath = ensureTranscriptDir().resolve(
                                 "batch-" + batchId + "-job-" + jobId + ".log");
                         applicationRepository.setSession(applicationId, sessionId, transcriptPath.toString());
+
+                        if (matchedLinkedin) {
+                            appendToTranscript(transcriptPath, TRANSCRIPT_TIME.format(clock.instant()) + " info "
+                                    + "linkedin → " + job.applyDomain() + " " + job.applyUrl());
+                        }
 
                         Optional<String> directFormUrl = applyUrlResolver.directFormUrl(job);
                         appendToTranscript(transcriptPath, TRANSCRIPT_TIME.format(clock.instant()) + " info "
@@ -317,7 +326,7 @@ public class ApplyOrchestrator {
 
                         Path resumeAbsolutePath = Path.of(resume.storedPath()).toAbsolutePath();
                         String prompt = promptBuilder.build(job, resume, resumeAbsolutePath, profile, submit,
-                                properties.maxDescriptionChars(), directFormUrl, answers, formQuestions);
+                                properties.maxDescriptionChars(), postingUrl, directFormUrl, answers, formQuestions);
                         List<String> args = chromeArgs(properties, ApplyPromptBuilder.APPLY_JSON_SCHEMA, sessionId);
                         ClaudeCliClient.StreamOptions options = new ClaudeCliClient.StreamOptions(
                                 args, properties.timeout(), properties.idleTimeout(), cancelled::get);
@@ -514,6 +523,12 @@ public class ApplyOrchestrator {
      * {@code --no-session-persistence}) is what makes the run resumable afterward.
      */
     static List<String> chromeArgs(ApplyProperties p, String jsonSchema, String sessionId) {
+        return chromeArgs(p, jsonSchema, sessionId, p.maxTurns(), p.maxBudgetUsd());
+    }
+
+    /** As above with the turn and cost caps supplied by the caller - the LinkedIn link resolver has its own. */
+    static List<String> chromeArgs(ApplyProperties p, String jsonSchema, String sessionId, int maxTurns,
+                                   double maxBudgetUsd) {
         return List.of(
                 "-p",
                 "--chrome",
@@ -525,8 +540,8 @@ public class ApplyOrchestrator {
                 "--strict-mcp-config",
                 "--tools", "Read",
                 "--allowedTools", "mcp__claude-in-chrome", "Read",
-                "--max-turns", String.valueOf(p.maxTurns()),
-                "--max-budget-usd", String.valueOf(p.maxBudgetUsd()),
+                "--max-turns", String.valueOf(maxTurns),
+                "--max-budget-usd", String.valueOf(maxBudgetUsd),
                 "--effort", p.effort());
     }
 

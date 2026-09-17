@@ -11,6 +11,12 @@ function formatSalary(min: number | null, max: number | null): string {
   return fmt((max ?? min) as number);
 }
 
+const APPLY_DOMAIN_LABELS: Record<string, string> = {
+  greenhouse: "Greenhouse",
+  lever: "Lever",
+  workday: "Workday",
+};
+
 const APPLICATION_STATUS_LABELS: Record<string, string> = {
   needs_review: "Needs review",
   submitted: "Submitted",
@@ -92,6 +98,22 @@ export function JobRow({ job, tab, onChanged, onError, grouped = false, selected
         </a>
         {job.source && (
           <span className="job-source-tag">{job.source}</span>
+        )}
+        {job.source === "linkedin" && job.applyDomain && (
+          <a
+            className="apply-target-link"
+            href={job.applyUrl ?? undefined}
+            target="_blank"
+            rel="noreferrer"
+            title={job.applyMatchNote ?? ""}
+          >
+            ↗ Apply on {APPLY_DOMAIN_LABELS[job.applyDomain] ?? job.applyDomain}
+          </a>
+        )}
+        {job.source === "linkedin" && !job.applyDomain && job.applyKind === "onsite" && (
+          <span className="apply-kind-tag" title="LinkedIn Easy Apply - no external apply link; apply manually">
+            Easy Apply
+          </span>
         )}
         {/* The AI verdict rides under the title rather than in its own column: the reason is a
             full sentence, and a column wide enough for it would squeeze everything else out. */}

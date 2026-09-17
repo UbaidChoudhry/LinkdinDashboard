@@ -49,6 +49,7 @@ public class DetailParser {
 
         String title = textOf(doc.selectFirst("h2.top-card-layout__title"));
         String company = textOf(doc.selectFirst("a.topcard__org-name-link"));
+        String applyKind = applyKindOf(doc);
 
         String seniority = null;
         String employment = null;
@@ -72,7 +73,28 @@ public class DetailParser {
         }
 
         return Optional.of(new JobDetail(title, company, description, hashOf(description),
-                seniority, employment, function, industries));
+                seniority, employment, function, industries, applyKind));
+    }
+
+    /**
+     * {@code onsite} (Easy Apply) when the Apply button's tracking name equals
+     * {@code public_jobs_apply-link-onsite}; {@code offsite} when any sign-in modal's
+     * impression id starts with {@code public_jobs_apply-link-offsite} - other, unrelated
+     * sign-in modals coexist in the same fragment (save, AI button, …), so match the prefix,
+     * never assume a single modal; else null.
+     */
+    private static String applyKindOf(Document doc) {
+        for (Element button : doc.select("[data-tracking-control-name]")) {
+            if ("public_jobs_apply-link-onsite".equals(button.attr("data-tracking-control-name"))) {
+                return "onsite";
+            }
+        }
+        for (Element modal : doc.select("div.contextual-sign-in-modal[data-impression-id]")) {
+            if (modal.attr("data-impression-id").startsWith("public_jobs_apply-link-offsite")) {
+                return "offsite";
+            }
+        }
+        return null;
     }
 
     /**

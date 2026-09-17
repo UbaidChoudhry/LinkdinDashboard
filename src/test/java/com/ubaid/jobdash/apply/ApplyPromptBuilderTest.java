@@ -26,7 +26,7 @@ class ApplyPromptBuilderTest {
                 Instant.parse("2026-08-27T00:00:00Z"), Instant.parse("2026-08-27T00:00:00Z"),
                 Instant.parse("2026-08-27T00:00:00Z"), 1L, "https://acme.com/jobs/1", "https://acme.com",
                 FilterVerdict.PASS, 1, null, (UserStatus) null, null, null, null, null, null,
-                description, "hash", null, null, null, null, false, null, null);
+                description, "hash", null, null, null, null, false, null, null, null, null);
     }
 
     private Resume resume() {
@@ -130,12 +130,33 @@ class ApplyPromptBuilderTest {
     }
 
     @Test
-    void promptIncludesWorkdayAccountRequiredRule() {
+    void promptIncludesWorkdayBitwardenCarveOutBeforeGenericLoginWallRule() {
         String prompt = builder.build(job("<p>Great role</p>"), resume(), Path.of("/data/resumes/1.pdf"),
                 profile(), false, 4000);
 
         assertThat(prompt).contains("Workday postings: click Apply, then \"Apply Manually\"");
-        assertThat(prompt).contains("Workday account required");
+        assertThat(prompt).contains("Bitwarden inline autofill menu");
+        assertThat(prompt).contains("Cmd+Shift+L");
+        assertThat(prompt).contains("this rule overrides the login-wall rule below");
+        assertThat(prompt).contains("Workday: no Bitwarden login for this site");
+        assertThat(prompt).contains("Bitwarden vault is locked - unlock it and retry");
+        assertThat(prompt).contains("Never create an account and never type a password yourself");
+
+        int workdayIndex = prompt.indexOf("Workday postings: click Apply");
+        int loginWallIndex = prompt.indexOf("if you hit a blocker you cannot get past");
+        assertThat(workdayIndex).isGreaterThan(-1);
+        assertThat(loginWallIndex).isGreaterThan(-1);
+        assertThat(workdayIndex).isLessThan(loginWallIndex);
+    }
+
+    @Test
+    void postingUrlOverloadRendersAsJobUrl() {
+        String applyUrl = "https://boards.greenhouse.io/embed/job_app?for=acme&token=999";
+        String prompt = builder.build(job("<p>Great role</p>"), resume(), Path.of("/data/resumes/1.pdf"),
+                profile(), false, 4000, applyUrl, Optional.empty(), List.of(), List.of());
+
+        assertThat(prompt).contains("JOB URL: " + applyUrl);
+        assertThat(prompt).doesNotContain("JOB URL: https://acme.com/jobs/1");
     }
 
     @Test

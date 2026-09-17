@@ -33,6 +33,10 @@ public class ApplyUrlResolver {
     private static final Pattern GREENHOUSE_HOSTED_URL =
             Pattern.compile("^https?://(?:boards|job-boards)\\.greenhouse\\.io/([^/]+)/jobs/\\d+");
 
+    /** A hosted Greenhouse posting URL with both the slug and the job id captured. */
+    private static final Pattern GREENHOUSE_HOSTED_JOB =
+            Pattern.compile("^https?://(?:boards|job-boards)\\.greenhouse\\.io/([^/]+)/jobs/(\\d+)");
+
     private static final Pattern LEVER_URL =
             Pattern.compile("^https?://jobs\\.lever\\.co/[^/?#]+/[0-9a-f-]{36}");
 
@@ -57,6 +61,7 @@ public class ApplyUrlResolver {
             return switch (ats) {
                 case "greenhouse" -> greenhouseDirectUrl(job);
                 case "lever" -> leverDirectUrl(job);
+                case "linkedin" -> linkedinDirectUrl(job);
                 default -> Optional.empty();
             };
         } catch (RuntimeException e) {
@@ -73,9 +78,17 @@ public class ApplyUrlResolver {
         if (slug == null || job.sourceJobId() == null || job.sourceJobId().isBlank()) {
             return Optional.empty();
         }
+        return Optional.of(greenhouseEmbedUrl(slug, job.sourceJobId()));
+    }
+
+    /**
+     * The standalone, iframe-free Greenhouse application-form URL for a given board slug and ATS
+     * job id (Greenhouse's {@code token} query parameter). Package-visible and reused for a
+     * LinkedIn row whose resolved apply link is a hosted Greenhouse posting URL.
+     */
+    static String greenhouseEmbedUrl(String slug, String atsJobId) {
         String encodedSlug = URLEncoder.encode(slug, StandardCharsets.UTF_8);
-        return Optional.of("https://job-boards.greenhouse.io/embed/job_app?for=" + encodedSlug
-                + "&token=" + job.sourceJobId());
+        return "https://job-boards.greenhouse.io/embed/job_app?for=" + encodedSlug + "&token=" + atsJobId;
     }
 
     private static Optional<String> greenhouseSlugFromUrl(String jobUrl) {
@@ -95,6 +108,49 @@ public class ApplyUrlResolver {
         if (!matcher.find()) {
             return Optional.empty();
         }
-        return Optional.of(matcher.group() + "/apply");
+        return Optional.of(leverApplyUrl(matcher.group()));
+    }
+
+    /**
+     * Lever's application-form URL for a given hosted posting URL: the same page with
+     * {@code /apply} appended. Package-visible for the same reason as
+     * {@link #greenhouseEmbedUrl(String, String)}.
+     */
+    static String leverApplyUrl(String hostedUrl) {
+        return hostedUrl + "/apply";
+    }
+
+    /**
+     * A LinkedIn row's direct apply link, once {@code apply/LinkedInApplyLinkResolver} has read
+     * its real destination out of the signed-in Chrome into {@code apply_url}. That destination
+     * is whatever LinkedIn pointed at - for Greenhouse usually the hosted posting page
+     * ({@code boards.greenhouse.io/<slug>/jobs/<id>}), which some companies (Stripe) redirect to
+     * an iframe page the browser tools cannot see into (HANDOFF.md §12) - so a recognised hosted
+     * Greenhouse URL is rewritten to the standalone embed form, a Lever posting URL gets
+     * {@code /apply}, and a URL already in that form is kept. Anything else (Workday, a company's
+     * own site, a tracking redirector, a {@code grnh.se} short link) yields empty: Claude opens
+     * {@code apply_url} as the JOB URL and finds the form itself, without the "DIRECT APPLY FORM
+     * URL, no iframe, no sign-in" framing meant only for a genuinely direct URL.
+     */
+    private static Optional<String> linkedinDirectUrl(JobListing job) {
+        String url = job.applyUrl();
+        if (url == null || url.isBlank()) {
+            return Optional.empty();
+        }
+        if ("greenhouse".equals(job.applyDomain())) {
+            if (url.contains("/embed/job_app?")) {
+                return Optional.of(url);
+            }
+            Matcher m = GREENHOUSE_HOSTED_JOB.matcher(url);
+            return m.find() ? Optional.of(greenhouseEmbedUrl(m.group(1), m.group(2))) : Optional.empty();
+        }
+        if ("lever".equals(job.applyDomain())) {
+            Matcher m = LEVER_URL.matcher(url);
+            if (!m.find()) {
+                return Optional.empty();
+            }
+            return Optional.of(url.startsWith(m.group() + "/apply") ? m.group() + "/apply" : leverApplyUrl(m.group()));
+        }
+        return Optional.empty();
     }
 }

@@ -128,7 +128,7 @@ public class DetailFetchService {
                             Optional<JobDetail> detail = detailParser.parse(completed.body());
                             if (detail.isPresent()) {
                                 jobListingRepository.applyDetail(job.jobId(), detail.get().description(),
-                                        detail.get().descriptionHash(), clock.instant());
+                                        detail.get().descriptionHash(), detail.get().applyKind(), clock.instant());
                                 done++;
                             } else {
                                 // Can't happen - OK means the client's own parse succeeded - but if the

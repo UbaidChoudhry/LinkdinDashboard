@@ -289,7 +289,19 @@ apply:
   max-budget-usd: 4.0           # per job
   idle-timeout: 3m              # no browser action for this long = stuck, job killed
   max-description-chars: 4000
+  linkedin-links:
+    enabled: true
+    batch-size: 8          # LinkedIn postings per Claude-in-Chrome call
+    max-per-run: 40        # recommended LinkedIn rows resolved per run
+    max-turns: 120
+    max-budget-usd: 2.0
+    timeout: 10m
 ```
+
+`apply.linkedin-links` reads each recommended LinkedIn row's real apply destination out of a
+**signed-in Chrome window** rather than guessing at a company-catalog match — see
+[Applying with Claude](#applying-with-claude) for why and how. Nothing here counts against the
+`ats:` daily caps above; it's LinkedIn pages Claude is reading, not board JSON.
 
 **`batch-size` is the cost lever that matters.** The cost shown in the UI is whatever the Claude
 CLI reports for each invocation — jobdash sums it, it does not compute it. Every invocation carries
@@ -422,10 +434,32 @@ answers and a **Show run report** button: every job's outcome and cost, which ta
 for you, the resume-in-terminal command per job, and the list of new questions. The same report
 is written to `logs/apply/batch-<id>-report.md`.
 
-**LinkedIn rows are skipped, listed as "Apply manually."** Applying through LinkedIn needs your
-real, logged-in LinkedIn account, and this project's one non-negotiable rule (see
-[How it gets the data](#how-it-gets-the-data)) is that account must never be exposed to
-automation. Only Greenhouse / Lever / Workday postings get the Claude-driven flow.
+**LinkedIn rows get their real apply link read out of a signed-in Chrome, not guessed at.** After
+every scan, and after a manual Re-scan, every recommended LinkedIn job without a link yet is
+handed to Claude in batches: on the posting's page, Claude reads the Apply button's redirect href
+and decodes the real destination it points to — without clicking it, so nothing is ever submitted,
+applied to, or changed. This needs **Chrome signed in to a LinkedIn account**, and that account
+should be a **burner, not your real one** — this project's one non-negotiable rule (see
+[How it gets the data](#how-it-gets-the-data)) is that your real LinkedIn account must never be
+exposed to automation, and reading an Apply button's href is still automation against LinkedIn's
+own pages. A resolved link shows up on the job's row as an **↗ Apply on Greenhouse/Lever/Workday**
+(or the destination's own host, e.g. `jobbol.com.br`) link next to the source tag; "Apply with
+Claude" then drives it exactly like a native board posting. A LinkedIn posting that's **Easy
+Apply** has no redirect to read at all, so it gets an **Easy Apply** tag instead and stays manual.
+If Chrome isn't signed in, the phase stops and every remaining row is noted "LinkedIn is not
+signed in in Chrome — sign in to the burner account and Re-scan" rather than guessing. Expect
+**about $0.06 per posting** in the default batches of 8 (measured: 39 postings, 5 calls, $2.25) and
+roughly $0.15 for a posting on its own — every `claude`
+invocation carries a fixed overhead regardless of payload size (see the AI-scan `batch-size` note
+above), so batching several postings per call is what keeps the cost down.
+
+**A LinkedIn row resolved to a Workday posting still needs a sign-in**, so it carries extra
+prerequisites beyond the ones below: the [Bitwarden](https://bitwarden.com/) Chrome extension
+installed, its vault **unlocked**, and a login already saved for that specific Workday tenant.
+Claude clicks the sign-in page's email field and tries Bitwarden's inline autofill menu (falling
+back to Cmd+Shift+L), never creates an account, and never types a password itself — if Bitwarden
+doesn't fill the fields, the job ends `failed` with a note explaining why. This path is not yet
+verified against a live tenant; treat it as best-effort until it's used for real.
 
 **Where Claude is sent.** Greenhouse and Lever both serve the application form as a standalone
 page (Greenhouse's `embed/job_app` URL, Lever's `/apply`), so Claude opens that directly instead

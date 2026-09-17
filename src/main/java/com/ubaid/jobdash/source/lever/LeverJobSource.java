@@ -154,9 +154,51 @@ public class LeverJobSource implements JobSource {
                     postedAt,
                     textOrNull(p, "hostedUrl"),
                     null,
-                    textOrNull(p, "descriptionPlain")));
+                    fullDescription(p)));
         }
         return result;
+    }
+
+    /**
+     * Lever splits a posting into {@code descriptionPlain} (the intro only), {@code lists} (every
+     * "Responsibilities" / "Requirements" section, with HTML {@code <li>} content) and
+     * {@code additionalPlain} (the closing text). The first field alone is a fraction of the posting:
+     * measured 2026-09-21 on Wealthfront's "Backend Engineer", it carried 119 of the 490 words the
+     * LinkedIn copy of the same posting had, which made the LinkedIn-to-board matcher score it 0.39
+     * while the concatenation scored 1.00 - and the AI scan had been reading that same fragment.
+     * This is the text Lever's own posting page renders, in the same order.
+     */
+    static String fullDescription(JsonNode p) {
+        StringBuilder sb = new StringBuilder();
+        String intro = textOrNull(p, "descriptionPlain");
+        if (intro != null && !intro.isBlank()) {
+            sb.append(intro.strip());
+        }
+        JsonNode lists = p.get("lists");
+        if (lists != null && lists.isArray()) {
+            for (JsonNode list : lists) {
+                String heading = textOrNull(list, "text");
+                String content = com.ubaid.jobdash.text.PromptText.stripHtml(textOrNull(list, "content"));
+                if (content == null || content.isBlank()) {
+                    continue;
+                }
+                if (sb.length() > 0) {
+                    sb.append("\n\n");
+                }
+                if (heading != null && !heading.isBlank()) {
+                    sb.append(heading.strip()).append("\n");
+                }
+                sb.append(content.strip());
+            }
+        }
+        String closing = textOrNull(p, "additionalPlain");
+        if (closing != null && !closing.isBlank()) {
+            if (sb.length() > 0) {
+                sb.append("\n\n");
+            }
+            sb.append(closing.strip());
+        }
+        return sb.length() == 0 ? null : sb.toString();
     }
 
     private static Instant parseEpochMillis(JsonNode node) {

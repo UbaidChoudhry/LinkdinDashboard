@@ -16,6 +16,8 @@ package com.ubaid.jobdash.source.linkedin;
  * @param employmentType  e.g. {@code "Full-time"}; may be null.
  * @param jobFunction     e.g. {@code "Engineering and Information Technology"}; may be null.
  * @param industries      e.g. {@code "Design Services"}; may be null.
+ * @param applyKind       {@code "onsite"} (Easy Apply), {@code "offsite"}, or null when neither
+ *                        marker is present. Informational only - see {@code HANDOFF.md} §13.
  */
 public record JobDetail(
         String title,
@@ -25,6 +27,7 @@ public record JobDetail(
         String seniorityLevel,
         String employmentType,
         String jobFunction,
-        String industries
+        String industries,
+        String applyKind
 ) {
 }

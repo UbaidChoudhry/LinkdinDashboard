@@ -142,11 +142,12 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
     [activeTab, jobs],
   );
   const eligibleJobIds = useMemo(
-    () => recommendedJobs.filter((j) => j.source !== "linkedin").map((j) => j.jobId),
+    () =>
+      recommendedJobs.filter((j) => j.source !== "linkedin" || j.applyDomain != null).map((j) => j.jobId),
     [recommendedJobs],
   );
   const linkedinCount = useMemo(
-    () => recommendedJobs.filter((j) => j.source === "linkedin").length,
+    () => recommendedJobs.filter((j) => j.source === "linkedin" && j.applyDomain == null).length,
     [recommendedJobs],
   );
 

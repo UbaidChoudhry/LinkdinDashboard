@@ -49,6 +49,20 @@ class DetailParserTest {
     }
 
     @Test
+    void applyKindIsOffsiteWhenTheSignInModalMarkerIsPresent() {
+        for (String name : List.of("frag_4239977994.html", "frag_4372129764.html")) {
+            JobDetail detail = parser.parse(loadFixture(name)).orElseThrow();
+            assertThat(detail.applyKind()).as(name).isEqualTo("offsite");
+        }
+    }
+
+    @Test
+    void applyKindIsOnsiteWhenTheApplyButtonIsEasyApply() {
+        JobDetail detail = parser.parse(loadFixture("frag_4296094481.html")).orElseThrow();
+        assertThat(detail.applyKind()).isEqualTo("onsite");
+    }
+
+    @Test
     void everyCapturedFragmentYieldsARealDescription() {
         for (String name : List.of("frag_4239977994.html", "frag_4296094481.html", "frag_4372129764.html")) {
             Optional<JobDetail> detail = parser.parse(loadFixture(name));

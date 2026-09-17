@@ -100,7 +100,7 @@ export function RunProgress({ run, streamError, onCancelled, onResumed }: RunPro
         )}
       </dl>
 
-      {run.scan && <ScanPanel scan={run.scan} live={run.status === "scanning"} />}
+      {run.scan && <ScanPanel scan={run.scan} live={run.status === "scanning" || run.status === "matching"} />}
 
       {streamError && (
         <p className="form-error" role="alert">

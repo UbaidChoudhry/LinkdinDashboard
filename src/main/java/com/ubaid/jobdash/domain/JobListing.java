@@ -37,6 +37,8 @@ public record JobListing(
         String salarySourceDetail,
         boolean suppressed,
         Boolean locationUs,
-        Boolean locationConfident
+        Boolean locationConfident,
+        String applyKind,
+        String applyMatchNote
 ) {
 }

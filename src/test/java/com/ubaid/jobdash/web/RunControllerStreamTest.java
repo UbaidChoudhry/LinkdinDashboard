@@ -101,6 +101,30 @@ class RunControllerStreamTest {
     }
 
     @Test
+    void streamStaysOpenWhileStatusIsMatchingAndFinishedAtIsNull() throws Exception {
+        long runId = createRun();
+        // The LinkedIn->ATS matcher runs after the scan, republishing "matching" into the
+        // registry before sweep_run.finished_at is ever set - same in-flight shape as "scanning".
+        runProgressRegistry.start(runId, progressWithStatus(runId, "matching"));
+
+        MvcResult result = mockMvc.perform(get("/api/runs/{id}/stream", runId))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        Thread.sleep(200);
+        assertThat(result.getRequest().isAsyncStarted())
+                .as("stream must stay open during the matching phase")
+                .isTrue();
+
+        // Mirrors RunOrchestrator.finishRun(): persist finished_at, then republish the terminal
+        // status into the registry - "matching" alone would never complete the stream.
+        sweepRunRepository.finish(runId, Instant.now(), "ok");
+        runProgressRegistry.publish(runId, progressWithStatus(runId, "ok"));
+        result.getAsyncResult(5000);
+        mockMvc.perform(asyncDispatch(result)).andExpect(status().isOk());
+    }
+
+    @Test
     void streamCompletesOnceStatusIsTerminalAndFinishedAtIsSet() throws Exception {
         long runId = createRun();
         runProgressRegistry.start(runId, progressWithStatus(runId, "ok"));

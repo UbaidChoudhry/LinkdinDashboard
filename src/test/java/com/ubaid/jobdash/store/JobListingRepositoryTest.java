@@ -327,7 +327,7 @@ class JobListingRepositoryTest extends AbstractStoreTest {
                 new JobListingRepository.VerdictUpdate(jobIdFor("6"), FilterVerdict.PASS, null),
                 new JobListingRepository.VerdictUpdate(jobIdFor("7"), FilterVerdict.PASS, null)), 1);
         jobListingRepository.setUserStatus(jobIdFor("4"), UserStatus.APPLIED, Instant.now());
-        jobListingRepository.applyDetail(jobIdFor("5"), "already have it", "hash5", Instant.now());
+        jobListingRepository.applyDetail(jobIdFor("5"), "already have it", "hash5", null, Instant.now());
 
         List<JobListing> queue = jobListingRepository.findDetailQueue(10);
 
@@ -346,12 +346,13 @@ class JobListingRepositoryTest extends AbstractStoreTest {
                 new JobListingRepository.VerdictUpdate(jobIdFor("11"), FilterVerdict.PASS, null)), 1);
         Instant at = Instant.parse("2026-09-09T12:00:00Z");
 
-        assertThat(jobListingRepository.applyDetail(jobIdFor("10"), "Full text", "abc123", at)).isEqualTo(1);
+        assertThat(jobListingRepository.applyDetail(jobIdFor("10"), "Full text", "abc123", "onsite", at)).isEqualTo(1);
         assertThat(jobListingRepository.markDetailGone(jobIdFor("11"), at)).isEqualTo(1);
 
         JobListing fetched = jobListingRepository.findById(jobIdFor("10")).orElseThrow();
         assertThat(fetched.description()).isEqualTo("Full text");
         assertThat(fetched.descriptionHash()).isEqualTo("abc123");
+        assertThat(fetched.applyKind()).isEqualTo("onsite");
         assertThat(fetched.detailStatus()).isEqualTo("ok");
         assertThat(fetched.detailFetchedAt()).isEqualTo(at);
 
@@ -364,5 +365,97 @@ class JobListingRepositoryTest extends AbstractStoreTest {
         // Only the fetched row is now scannable - the gone row still has no description.
         assertThat(jobListingRepository.findScannableByRun(runId))
                 .extracting(JobListing::sourceJobId).containsExactly("10");
+    }
+
+    // --- LinkedIn -> ATS apply target -------------------------------------------------------
+
+    @Test
+    void setApplyTargetRoundTrips() {
+        long runId = sweepRunRepository.create(Instant.now(), "java", "remote", 24, false, null);
+        jobListingRepository.upsertAll(List.of(card(20, "A")), runId, Instant.now());
+        long jobId = jobIdFor("20");
+
+        int updated = jobListingRepository.setApplyTarget(jobId,
+                "https://job-boards.greenhouse.io/embed/job_app?for=acme&token=123", "greenhouse",
+                "description 0.80 (next 0.51)");
+        assertThat(updated).isEqualTo(1);
+
+        JobListing job = jobListingRepository.findById(jobId).orElseThrow();
+        assertThat(job.applyUrl()).isEqualTo("https://job-boards.greenhouse.io/embed/job_app?for=acme&token=123");
+        assertThat(job.applyDomain()).isEqualTo("greenhouse");
+        assertThat(job.applyMatchNote()).isEqualTo("description 0.80 (next 0.51)");
+    }
+
+    @Test
+    void setApplyKindWritesOnlyTheKind() {
+        long runId = sweepRunRepository.create(Instant.now(), "java", "remote", 24, false, null);
+        jobListingRepository.upsertAll(List.of(card(22, "A")), runId, Instant.now());
+        long jobId = jobIdFor("22");
+
+        assertThat(jobListingRepository.setApplyKind(jobId, "onsite")).isEqualTo(1);
+
+        JobListing job = jobListingRepository.findById(jobId).orElseThrow();
+        assertThat(job.applyKind()).isEqualTo("onsite");
+        assertThat(job.applyUrl()).isNull();
+        assertThat(job.applyMatchNote()).isNull();
+    }
+
+    @Test
+    void setApplyMatchNoteWritesOnlyTheNoteLeavingApplyUrlAndDomainNull() {
+        long runId = sweepRunRepository.create(Instant.now(), "java", "remote", 24, false, null);
+        jobListingRepository.upsertAll(List.of(card(21, "A")), runId, Instant.now());
+        long jobId = jobIdFor("21");
+
+        assertThat(jobListingRepository.setApplyMatchNote(jobId, "no title match")).isEqualTo(1);
+
+        JobListing job = jobListingRepository.findById(jobId).orElseThrow();
+        assertThat(job.applyMatchNote()).isEqualTo("no title match");
+        assertThat(job.applyUrl()).isNull();
+        assertThat(job.applyDomain()).isNull();
+    }
+
+    @Test
+    void upsertAllReUpsertingTheSameRowDoesNotClearApplyUrlDomainOrKind() {
+        long runId = sweepRunRepository.create(Instant.now(), "java", "remote", 24, false, null);
+        jobListingRepository.upsertAll(List.of(card(22, "A")), runId, Instant.now());
+        long jobId = jobIdFor("22");
+        jobListingRepository.applyDetail(jobId, "desc", "hash22", "onsite", Instant.now());
+        jobListingRepository.setApplyTarget(jobId, "https://jobs.lever.co/acme/xyz/apply", "lever", "req id R1");
+
+        // A later sweep re-upserts the same (source, source_job_id) row.
+        long runId2 = sweepRunRepository.create(Instant.now(), "java", "remote", 24, false, null);
+        jobListingRepository.upsertAll(List.of(card(22, "A")), runId2, Instant.now());
+
+        JobListing job = jobListingRepository.findById(jobId).orElseThrow();
+        assertThat(job.applyUrl()).as("apply_url must survive a re-upsert")
+                .isEqualTo("https://jobs.lever.co/acme/xyz/apply");
+        assertThat(job.applyDomain()).as("apply_domain must survive a re-upsert").isEqualTo("lever");
+        assertThat(job.applyKind()).as("apply_kind must survive a re-upsert").isEqualTo("onsite");
+    }
+
+    @Test
+    void findLinkedInUnmatchedByRunExcludesMatchedAndTriagedRows() {
+        long runId = sweepRunRepository.create(Instant.now(), "java", "remote", 24, false, null);
+        jobListingRepository.upsertAll(List.of(
+                new JobCardInsert("linkedin", "30", "Unmatched", "Acme", "NY",
+                        Instant.parse("2026-09-01T00:00:00Z"), "u30", null, "a real description"),
+                new JobCardInsert("linkedin", "31", "Matched", "Acme", "NY",
+                        Instant.parse("2026-09-01T00:00:00Z"), "u31", null, "a real description"),
+                new JobCardInsert("linkedin", "32", "Triaged", "Acme", "NY",
+                        Instant.parse("2026-09-01T00:00:00Z"), "u32", null, "a real description"),
+                new JobCardInsert("lever", "33", "Not LinkedIn", "Acme", "NY",
+                        Instant.parse("2026-09-01T00:00:00Z"), "u33", null, "a real description")),
+                runId, Instant.now());
+
+        long unmatched = jobIdFor("30");
+        long matched = jobIdFor("31");
+        long triaged = jobIdFor("32");
+
+        jobListingRepository.setApplyTarget(matched, "https://jobs.lever.co/acme/xyz/apply", "lever", "matched");
+        jobListingRepository.setUserStatus(triaged, UserStatus.NOT_INTERESTED, Instant.now());
+
+        assertThat(jobListingRepository.findLinkedInUnmatchedByRun(runId))
+                .extracting(JobListing::jobId)
+                .containsExactly(unmatched);
     }
 }

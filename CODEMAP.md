@@ -44,10 +44,17 @@ POST /api/runs { sources: [...] }            [RunController -> RunOrchestrator]
    3. if 1 ended "ok"       → DetailFetchService       (Flow A phase 2 — LinkedIn descriptions)
    4. if 2 ended "ok"       → LocationClassifier
    5. unless cancelled      → ResumeMatchService       (the AI scan, over everything collected)
+   6. if 5 ran, enabled     → LinkedInApplyLinkResolver (reads each recommended LinkedIn
+                                                          posting's external apply href from the
+                                                          signed-in Chrome, batched)
 ```
 Any mix is valid (since 2026-09-09). Phases 1 and 2 are independent - each has its own budget
 and stop reasons - so LinkedIn's breaker opening never stops the boards, and vice versa. The
 run's status is the first non-"ok" phase outcome in that order; the scan runs regardless.
+Phase 6 (added 2026-09-21, see HANDOFF.md §13) publishes its own in-flight status, `matching`,
+after the scan and before the run finishes, gated on `apply.linkedin-links.enabled` and skipped
+on cancellation; it never throws, so a resolver failure can't turn a successful run into a
+failed one.
 
 ### Flow A — starting a sweep (write path, hits LinkedIn)
 
@@ -271,11 +278,31 @@ stream into `RunProgress.tsx`, and the `jobdash.ai.scan` logger writes `logs/ai-
 ### `apply/` — driving a real browser to fill an application
 The step after the AI scan: instead of just judging a job, Claude *acts* on it. `ApplyOrchestrator`
 is the orchestrator (mirrors `ResumeMatchService`'s shape) — one `claude -p --chrome` invocation
-**per job, sequential**, on a virtual thread; LinkedIn rows are skipped with **zero** CLI calls
-("apply manually" — see HANDOFF.md §12 for why). `ApplyPromptBuilder` renders the prompt (resume
+**per job, sequential**, on a virtual thread; an **unmatched** LinkedIn row is skipped with
+**zero** CLI calls ("apply manually" — see HANDOFF.md §12 for why); a LinkedIn row the resolver
+below resolved to a company-site posting gets the same CLI-driven flow as a native ATS row.
+`ApplyPromptBuilder` renders the prompt (resume
 text, applicant profile, the job's description) and owns the apply `--json-schema`
 (`outcome`/`summary`/`unanswered`). `ApplyProperties` is the typed `apply:` config block
-(`enabled`, `model`, `timeout`, `max-turns`, `max-budget-usd`, `max-description-chars`). Progress
+(`enabled`, `model`, `timeout`, `max-turns`, `max-budget-usd`, `max-description-chars`).
+
+`LinkedInApplyLinkResolver` (added 2026-09-21, HANDOFF.md §13, replacing a same-day
+catalog-matching approach that was built, measured at an 11/39 hit rate, and removed) is the
+reason a LinkedIn row can carry an apply link at all: run as run phase 6
+(`sweep/RunOrchestrator`), it takes every recommended LinkedIn row from a run that still has no
+apply link (skipping rows already known `apply_kind='onsite'`, i.e. Easy Apply) and drives the
+same Claude-in-Chrome CLI invocation `ApplyOrchestrator.chromeArgs` uses, in batches of
+`apply.linkedin-links.batch-size` postings per call, capped at `max-per-run`. On a signed-in
+`/jobs/view/{id}` page the Apply button's `href` is a LinkedIn safety redirect wrapping the real
+destination URL; Claude reads and URL-decodes it without clicking. Chrome must be signed in to a
+**burner** LinkedIn account, never the user's real one - see HANDOFF.md §13 for how that relates
+to the never-authenticate rule (HANDOFF.md §2). A resolved link writes `job_listing.apply_url` /
+`apply_domain` / `apply_kind='offsite'` / `apply_match_note` via
+`JobListingRepository.setApplyTarget`, exactly the columns a native Greenhouse/Lever/Workday row
+already has, so `ApplyUrlResolver` and `ApplyOrchestrator` treat a resolved LinkedIn row the same
+way as a native ATS row without either needing to know LinkedIn is involved. A sign-in wall stops
+the whole phase and notes every unresolved row; a CLI failure notes just that batch and continues.
+Each batch's transcript is `logs/apply/links-run-<run>-batch-<n>.log`. Progress
 and results land on the `apply_batch` / `job_application` rows, not an in-memory registry — the UI
 polls the DB. `ApplyOrchestrator` never throws, exactly like `ResumeMatchService`; a failed job
 becomes a `failed` row, not a failed batch. Logs go to `logs/apply.log` via the `jobdash.apply`
@@ -418,6 +445,9 @@ One SQLite file, `data/jobdash.db`, WAL mode. Schema lives in
 
 ```
 job_listing        the results. See JobListingRepository above for the upsert rule.
+                     apply_kind: LinkedIn's own Easy Apply (onsite) vs offsite marker, informational
+                     only (V15). apply_match_note: LinkedInApplyLinkResolver's outcome, resolved or not -
+                     the ↗ apply link's tooltip and what to read when a row got no link (V15)
 sweep_run           one row per run, updated live while it's running (+ sources, resume_id,
                      companies_done/total from V8)
 exclude_word        user's title-exclusion list, seeded with 8 defaults
@@ -503,3 +533,6 @@ Adzuna / h1bapi sources are driven through `StubHttpClient`, `SalaryRateLimiter`
 | Read a batch's end-of-run report | `logs/apply/batch-<id>-report.md`, or Show run report on the Results tab |
 | Find out why an application failed or got stuck | the row's **Details** in the Results tab: its notes, the last browser action, **View log** (the per-job transcript under `logs/apply/`), and the `claude --resume <sessionId> --chrome` command to continue that session and ask Claude directly. `logs/apply.log` has one line per browser action across all jobs |
 | Turn "Apply with Claude" off | `application.yml` → `apply.enabled: false` |
+| Change how LinkedIn apply links are read | `apply/LinkedInApplyLinkResolver.buildPrompt` (the prompt that tells Claude to read and decode the Apply button's redirect href, never click it), batching/caps in `application.yml` → `apply.linkedin-links.*`. HANDOFF.md §13 |
+| See why a LinkedIn row got no ↗ apply link | its `job_listing.apply_match_note` (also the link's tooltip when there is one), the resolver phase's `logs/apply.log` lines, and that batch's transcript under `logs/apply/links-run-<run>-batch-<n>.log` |
+| Sign the burner LinkedIn account into Chrome, or see the sign-in-wall note | `apply.linkedin-links` needs Chrome signed in to a **burner** LinkedIn account, never the real one (HANDOFF.md §13, §2). If the resolver hits a sign-in wall it stops and every unresolved row gets `apply_match_note` "LinkedIn is not signed in in Chrome - sign in to the burner account and Re-scan" - sign in and click **Re-scan** |

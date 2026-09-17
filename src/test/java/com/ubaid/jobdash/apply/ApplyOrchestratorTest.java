@@ -97,6 +97,19 @@ class ApplyOrchestratorTest extends AbstractStoreTest {
     }
 
     /**
+     * Sets {@code apply_url}/{@code apply_domain} directly via {@link org.springframework.jdbc.core.simple.JdbcClient}
+     * rather than a repository method, since the LinkedIn-ATS-matching phase that normally populates
+     * these columns is being added concurrently by another agent.
+     */
+    private void setApplyMatch(long jobId, String applyDomain, String applyUrl) {
+        client.sql("update job_listing set apply_domain = :domain, apply_url = :url where job_id = :id")
+                .param("domain", applyDomain)
+                .param("url", applyUrl)
+                .param("id", jobId)
+                .update();
+    }
+
+    /**
      * A fake CLI client whose 4-arg runStreaming response is computed by the given function; before
      * returning it, it emits two canned tool events to the listener - the second's text is what a
      * test can expect to land in {@code last_activity}.
@@ -188,7 +201,7 @@ class ApplyOrchestratorTest extends AbstractStoreTest {
         JobApplication atsApp = apps.stream().filter(a -> a.jobId() == atsJob).findFirst().orElseThrow();
 
         assertThat(linkedinApp.status()).isEqualTo("skipped");
-        assertThat(linkedinApp.notes()).isEqualTo("LinkedIn: apply manually");
+        assertThat(linkedinApp.notes()).isEqualTo("LinkedIn: no company-site match - apply manually");
         assertThat(atsApp.status()).isEqualTo("needs_review");
 
         assertThat(applyBatchRepository.findById(batchId).orElseThrow().status()).isEqualTo("ok");
@@ -538,5 +551,73 @@ class ApplyOrchestratorTest extends AbstractStoreTest {
         assertThat(report).contains("Do you require sponsorship?");
         assertThat(report).contains("What is your desired start date?");
         assertThat(report).contains("claude --resume");
+    }
+
+    @Test
+    void matchedLinkedinGreenhouseRowReachesCliOnceWithApplyUrlAsJobUrlAndLogsTranscriptLine()
+            throws InterruptedException, IOException {
+        long resumeId = insertResume();
+        saveProfile();
+        long runId = newRun();
+        long jobId = insertJob(runId, 30L, "linkedin");
+        String applyUrl = "https://job-boards.greenhouse.io/embed/job_app?for=acme&token=999";
+        setApplyMatch(jobId, "greenhouse", applyUrl);
+
+        FakeCliClient cli = new FakeCliClient(prompt -> ok("needs_review", "stopped before submit"));
+        ApplyOrchestrator orchestrator = orchestrator(cli);
+
+        long batchId = orchestrator.start(List.of(jobId), resumeId, false);
+        orchestrator.awaitLastBatch();
+
+        assertThat(cli.invocationCount()).isEqualTo(1);
+        assertThat(cli.prompts()).hasSize(1);
+        assertThat(cli.prompts().get(0)).contains("JOB URL: " + applyUrl);
+
+        JobApplication app = applicationRepository.findByBatch(batchId).get(0);
+        Path transcript = Path.of(app.logPath());
+        List<String> lines = Files.readAllLines(transcript);
+        assertThat(lines).anyMatch(l -> l.contains("linkedin → greenhouse"));
+    }
+
+    @Test
+    void matchedLinkedinWorkdayRowReachesCliWithWorkdayPostingUrlAndNoDirectApplyFormUrl()
+            throws InterruptedException {
+        long resumeId = insertResume();
+        saveProfile();
+        long runId = newRun();
+        long jobId = insertJob(runId, 31L, "linkedin");
+        String workdayUrl = "https://acme.wd1.myworkdayjobs.com/en-US/Careers/job/Remote/Backend-Engineer_R-999";
+        setApplyMatch(jobId, "workday", workdayUrl);
+
+        FakeCliClient cli = new FakeCliClient(prompt -> ok("needs_review", "stopped before submit"));
+        ApplyOrchestrator orchestrator = orchestrator(cli);
+
+        orchestrator.start(List.of(jobId), resumeId, false);
+        orchestrator.awaitLastBatch();
+
+        assertThat(cli.invocationCount()).isEqualTo(1);
+        assertThat(cli.prompts()).hasSize(1);
+        assertThat(cli.prompts().get(0)).contains("JOB URL: " + workdayUrl);
+        assertThat(cli.prompts().get(0)).doesNotContain("DIRECT APPLY FORM URL:");
+    }
+
+    @Test
+    void unmatchedLinkedinRowIsSkippedWithZeroCliCallsAndTheNewNoteText() throws InterruptedException {
+        long resumeId = insertResume();
+        saveProfile();
+        long runId = newRun();
+        long jobId = insertJob(runId, 32L, "linkedin");
+
+        FakeCliClient cli = new FakeCliClient(prompt -> ok("needs_review", "stopped before submit"));
+        ApplyOrchestrator orchestrator = orchestrator(cli);
+
+        long batchId = orchestrator.start(List.of(jobId), resumeId, false);
+        orchestrator.awaitLastBatch();
+
+        assertThat(cli.invocationCount()).isEqualTo(0);
+
+        JobApplication app = applicationRepository.findByBatch(batchId).get(0);
+        assertThat(app.status()).isEqualTo("skipped");
+        assertThat(app.notes()).isEqualTo("LinkedIn: no company-site match - apply manually");
     }
 }
