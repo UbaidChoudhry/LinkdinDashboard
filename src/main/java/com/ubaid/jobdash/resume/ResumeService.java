@@ -4,6 +4,8 @@ import com.ubaid.jobdash.domain.Resume;
 import com.ubaid.jobdash.store.AiMatchRepository;
 import com.ubaid.jobdash.store.ResumeRepository;
 import com.ubaid.jobdash.web.ApiException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -24,6 +26,8 @@ import java.util.Locale;
  */
 @Service
 public class ResumeService {
+
+    private static final Logger log = LoggerFactory.getLogger(ResumeService.class);
 
     private static final long MAX_UPLOAD_BYTES = 5L * 1024 * 1024;
 
@@ -148,11 +152,32 @@ public class ResumeService {
         } catch (IOException e) {
             throw new UncheckedIOException("Could not delete resume file " + resume.storedPath(), e);
         }
+        deleteNamedCopy(resume);
 
         if (resume.isDefault()) {
             resumeRepository.list().stream()
                     .findFirst()
                     .ifPresent(newest -> resumeRepository.setDefault(newest.id()));
+        }
+    }
+
+    /**
+     * Removes the original-name copy {@link ResumeUploadFile} makes for the apply flow (the file
+     * and its per-resume directory). Best-effort: a leftover copy is harmless, so a failure here
+     * is logged rather than failing the delete that already succeeded.
+     */
+    private static void deleteNamedCopy(Resume resume) {
+        Path dir = ResumeUploadFile.namedDir(resume);
+        if (dir == null || !Files.isDirectory(dir)) {
+            return;
+        }
+        try (var files = Files.list(dir)) {
+            for (Path file : files.toList()) {
+                Files.deleteIfExists(file);
+            }
+            Files.deleteIfExists(dir);
+        } catch (IOException e) {
+            log.warn("could not remove original-name resume copy under {}: {}", dir, e.toString());
         }
     }
 

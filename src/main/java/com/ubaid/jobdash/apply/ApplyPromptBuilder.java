@@ -142,9 +142,16 @@ public class ApplyPromptBuilder {
                    wherever they don't (the page may have changed, or a field may be conditional).
                 4. In ONE message, before filling anything, write out the complete plan: for every
                    field, the exact value you will enter, or "blank (unanswered)". Decide each value
-                   in this order - KNOWN ANSWERS below (verbatim), then the APPLICANT PROFILE, then
-                   the RESUME TEXT. Never guess a work-authorization, sponsorship, salary-expectation,
-                   or EEO/demographic/personal-preference answer that neither source actually states -
+                   in this order - KNOWN ANSWERS below, then the APPLICANT PROFILE, then the RESUME
+                   TEXT. A KNOWN ANSWER matches by MEANING, not by exact wording: if a form question
+                   asks the same thing as a known one, however it is phrased, use the known answer
+                   verbatim. "Opt in to text message updates", "Do you consent to SMS", "Do you opt-in
+                   to receive WhatsApp messages" are one consent question; "Are you willing to work a
+                   hybrid schedule" and "Can you commit to our hybrid policy" are one question;
+                   "{company name}" in a known question stands for the company you are applying to.
+                   Only when NO known answer covers the question's meaning does it count as unanswered.
+                   Never guess a work-authorization, sponsorship, salary-expectation, or
+                   EEO/demographic/personal-preference answer that neither source actually states -
                    leave it blank in the plan and add the question's label text EXACTLY as it appears on
                    the form to the "unanswered" array - no added notes, categories or parentheses
                    (write "Gender", not "Gender (voluntary EEO)"), so repeat questions match the
@@ -263,7 +270,9 @@ public class ApplyPromptBuilder {
         if (answered.isEmpty()) {
             return "";
         }
-        StringBuilder sb = new StringBuilder("KNOWN ANSWERS (use these verbatim when a form question matches):\n");
+        StringBuilder sb = new StringBuilder(
+                "KNOWN ANSWERS (use the answer verbatim for any form question that asks the same thing, "
+                        + "even if worded differently):\n");
         for (ProfileAnswer a : answered) {
             sb.append("Q: ").append(a.question()).append("\nA: ").append(a.answer()).append("\n");
         }

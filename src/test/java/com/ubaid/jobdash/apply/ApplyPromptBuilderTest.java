@@ -185,7 +185,9 @@ class ApplyPromptBuilderTest {
         String prompt = builder.build(job("<p>Great role</p>"), resume(), Path.of("/data/resumes/1.pdf"),
                 profile(), false, 4000, Optional.empty(), answers, List.of());
 
-        assertThat(prompt).contains("KNOWN ANSWERS (use these verbatim when a form question matches):");
+        assertThat(prompt).contains("KNOWN ANSWERS (use the answer verbatim for any form question that asks the same thing, "
+                + "even if worded differently):");
+        assertThat(prompt).contains("A KNOWN ANSWER matches by MEANING, not by exact wording");
         assertThat(prompt).contains("Q: Portfolio link?");
         assertThat(prompt).contains("A: https://ada.dev");
         assertThat(prompt).contains("PREVIOUSLY FLAGGED, STILL UNANSWERED (leave blank, list in \"unanswered\" again):");

@@ -61,8 +61,18 @@ async function request<T>(path: string, init?: RequestInit, rawText = false): Pr
     throw new ApiError(res.status, message);
   }
 
-  if (res.status === 204 || res.status === 202) {
+  // 204 never has a body. 202 usually has none (cancel), but POST /api/applications answers 202
+  // WITH {batchId} - dropping that body made "Apply with Claude" report "Failed to start applying."
+  // while the batch had in fact started, so the next click hit the 409 "already in progress".
+  if (res.status === 204) {
     return undefined as T;
+  }
+  if (res.status === 202) {
+    const text = await res.text();
+    if (text.trim() === "") {
+      return undefined as T;
+    }
+    return (rawText ? text : JSON.parse(text)) as T;
   }
 
   const text = await res.text();

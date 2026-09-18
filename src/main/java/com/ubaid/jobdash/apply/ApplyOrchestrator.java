@@ -7,6 +7,9 @@ import com.ubaid.jobdash.domain.JobListing;
 import com.ubaid.jobdash.domain.ProfileAnswer;
 import com.ubaid.jobdash.domain.Resume;
 import com.ubaid.jobdash.domain.UserStatus;
+import com.ubaid.jobdash.domain.ApplyBatch;
+import com.ubaid.jobdash.domain.JobApplication;
+import com.ubaid.jobdash.resume.ResumeUploadFile;
 import com.ubaid.jobdash.store.ApplicantProfileRepository;
 import com.ubaid.jobdash.store.ApplicationRepository;
 import com.ubaid.jobdash.store.ApplyBatchRepository;
@@ -60,6 +63,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class ApplyOrchestrator {
 
     private static final Logger log = LoggerFactory.getLogger(ApplyOrchestrator.class);
+
+    /** Terminal status for a batch the process never got to finish (see {@link OrphanedApplyBatchReaper}). */
+    public static final String INTERRUPTED = "interrupted";
 
     /**
      * Human-readable apply activity, routed to its own {@code logs/apply.log} by
@@ -222,6 +228,34 @@ public class ApplyOrchestrator {
         return true;
     }
 
+    /**
+     * Finishes every {@code running} batch this process is <b>not</b> actually running, marking
+     * each of its {@code queued}/{@code filling} jobs {@code failed} with {@code notes} and the
+     * batch itself {@code terminalStatus}. Returns how many batches were closed. Used at startup
+     * (a batch orphaned by a restart) and by Cancel when the batch it is asked to cancel is such
+     * an orphan - the two ways a dead batch otherwise blocks every new one with a 409.
+     */
+    public int reapOrphanedBatches(String terminalStatus, String notes) {
+        Optional<Long> live = inFlightBatchId();
+        int reaped = 0;
+        for (ApplyBatch batch : applyBatchRepository.findRunning()) {
+            if (live.isPresent() && live.get() == batch.id()) {
+                continue;
+            }
+            Instant now = clock.instant();
+            for (JobApplication application : applicationRepository.findByBatch(batch.id())) {
+                if ("queued".equals(application.status()) || "filling".equals(application.status())) {
+                    applicationRepository.update(application.id(), "failed", notes, application.costUsd(),
+                            application.startedAt() == null ? now : application.startedAt(), now);
+                }
+            }
+            applyBatchRepository.finish(batch.id(), terminalStatus, now);
+            applyLog.warn("batch {} closed as {} - {}", batch.id(), terminalStatus, notes);
+            reaped++;
+        }
+        return reaped;
+    }
+
     /** The batch id currently running, if any. */
     public Optional<Long> inFlightBatchId() {
         InFlight current = this.inFlight;
@@ -324,7 +358,9 @@ public class ApplyOrchestrator {
 
                         List<ProfileAnswer> answers = profileAnswerRepository.list();
 
-                        Path resumeAbsolutePath = Path.of(resume.storedPath()).toAbsolutePath();
+                        // The attached file's name is what the employer sees, so attach the copy that carries
+                        // the original upload name, not the id-named file in data/resumes/.
+                        Path resumeAbsolutePath = ResumeUploadFile.forUpload(resume);
                         String prompt = promptBuilder.build(job, resume, resumeAbsolutePath, profile, submit,
                                 properties.maxDescriptionChars(), postingUrl, directFormUrl, answers, formQuestions);
                         List<String> args = chromeArgs(properties, ApplyPromptBuilder.APPLY_JSON_SCHEMA, sessionId);

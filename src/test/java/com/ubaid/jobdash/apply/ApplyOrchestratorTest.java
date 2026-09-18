@@ -620,4 +620,93 @@ class ApplyOrchestratorTest extends AbstractStoreTest {
         assertThat(app.status()).isEqualTo("skipped");
         assertThat(app.notes()).isEqualTo("LinkedIn: no company-site match - apply manually");
     }
+
+    @Test
+    void reapOrphanedBatchesClosesADeadRunningBatchButLeavesTheLiveOneAlone() {
+        long resumeId = insertResume();
+        long runId = newRun();
+        long job1 = insertJob(runId, 71L, "greenhouse");
+        long job2 = insertJob(runId, 72L, "greenhouse");
+
+        // A batch left 'running' by a process that died: one job mid-fill, one still queued.
+        long dead = applyBatchRepository.create(resumeId, false, 2, clock.instant());
+        long fillingApp = applicationRepository.create(dead, job1, "queued");
+        applicationRepository.update(fillingApp, "filling", "", 0.25, clock.instant(), null);
+        long queuedApp = applicationRepository.create(dead, job2, "queued");
+        long finished = applyBatchRepository.create(resumeId, false, 0, clock.instant());
+        applyBatchRepository.finish(finished, "ok", clock.instant());
+
+        ApplyOrchestrator orchestrator = orchestrator(new FakeCliClient(prompt -> ok("needs_review", "x")));
+        int reaped = orchestrator.reapOrphanedBatches(ApplyOrchestrator.INTERRUPTED, "interrupted: restarted");
+
+        assertThat(reaped).isEqualTo(1);
+        assertThat(applyBatchRepository.findById(dead).orElseThrow().status()).isEqualTo("interrupted");
+        assertThat(applyBatchRepository.findById(dead).orElseThrow().finishedAt()).isNotNull();
+        assertThat(applyBatchRepository.findById(finished).orElseThrow().status()).isEqualTo("ok");
+        assertThat(applyBatchRepository.findInFlight()).isEmpty();
+        List<JobApplication> apps = applicationRepository.findByBatch(dead);
+        assertThat(apps).allSatisfy(a -> {
+            assertThat(a.status()).isEqualTo("failed");
+            assertThat(a.notes()).isEqualTo("interrupted: restarted");
+            assertThat(a.finishedAt()).isNotNull();
+        });
+        assertThat(apps.stream().filter(a -> a.id() == fillingApp).findFirst().orElseThrow().costUsd())
+                .as("cost already spent on the interrupted job is kept").isEqualTo(0.25);
+        assertThat(apps.stream().filter(a -> a.id() == queuedApp).findFirst().orElseThrow().startedAt()).isNotNull();
+
+        // Nothing running: a second reap is a no-op.
+        assertThat(orchestrator.reapOrphanedBatches(ApplyOrchestrator.INTERRUPTED, "again")).isZero();
+    }
+
+    @Test
+    void reapOrphanedBatchesSkipsTheBatchThisProcessIsRunning() throws InterruptedException {
+        long resumeId = insertResume();
+        saveProfile();
+        long runId = newRun();
+        long jobId = insertJob(runId, 73L, "greenhouse");
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        FakeCliClient cli = new FakeCliClient(prompt -> {
+            try {
+                release.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return ok("needs_review", "filled");
+        });
+        ApplyOrchestrator orchestrator = orchestrator(cli);
+        long live = orchestrator.start(List.of(jobId), resumeId, false);
+
+        try {
+            assertThat(orchestrator.reapOrphanedBatches(ApplyOrchestrator.INTERRUPTED, "restarted")).isZero();
+            assertThat(applyBatchRepository.findById(live).orElseThrow().status()).isEqualTo("running");
+        } finally {
+            release.countDown();
+            orchestrator.awaitLastBatch();
+        }
+        assertThat(applyBatchRepository.findById(live).orElseThrow().status()).isEqualTo("ok");
+    }
+
+    @Test
+    void resumeIsAttachedUnderItsOriginalUploadNameNotTheIdNamedStoredFile() throws IOException, InterruptedException {
+        Path stored = tempDir.resolve("resumes").resolve("3.pdf");
+        Files.createDirectories(stored.getParent());
+        Files.write(stored, new byte[] {37, 80, 68, 70});
+        long resumeId = resumeRepository.insert(new Resume(0, "r1", "Choudhry_Resume V19.pdf", "application/pdf",
+                stored.toString(), "Experienced backend engineer.", 30, false, Instant.now()));
+        saveProfile();
+        long runId = newRun();
+        long jobId = insertJob(runId, 74L, "greenhouse");
+
+        FakeCliClient cli = new FakeCliClient(prompt -> ok("needs_review", "filled"));
+        orchestrator(cli).start(List.of(jobId), resumeId, false);
+        orchestrator(cli).awaitLastBatch();
+        Thread.sleep(50);
+
+        Path expected = stored.getParent().resolve("named").resolve(String.valueOf(resumeId))
+                .resolve("Choudhry_Resume V19.pdf");
+        assertThat(cli.prompts()).hasSize(1);
+        assertThat(cli.prompts().get(0)).contains("RESUME FILE PATH: " + expected.toAbsolutePath());
+        assertThat(cli.prompts().get(0)).doesNotContain("RESUME FILE PATH: " + stored.toAbsolutePath());
+        assertThat(Files.readAllBytes(expected)).containsExactly(37, 80, 68, 70);
+    }
 }

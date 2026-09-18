@@ -1266,6 +1266,62 @@ next to batch 5's "Gender": the prompt asks for the label's exact text, but the 
 parentheticals. `QuestionKey.normalize` now strips trailing parenthetical groups, and the prompt
 says no annotations - both, because one of them will be ignored again.
 
+### Four fixes from batch 9 (2026-09-23)
+
+Batch 9 (42 recommended rows, the first batch run over LinkedIn rows resolved by §13) surfaced
+four problems in the first four jobs. Each has a test; the reasoning is here.
+
+- **The employer saw "3.pdf".** `ResumeService` stores an upload under its row id
+  (`data/resumes/3.pdf`) on purpose - the original filename is user-controlled and could carry
+  path separators - and the apply prompt passed that stored path straight to `file_upload`, so
+  every ATS received a resume named `3.pdf` (the Zip and Glean summaries both say "uploaded
+  3.pdf"). The stored file stays id-named; `resume/ResumeUploadFile.forUpload` now hands the
+  orchestrator a copy under `data/resumes/named/<id>/<original filename>` (sanitised to one path
+  segment, spaces kept, refreshed when the stored file changes), and `ResumeService.delete`
+  removes that copy. If the copy cannot be made the stored path is used, so a batch never fails
+  over a filename.
+- **"Failed to start applying." on every click, then 409 on the next.** `POST /api/applications`
+  answers `202 Accepted` *with* a `{batchId}` body, but `request()` in `api/client.ts`
+  returned `undefined` for every 202 (written for the body-less cancel endpoint), so
+  `const { batchId } = ...` threw a TypeError that the catch rendered as the generic error - while
+  the batch had in fact started. The next click then hit the real 409. Present since commit
+  40fd09e; every batch 4-9 was started this way. A 202 is now parsed when it has a body.
+- **A restart mid-batch wedged the feature.** Batch 9 was restarted after job 3 of 42; the
+  virtual thread died, the `apply_batch` row stayed `running`, and from then on every start
+  was a 409, the Results tab re-attached to "Applying 3/42" forever, and Cancel was a no-op
+  (`ApplyOrchestrator.cancel` only knows the in-memory batch). Same failure §7's
+  `OrphanedRunReaper` fixes for runs, same fix: `apply/OrphanedApplyBatchReaper` runs at
+  startup and closes every `running` batch this process is not running as `interrupted`
+  (its `queued`/`filling` jobs become `failed` with an explanatory note; spent cost is kept),
+  and `POST /api/applications/{id}/cancel` does the same as `cancelled` when asked to cancel a
+  batch that is `running` only in the database. The 409 message now names the batch and says
+  to cancel it. `interrupted` joins the `ApplyBatchResponse.status` union in `types/api.ts`.
+- **Stripe: "form in cross-origin iframe, no direct URL".** §13's resolver stores whatever
+  LinkedIn pointed at; for Stripe that is `stripe.com/careers/listing/<slug>/8062305?gh_src=...`,
+  `apply_domain=stripe.com`, which `ApplyUrlResolver` did not recognise, so no DIRECT APPLY
+  FORM URL - and Stripe's page renders the Greenhouse form in the cross-origin iframe §12
+  diagnosed on day one. The page itself names the form, though: a `<noscript><iframe
+  src="https://job-boards.greenhouse.io/embed/job_app?for=stripe&amp;token=8062305">` (verified
+  with curl 2026-09-23). `apply/EmbeddedFormDetector` GETs a company-site apply link once
+  (10 s timeout, 2 MB cap, best-effort like `FormQuestionPrefetcher`) and looks for that URL, or
+  Greenhouse's `embed/job_board/js?for=<slug>` loader plus a job id (`gh_jid`,
+  `Grnhse.Iframe.load(id)`, or a 6+ digit run in the page URL's path), or a hosted Lever
+  posting URL, and the resolver uses the result exactly as it would a native Greenhouse row's
+  embed URL - which also switches on the server-side question pre-read. Workday links and
+  anything the resolver already recognises are never fetched. Anything with no embedded form
+  still resolves to empty and Claude finds the form itself as before.
+
+**Similar questions were being left blank.** Not a code bug but a prompt one: KNOWN ANSWERS
+said "use these verbatim when a form question matches", and the model read "matches" as
+"is worded the same" - so "Do you opt-in to receive WhatsApp messages" (answered) did nothing
+for "Indicate your agreement to receive text message updates", which was recorded as a new
+pending question instead. Step 4 of the prompt now says a known answer matches by *meaning*,
+gives the SMS/WhatsApp and hybrid-schedule examples, and explains that `{company name}` in a
+saved question stands for the company being applied to (the user's own answers already use
+that placeholder). Only a question no known answer covers counts as unanswered. Watch the next
+batch's "new questions" count: if near-duplicates still appear, the next lever is answering
+them once in the Resumes tab - `QuestionKey` deliberately does not try to guess synonyms.
+
 ## 13. LinkedIn postings → their real apply link (2026-09-21)
 
 **§12 said LinkedIn rows are skipped because applying through LinkedIn needs the user's own

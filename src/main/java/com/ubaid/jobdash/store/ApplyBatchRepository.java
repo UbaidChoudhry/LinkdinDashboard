@@ -57,6 +57,13 @@ public class ApplyBatchRepository {
                 .optional();
     }
 
+    /** Every batch still {@code running}, oldest first - normally zero or one; more only after a crash. */
+    public List<ApplyBatch> findRunning() {
+        return client.sql("select * from apply_batch where status = 'running' order by id")
+                .query(ApplyBatchRepository::mapRow)
+                .list();
+    }
+
     /** Updates the running counters and accumulated cost on an in-flight batch. */
     public void updateProgress(long id, int done, int submitted, int needsReview, int failed, int skipped,
                                 double costUsd) {

@@ -319,7 +319,7 @@ export interface ApplyBatchResponse {
   id: number;
   resumeId: number;
   submit: boolean;
-  status: "running" | "ok" | "cancelled" | "failed";
+  status: "running" | "ok" | "cancelled" | "failed" | "interrupted";
   total: number;
   done: number;
   submitted: number;

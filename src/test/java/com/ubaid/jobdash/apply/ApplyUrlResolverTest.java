@@ -8,6 +8,8 @@ import com.ubaid.jobdash.store.AtsCompanyRepository;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -195,9 +197,38 @@ class ApplyUrlResolverTest {
     }
 
     @Test
+    void linkedinLinkToACompanyCareersPageIsResolvedThroughTheEmbeddedFormDetector() {
+        List<String> fetched = new ArrayList<>();
+        EmbeddedFormDetector detector = new EmbeddedFormDetector(url -> {
+            fetched.add(url);
+            return Optional.of("<noscript><iframe src=\"https://job-boards.greenhouse.io/embed/job_app?for=stripe"
+                    + "&amp;token=8062305\"></iframe></noscript>");
+        });
+        ApplyUrlResolver resolver = new ApplyUrlResolver(new StubAtsCompanyRepository(Optional.empty()), detector);
+        String stripe = "https://stripe.com/careers/listing/full-stack-engineer-link/8062305?gh_src=73vnei";
+
+        assertThat(resolver.directFormUrl(job("linkedin", "1", "Stripe", "https://www.linkedin.com/jobs/view/1",
+                "stripe.com", stripe)))
+                .contains("https://job-boards.greenhouse.io/embed/job_app?for=stripe&token=8062305");
+        assertThat(fetched).containsExactly(stripe);
+    }
+
+    @Test
+    void companyCareersPageWithoutAnEmbeddedFormResolvesToEmpty() {
+        ApplyUrlResolver resolver = new ApplyUrlResolver(new StubAtsCompanyRepository(Optional.empty()),
+                new EmbeddedFormDetector(url -> Optional.of("<html>no form here</html>")));
+
+        assertThat(resolver.directFormUrl(job("linkedin", "1", "Acme", "https://www.linkedin.com/jobs/view/1",
+                "acme.com", "https://acme.com/careers/1"))).isEmpty();
+    }
+
+    @Test
     void linkedinMatchedToWorkdayResolvesToEmpty() {
         StubAtsCompanyRepository repo = new StubAtsCompanyRepository(Optional.empty());
-        ApplyUrlResolver resolver = new ApplyUrlResolver(repo);
+        // A detector that would "find" a form on any page - Workday must never be asked.
+        ApplyUrlResolver resolver = new ApplyUrlResolver(repo, new EmbeddedFormDetector(url -> {
+            throw new AssertionError("Workday apply links must not be fetched: " + url);
+        }));
 
         JobListing job = job("linkedin", "1", "NVIDIA", "https://www.linkedin.com/jobs/view/1",
                 "workday", "https://nvidia.wd5.myworkdayjobs.com/job/1");

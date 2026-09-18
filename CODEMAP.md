@@ -309,6 +309,18 @@ becomes a `failed` row, not a failed batch. Logs go to `logs/apply.log` via the 
 logger — **never the resume text or profile**, same discipline as `logs/ai-scan.log`. See
 HANDOFF.md §12.
 
+`EmbeddedFormDetector` (2026-09-23) is `ApplyUrlResolver`'s last resort for a LinkedIn row whose
+apply link is a company's own careers page (Stripe): one server-side GET of that page, and if it
+embeds a Greenhouse (`embed/job_app?for=…&token=…`, or the `job_board/js` loader plus a job id)
+or Lever form, that standalone URL becomes the DIRECT APPLY FORM URL - the iframe the browser
+tools cannot see into is bypassed the same way a native Greenhouse row's is. `OrphanedApplyBatchReaper`
+is the apply twin of `sweep/OrphanedRunReaper`: at startup it closes any `apply_batch` still `running`
+from a process that died (status `interrupted`, its jobs `failed`), and the cancel endpoint does the
+same (`cancelled`) for a batch only the database thinks is running - without either, a restart
+mid-batch left every later click a 409. The resume Claude attaches is `resume/ResumeUploadFile`'s
+copy under `data/resumes/named/<id>/<original filename>`, not the id-named stored file, so the
+employer sees `Choudhry_Resume V19.pdf` rather than `3.pdf`. HANDOFF.md §12, "Four fixes from batch 9".
+
 ### `store/` — all SQL lives here
 One `@Repository` per table, all built on Spring's `JdbcClient` (hand-written SQL, no JPA — see
 HANDOFF.md §3 for why). If you need a new query, it goes in the matching repository, not
@@ -527,7 +539,9 @@ Adzuna / h1bapi sources are driven through `StubHttpClient`, `SalaryRateLimiter`
 | Set up salary API keys | `SALARY_SETUP.md` — copy `.env.example` → `.env` |
 | Change how Claude fills out an application | `apply/ApplyPromptBuilder.java` — the prompt + `--json-schema` |
 | Change the CLI flags for the browser-driving invocation | `apply/ApplyOrchestrator.chromeArgs` |
-| Change which page Claude opens to apply (per ATS) | `apply/ApplyUrlResolver.java` - the direct, iframe-free form URL per source |
+| Change which page Claude opens to apply (per ATS) | `apply/ApplyUrlResolver.java` - the direct, iframe-free form URL per source; `apply/EmbeddedFormDetector.java` finds it inside a company's own careers page |
+| Change the filename the employer sees on the attached resume | `resume/ResumeUploadFile.java` |
+| An apply batch is stuck `running` after a restart / every click is a 409 | `apply/OrphanedApplyBatchReaper.java` closes it at startup; Cancel in the Results tab does the same for a batch the backend is not running |
 | Change how form questions are pre-read from the page | `apply/FormQuestionPrefetcher.java` (jsoup over the direct form URL; fixtures in `src/test/resources/fixtures/`) |
 | Add or answer a question Claude keeps hitting | Resumes tab → Questions & answers, or `profile_answer` via `ProfileAnswerRepository`; keyed by `apply/QuestionKey` |
 | Read a batch's end-of-run report | `logs/apply/batch-<id>-report.md`, or Show run report on the Results tab |

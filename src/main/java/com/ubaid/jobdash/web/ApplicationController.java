@@ -189,8 +189,11 @@ public class ApplicationController {
             }
         }
 
-        if (applyOrchestrator.inFlightBatchId().isPresent() || applyBatchRepository.findInFlight().isPresent()) {
-            throw new ApiException(HttpStatus.CONFLICT, "An apply batch is already in progress.");
+        Optional<Long> inFlight = applyOrchestrator.inFlightBatchId()
+                .or(() -> applyBatchRepository.findInFlight().map(ApplyBatch::id));
+        if (inFlight.isPresent()) {
+            throw new ApiException(HttpStatus.CONFLICT, "Apply batch " + inFlight.get()
+                    + " is already in progress - cancel it first (Results tab, Cancel) or wait for it to finish.");
         }
 
         if (!applyProperties.enabled() || !cliAvailable(aiProperties.cliPath())) {
@@ -220,12 +223,20 @@ public class ApplicationController {
         return toResponse(batch);
     }
 
+    /**
+     * Cancels the running batch. A batch this process is not running but the database still
+     * calls {@code running} (orphaned by a restart the startup reaper has not seen, or a crash
+     * mid-request) is closed as {@code cancelled} on the spot - otherwise Cancel would be the
+     * no-op that left the user stuck behind a dead batch's 409.
+     */
     @PostMapping("/api/applications/{id}/cancel")
     public ResponseEntity<Void> cancel(@PathVariable long id) {
-        if (applyBatchRepository.findById(id).isEmpty()) {
-            throw new ApiException(HttpStatus.NOT_FOUND, "No apply batch found with id " + id + ".");
+        ApplyBatch batch = applyBatchRepository.findById(id)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "No apply batch found with id " + id + "."));
+        if (!applyOrchestrator.cancel(id) && "running".equals(batch.status())) {
+            applyOrchestrator.reapOrphanedBatches("cancelled",
+                    "cancelled: the batch was no longer running in the backend (restarted?)");
         }
-        applyOrchestrator.cancel(id); // no-op (false) if this batch isn't the one running - still 202.
         return ResponseEntity.status(HttpStatus.ACCEPTED).build();
     }
 

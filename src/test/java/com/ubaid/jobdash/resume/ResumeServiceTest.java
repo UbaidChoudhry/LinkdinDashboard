@@ -112,6 +112,20 @@ class ResumeServiceTest {
     }
 
     @Test
+    void deletingAlsoRemovesTheOriginalNameCopyMadeForApplying() throws IOException {
+        Resume resume = resumeService.upload(textFile("Choudhry_Resume V19.txt", longEnoughBody("body")), null);
+        Resume stored = resumeRepository.findById(resume.id()).orElseThrow();
+        Path namedCopy = ResumeUploadFile.forUpload(stored);
+        assertThat(namedCopy.getFileName().toString()).isEqualTo("Choudhry_Resume V19.txt");
+        assertThat(Files.exists(namedCopy)).isTrue();
+
+        resumeService.delete(resume.id());
+
+        assertThat(Files.exists(namedCopy)).isFalse();
+        assertThat(Files.exists(namedCopy.getParent())).isFalse();
+    }
+
+    @Test
     void enforcesFiveMegabyteCeiling() {
         byte[] tooLarge = new byte[5 * 1024 * 1024 + 1];
         MockMultipartFile file = new MockMultipartFile("file", "big.txt", "text/plain", tooLarge);

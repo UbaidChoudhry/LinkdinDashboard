@@ -5,6 +5,7 @@ import com.ubaid.jobdash.domain.JobListing;
 import com.ubaid.jobdash.store.AtsCompanyRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.net.URLEncoder;
@@ -22,8 +23,9 @@ import java.util.regex.Pattern;
  * <p>
  * Greenhouse serves every board's form as a standalone top-level page at
  * {@code https://job-boards.greenhouse.io/embed/job_app?for=<boardSlug>&token=<sourceJobId>}.
- * Lever serves one at {@code <jobUrl>/apply}. Every other ATS (Workday, LinkedIn, unknown) has no
- * known equivalent, so this resolves to empty for them.
+ * Lever serves one at {@code <jobUrl>/apply}. Workday has no equivalent, so it resolves to empty.
+ * A LinkedIn row resolved to a company's own careers page (Stripe) is handed to
+ * {@link EmbeddedFormDetector}, which reads the Greenhouse/Lever form that page embeds.
  */
 @Component
 public class ApplyUrlResolver {
@@ -40,10 +42,20 @@ public class ApplyUrlResolver {
     private static final Pattern LEVER_URL =
             Pattern.compile("^https?://jobs\\.lever\\.co/[^/?#]+/[0-9a-f-]{36}");
 
-    private final AtsCompanyRepository atsCompanyRepository;
+    private static final Pattern WORKDAY_HOST = Pattern.compile("^https?://[^/]*myworkday(?:jobs|site)\\.com/");
 
-    public ApplyUrlResolver(AtsCompanyRepository atsCompanyRepository) {
+    private final AtsCompanyRepository atsCompanyRepository;
+    private final EmbeddedFormDetector embeddedFormDetector;
+
+    @Autowired
+    public ApplyUrlResolver(AtsCompanyRepository atsCompanyRepository, EmbeddedFormDetector embeddedFormDetector) {
         this.atsCompanyRepository = atsCompanyRepository;
+        this.embeddedFormDetector = embeddedFormDetector;
+    }
+
+    /** Test seam: no network - a company-site apply link never gets its page fetched. */
+    ApplyUrlResolver(AtsCompanyRepository atsCompanyRepository) {
+        this(atsCompanyRepository, EmbeddedFormDetector.offline());
     }
 
     /**
@@ -127,12 +139,15 @@ public class ApplyUrlResolver {
      * ({@code boards.greenhouse.io/<slug>/jobs/<id>}), which some companies (Stripe) redirect to
      * an iframe page the browser tools cannot see into (HANDOFF.md §12) - so a recognised hosted
      * Greenhouse URL is rewritten to the standalone embed form, a Lever posting URL gets
-     * {@code /apply}, and a URL already in that form is kept. Anything else (Workday, a company's
-     * own site, a tracking redirector, a {@code grnh.se} short link) yields empty: Claude opens
-     * {@code apply_url} as the JOB URL and finds the form itself, without the "DIRECT APPLY FORM
-     * URL, no iframe, no sign-in" framing meant only for a genuinely direct URL.
+     * {@code /apply}, and a URL already in that form is kept. Workday yields empty. Anything else
+     * (a company's own site, a tracking redirector, a {@code grnh.se} short link) is fetched once
+     * by {@link EmbeddedFormDetector}: if that page embeds a Greenhouse or Lever form, its
+     * standalone URL is the direct form (this is how Stripe's {@code stripe.com/careers/listing}
+     * page becomes {@code job-boards.greenhouse.io/embed/job_app?for=stripe&token=...}); otherwise
+     * empty, and Claude opens {@code apply_url} as the JOB URL and finds the form itself, without
+     * the "DIRECT APPLY FORM URL, no iframe, no sign-in" framing meant only for a genuinely direct URL.
      */
-    private static Optional<String> linkedinDirectUrl(JobListing job) {
+    private Optional<String> linkedinDirectUrl(JobListing job) {
         String url = job.applyUrl();
         if (url == null || url.isBlank()) {
             return Optional.empty();
@@ -151,6 +166,9 @@ public class ApplyUrlResolver {
             }
             return Optional.of(url.startsWith(m.group() + "/apply") ? m.group() + "/apply" : leverApplyUrl(m.group()));
         }
-        return Optional.empty();
+        if ("workday".equals(job.applyDomain()) || WORKDAY_HOST.matcher(url).find()) {
+            return Optional.empty();
+        }
+        return embeddedFormDetector.detect(url);
     }
 }
