@@ -11,6 +11,7 @@ import {
 import type { ResumeResponse } from "../types/api";
 import { absoluteTime } from "../utils/format";
 import { ApplicantProfileForm } from "./ApplicantProfileForm";
+import { InfoTip } from "./InfoTip";
 
 interface ResumesPanelProps {
   /** Bumped by the panel whenever the list changes, so the run form can refresh its picker. */
@@ -110,11 +111,14 @@ export function ResumesPanel({ onResumesChanged }: ResumesPanelProps) {
 
   return (
     <section className="resumes-panel">
-      <h2>Resumes</h2>
-      <p className="panel-hint">
-        The AI scan compares each job description against one of these. PDF, plain text and
-        Markdown are accepted — a PDF must contain selectable text, not a scanned image.
-      </p>
+      <h2 className="section-heading">
+        Resumes
+        <InfoTip label="About resumes">
+          The AI scan compares each job description against the default resume, and Apply with
+          Claude attaches it under its original filename. PDF, plain text and Markdown are
+          accepted — a PDF must contain selectable text, not a scanned image.
+        </InfoTip>
+      </h2>
 
       <form className="resume-upload" onSubmit={(e) => e.preventDefault()}>
         <div className="field-row">
@@ -150,10 +154,7 @@ export function ResumesPanel({ onResumesChanged }: ResumesPanelProps) {
       {resumes == null ? (
         <p className="muted">Loading…</p>
       ) : resumes.length === 0 ? (
-        <p className="muted">
-          No resumes yet. Upload one to enable the AI match step — runs will still work without
-          it, they just won't be scored.
-        </p>
+        <p className="muted">No resumes yet.</p>
       ) : (
         <ul className="resume-list">
           {resumes.map((r) => (

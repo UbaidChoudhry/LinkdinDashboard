@@ -9,6 +9,7 @@ import {
   startApplications,
 } from "../api/client";
 import type { ApplyBatchResponse, JobApplicationResponse } from "../types/api";
+import { InfoTip } from "./InfoTip";
 
 interface ApplyControlsProps {
   /** Job ids eligible for this run: recommended, untriaged, non-LinkedIn rows on screen. */
@@ -69,7 +70,6 @@ function DetailsRow({ job, batchId }: { job: JobApplicationResponse; batchId: nu
       <strong>
         {job.title} — {job.company}
       </strong>
-      {job.status === "needs_review" && <div className="apply-note">Tab left open for you to finish.</div>}
       {job.notes && <div>{job.notes}</div>}
       {showActivity && <div className="apply-activity">Claude: {job.lastActivity}</div>}
       {job.hasLog && (
@@ -247,16 +247,19 @@ export function ApplyControls({ eligibleJobIds, linkedinCount, onFinished }: App
           />
           <label htmlFor="apply-submit">Submit applications</label>
         </span>
-        <span className="apply-note">
-          Unchecked: Claude fills each form and stops before Submit so you can review
-        </span>
-
-        {linkedinCount > 0 && (
-          <span className="apply-note">
-            {linkedinCount} LinkedIn job{linkedinCount === 1 ? "" : "s"} have no external apply link (Easy Apply, closed, or not resolved yet) -
-            apply to those manually.
-          </span>
-        )}
+        <InfoTip label="About Apply with Claude">
+          Runs over the Recommended bucket. Unchecked, Claude fills each form and stops before
+          Submit, leaving the tab open for review; checked, it submits.
+          {linkedinCount > 0 && (
+            <>
+              {" "}
+              {linkedinCount} LinkedIn job{linkedinCount === 1 ? " has" : "s have"} no external apply
+              link (Easy Apply, closed, or not resolved yet) and will be skipped.
+            </>
+          )}{" "}
+          If a job gets stuck, open its log or resume the session in a terminal - the browser tabs
+          are gone once the session ends, but Claude can reopen them.
+        </InfoTip>
 
         {running && batch && (
           <span className="apply-note apply-progress">
@@ -280,8 +283,7 @@ export function ApplyControls({ eligibleJobIds, linkedinCount, onFinished }: App
               <>
                 {" · "}
                 <strong>{batch.newQuestions}</strong> new question
-                {batch.newQuestions === 1 ? "" : "s"} need your answer → Resumes tab, Applicant
-                profile
+                {batch.newQuestions === 1 ? "" : "s"} → Resumes tab
               </>
             )}
           </span>
@@ -303,10 +305,6 @@ export function ApplyControls({ eligibleJobIds, linkedinCount, onFinished }: App
       {batch && showDetails && (
         <div className="apply-details">
           {batch.hasReport && <RunReport batchId={batch.id} />}
-          <p className="apply-note">
-            Stuck? Open the log, or resume the session in a terminal and ask Claude what blocked
-            it — the browser tabs it used are gone once the session ends, but it can reopen them.
-          </p>
           {batch.jobs.map((job) => (
             <DetailsRow key={job.id} job={job} batchId={batch.id} />
           ))}

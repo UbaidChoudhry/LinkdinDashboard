@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ApiError, cancelRun, getCooldown, resumeRun } from "../api/client";
 import type { CooldownResponse, RunResponse, ScanProgress } from "../types/api";
 import { isRunFinished, isRunInFlight, runStatusInfo } from "../utils/runStatus";
+import { InfoTip } from "./InfoTip";
 
 interface RunProgressProps {
   run: RunResponse;
@@ -214,22 +215,16 @@ function RetryPanel({
   return (
     <div className="retry-panel">
       <p className="retry-copy">
-        {unfetched > 0 ? (
+        {unfetched > 0 && (
           <>
-            <strong>{unfetched}</strong> job{unfetched === 1 ? "" : "s"} from this run{" "}
-            {unfetched === 1 ? "has" : "have"} no description yet, so the AI scan could not score{" "}
-            {unfetched === 1 ? "it" : "them"}. Retry reads {unfetched === 1 ? "it" : "them"} from
-            LinkedIn and re-runs the scan; it does not repeat the search.
-          </>
-        ) : (
-          <>Retry re-runs the AI scan over this run's jobs; it does not repeat the search.</>
-        )}
-        {waiting && (
-          <>
-            {" "}
-            LinkedIn's cooldown ends at {formatClock(cooldown?.until ?? null)}.
+            <strong>{unfetched}</strong> unscored job{unfetched === 1 ? "" : "s"} (no description yet).
           </>
         )}
+        {waiting && <> LinkedIn cooldown ends at {formatClock(cooldown?.until ?? null)}.</>}{" "}
+        <InfoTip label="About retry">
+          Retry reads the missing descriptions from LinkedIn and re-runs the AI scan over this
+          run's jobs; it never repeats the search.
+        </InfoTip>
       </p>
       {error && (
         <p className="form-error" role="alert">

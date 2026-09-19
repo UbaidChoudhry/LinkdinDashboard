@@ -814,6 +814,16 @@ th.sortable.active .sort-button {
 
 /* ---- Info tooltip --------------------------------------------------------------------------- */
 
+/* A heading with its explanatory copy folded into an InfoTip beside it, instead of a paragraph
+   of hint text under it - the dashboard is the user's own tool, and the copy is there on hover
+   for whoever needs it. */
+.section-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+
 .info-tip {
   position: relative;
   display: inline-flex;
@@ -843,13 +853,15 @@ th.sortable.active .sort-button {
   background: var(--accent-bg);
 }
 
+/* display:none, not visibility:hidden, while closed - a hidden-but-laid-out panel still counts
+   toward the page's scrollable overflow, which is what put a stray scrollbar under the results
+   table. .left/.right and .below/.above are set by InfoTip from the icon's viewport position. */
 .info-tip-content {
   position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
   z-index: 20;
+  display: none;
   width: max-content;
-  max-width: 460px;
+  max-width: min(460px, calc(100vw - 32px));
   padding: 12px 14px;
   border-radius: 8px;
   border: 1px solid var(--border);
@@ -860,20 +872,17 @@ th.sortable.active .sort-button {
   line-height: 1.55;
   white-space: normal;
   box-shadow: var(--shadow);
-  opacity: 0;
-  visibility: hidden;
-  transition: opacity 120ms ease;
 }
+
+.info-tip-content.left { left: 0; }
+.info-tip-content.right { right: 0; }
+.info-tip-content.below { top: calc(100% + 8px); }
+.info-tip-content.above { bottom: calc(100% + 8px); }
 
 /* focus-within, not just hover: a hover-only tooltip is unreachable by keyboard. */
 .info-tip:hover .info-tip-content,
 .info-tip:focus-within .info-tip-content {
-  opacity: 1;
-  visibility: visible;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .info-tip-content { transition: none; }
+  display: block;
 }
 
 /* ---- Min salary toggle ---------------------------------------------------------------------- */

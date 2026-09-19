@@ -10,6 +10,7 @@ import {
   setProfileAnswer,
 } from "../api/client";
 import type { ApplicantProfile, ProfileAnswer } from "../types/api";
+import { InfoTip } from "./InfoTip";
 
 const EMPTY_PROFILE: Omit<ApplicantProfile, "updatedAt"> = {
   fullName: "",
@@ -89,10 +90,12 @@ export function ApplicantProfileForm() {
 
   return (
     <section className="applicant-profile-form">
-      <h2>Applicant profile</h2>
-      <p className="panel-hint">
-        Used by Apply with Claude to fill application forms; the resume covers the rest.
-      </p>
+      <h2 className="section-heading">
+        Applicant profile
+        <InfoTip label="About the applicant profile">
+          Used by Apply with Claude to fill application forms; the resume covers the rest.
+        </InfoTip>
+      </h2>
 
       {loadError && (
         <p className="form-error" role="alert">
@@ -308,11 +311,13 @@ function ProfileAnswersTable() {
 
   return (
     <section className="qa-section">
-      <h2>Questions &amp; answers</h2>
-      <p className="panel-hint">
-        Claude uses these verbatim when an application asks the same question. Questions it could
-        not answer land here as Pending - answer them once.
-      </p>
+      <h2 className="section-heading">
+        Questions &amp; answers
+        <InfoTip label="About questions and answers">
+          Claude uses these verbatim when an application asks the same question, however it is
+          worded. Questions it could not answer land here as Pending - answer them once.
+        </InfoTip>
+      </h2>
 
       {loadError && (
         <p className="form-error" role="alert">
@@ -323,10 +328,7 @@ function ProfileAnswersTable() {
       {loading ? (
         <p className="muted">Loading…</p>
       ) : answers.length === 0 ? (
-        <p className="muted">
-          No questions yet - run Apply with Claude and any question it can't answer will appear
-          here.
-        </p>
+        <p className="muted">No questions yet.</p>
       ) : (
         <div className="job-table-scroll">
           <table className="job-table qa-table">

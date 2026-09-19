@@ -11,6 +11,7 @@ import {
 import type { AtsCompanyResponse, JobSourceName, SourceSummaryResponse } from "../types/api";
 import { ATS_SOURCES, SOURCE_LABELS } from "../types/api";
 import { relativeTime } from "../utils/format";
+import { InfoTip } from "./InfoTip";
 
 const PAGE_SIZE = 50;
 
@@ -136,13 +137,15 @@ export function SourcesPanel() {
 
   return (
     <section className="sources-panel">
-      <h2>Job sources</h2>
-      <p className="panel-hint">
-        ATS boards are per-company — there is no global search — so a run visits the companies
-        enabled here. Importing a catalog with <code>./import-slugs.sh</code> adds companies
-        <strong> disabled</strong>; enable the ones you want. A board that 404s repeatedly is
-        retired automatically and shown as <em>dead</em>.
-      </p>
+      <h2 className="section-heading">
+        Job sources
+        <InfoTip label="About job sources">
+          ATS boards are per-company — there is no global search — so a run visits the companies
+          enabled here. Importing a catalog with <code>./import-slugs.sh</code> adds companies
+          <strong> disabled</strong>; enable the ones you want. A board that 404s repeatedly is
+          retired automatically and shown as <em>dead</em>.
+        </InfoTip>
+      </h2>
 
       {summary && (
         <p className="sources-summary">

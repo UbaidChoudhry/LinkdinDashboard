@@ -8,8 +8,8 @@ import { isRunInFlight } from "../utils/runStatus";
 import { ApplyControls } from "./ApplyControls";
 import { JobRow } from "./JobRow";
 import { CompanyGroupRow } from "./CompanyGroupRow";
-import { InfoTip } from "./InfoTip";
 import { PlainHeader, SortableHeader } from "./SortableHeader";
+import { InfoTip } from "./InfoTip";
 
 interface JobsPanelProps {
   /** Bumped whenever the caller wants JobsPanel to refetch (e.g. a run just finished). */

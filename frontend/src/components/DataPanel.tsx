@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError, clearJobData, getDataStats } from "../api/client";
 import type { DataStatsResponse } from "../types/api";
 import { absoluteTime, formatBytes, relativeTime } from "../utils/format";
+import { InfoTip } from "./InfoTip";
 
 interface DataPanelProps {
   /** Bumped whenever something elsewhere (a finished run, a status change) should be reflected here too. */
@@ -134,18 +135,16 @@ export function DataPanel({ refreshToken, onCleared }: DataPanelProps) {
         </p>
       )}
 
-      <p className="hint">
-        The request log ({stats.requestLogEntries.toLocaleString()} entries) backs the daily LinkedIn request
-        budget and is never affected by clearing below - it has to persist so the rate limiter can't be reset
-        by clearing the database.
-      </p>
-
       <div className="data-clear-section">
-        <h3>Clear job data</h3>
-        <p className="hint">
-          Permanently deletes every stored job and run - Search, Applied, and Not interested all go empty.
-          Your exclude words and blocked companies are kept. This cannot be undone.
-        </p>
+        <h3 className="section-heading">
+          Clear job data
+          <InfoTip label="About clearing job data">
+            Permanently deletes every stored job and run - Search, Applied, and Not interested all
+            go empty. Exclude words and blocked companies are kept. The request log
+            ({stats.requestLogEntries.toLocaleString()} entries) backs the daily LinkedIn request
+            budget and is never cleared, so the rate limiter cannot be reset this way.
+          </InfoTip>
+        </h3>
 
         {lastCleared && clearState === "idle" && (
           <p className="hint data-clear-success">

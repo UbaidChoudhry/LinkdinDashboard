@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { ApiError, companyVolumeReport } from "../api/client";
 import type { CompanyVolumeResponse } from "../types/api";
+import { InfoTip } from "./InfoTip";
 
 const DEFAULT_DAYS = 7;
 const DEFAULT_THRESHOLD = 40;
@@ -38,11 +39,13 @@ export function CompanyVolumeReport() {
 
   return (
     <section className="company-volume-report">
-      <h2>Company posting volume</h2>
-      <p className="hint">
-        Companies posting a high volume of listings in the recency window - a structural signal
-        for staffing-agency-style relays, not an automatic verdict.
-      </p>
+      <h2 className="section-heading">
+        Company posting volume
+        <InfoTip label="About company posting volume">
+          Companies posting a high volume of listings in the recency window - a structural signal
+          for staffing-agency-style relays, not an automatic verdict.
+        </InfoTip>
+      </h2>
 
       <form className="inline-form" onSubmit={handleSubmit}>
         <label htmlFor="cvr-days">Days</label>

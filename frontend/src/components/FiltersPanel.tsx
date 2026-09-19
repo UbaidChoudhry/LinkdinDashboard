@@ -11,6 +11,7 @@ import {
 } from "../api/client";
 import type { CompanyBlocklistResponse } from "../types/api";
 import { absoluteTime } from "../utils/format";
+import { InfoTip } from "./InfoTip";
 
 export function FiltersPanel() {
   const [words, setWords] = useState<string[] | null>(null);
@@ -111,11 +112,13 @@ export function FiltersPanel() {
 
   return (
     <section className="filters-panel">
-      <h2>Filters</h2>
-      <p className="hint">
-        Editing either list below re-evaluates every previously stored job, not just future
-        sweeps - removing a word or company can bring previously rejected jobs back into Search.
-      </p>
+      <h2 className="section-heading">
+        Filters
+        <InfoTip label="About filters">
+          Editing either list re-evaluates every previously stored job, not just future sweeps -
+          removing a word or company can bring previously rejected jobs back into Search.
+        </InfoTip>
+      </h2>
 
       <div className="filters-columns">
         <div className="filter-column">
