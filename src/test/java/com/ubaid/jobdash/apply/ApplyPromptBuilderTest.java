@@ -134,16 +134,14 @@ class ApplyPromptBuilderTest {
         String prompt = builder.build(job("<p>Great role</p>"), resume(), Path.of("/data/resumes/1.pdf"),
                 profile(), false, 4000);
 
-        assertThat(prompt).contains("Workday postings: click Apply, then \"Apply Manually\"");
-        assertThat(prompt).contains("Bitwarden inline autofill menu");
-        assertThat(prompt).contains("Cmd+Shift+L");
-        assertThat(prompt).contains("this rule overrides the login-wall rule below");
-        assertThat(prompt).contains("Workday: no Bitwarden login for this site");
+        assertThat(prompt).contains("Workday postings (*.myworkdayjobs.com): click Apply, then \"Apply Manually\"");
+        assertThat(prompt).contains("If Bitwarden's inline menu is showing");
+        assertThat(prompt).contains("Workday: no Bitwarden item for <tenant host>");
         assertThat(prompt).contains("Bitwarden vault is locked - unlock it and retry");
         assertThat(prompt).contains("Never create an account and never type a password yourself");
 
-        int workdayIndex = prompt.indexOf("Workday postings: click Apply");
-        int loginWallIndex = prompt.indexOf("if you hit a blocker you cannot get past");
+        int workdayIndex = prompt.indexOf("Workday postings (*.myworkdayjobs.com): click Apply");
+        int loginWallIndex = prompt.indexOf("Only a blocker no answer could fix");
         assertThat(workdayIndex).isGreaterThan(-1);
         assertThat(loginWallIndex).isGreaterThan(-1);
         assertThat(workdayIndex).isLessThan(loginWallIndex);
@@ -172,6 +170,13 @@ class ApplyPromptBuilderTest {
         assertThat(prompt).contains("Narrate nothing between actions");
         assertThat(prompt).contains("handle each one in ONE browser-batch: click the control, type the exact option");
         assertThat(prompt).contains("Take NO screenshots except one at the very end");
+        // Batch 10 (2026-09-23): required fields with no answer must end needs_review, not failed;
+        // Enter on a closed control submitted a Greenhouse form; keyboard shortcuts sent through
+        // the extension never reach another extension.
+        assertThat(prompt).contains("A REQUIRED field you have no answer for is NOT a failure");
+        assertThat(prompt).contains("Press Enter ONLY while a dropdown's option list is");
+        assertThat(prompt).contains("Do not press keyboard shortcuts to summon Bitwarden");
+        assertThat(prompt).doesNotContain("unavoidable required field");
     }
 
     @Test

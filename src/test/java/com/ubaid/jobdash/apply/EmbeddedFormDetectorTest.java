@@ -77,4 +77,52 @@ class EmbeddedFormDetectorTest {
         assertThat(EmbeddedFormDetector.offline().detect(STRIPE_URL)).isEmpty();
         assertThat(working.detect(null)).isEmpty();
     }
+
+    @Test
+    void botWalledPageFallsBackToASlugGuessConfirmedByTheGreenhouseApi() {
+        String zoominfo = "https://www.zoominfo.com/careers?gh_jid=8623285002&gh_src=d14a9e1e2";
+        java.util.List<String> fetched = new java.util.ArrayList<>();
+        EmbeddedFormDetector detector = new EmbeddedFormDetector(url -> {
+            fetched.add(url);
+            if (url.equals(zoominfo)) {
+                return Optional.empty(); // the site answers 403
+            }
+            return url.equals(EmbeddedFormDetector.BOARDS_API + "zoominfo/jobs/8623285002")
+                    ? Optional.of("{\"id\":8623285002}") : Optional.empty();
+        });
+
+        assertThat(detector.detect(zoominfo))
+                .contains("https://job-boards.greenhouse.io/embed/job_app?for=zoominfo&token=8623285002");
+        assertThat(fetched).containsExactly(zoominfo, EmbeddedFormDetector.BOARDS_API + "zoominfo/jobs/8623285002");
+    }
+
+    @Test
+    void stripePageVariantWithoutTheIframeStillResolvesViaGreenhouseIdAndTheApi() {
+        String html = "<script id=\"__NEXT_DATA__\">{\"props\":{\"pageProps\":{\"listing\":{\"greenhouseId\":8062305}}}}</script>";
+        EmbeddedFormDetector detector = new EmbeddedFormDetector(url ->
+                url.startsWith(EmbeddedFormDetector.BOARDS_API)
+                        ? (url.endsWith("stripe/jobs/8062305") ? Optional.of("{}") : Optional.empty())
+                        : Optional.of(html));
+
+        assertThat(detector.detect("https://stripe.com/careers/listing/full-stack-engineer-link/8062305?gh_src=x"))
+                .contains("https://job-boards.greenhouse.io/embed/job_app?for=stripe&token=8062305");
+    }
+
+    @Test
+    void aGuessTheApiRejectsYieldsEmpty() {
+        EmbeddedFormDetector detector = new EmbeddedFormDetector(url ->
+                url.startsWith(EmbeddedFormDetector.BOARDS_API) ? Optional.empty() : Optional.of("<html>no form</html>"));
+
+        assertThat(detector.detect("https://acme.com/careers/job/1234567")).isEmpty();
+        assertThat(detector.detect("https://acme.com/careers/job/backend-engineer")).isEmpty();
+    }
+
+    @Test
+    void slugFromHostTakesTheLabelBeforeTheTopLevelDomain() {
+        assertThat(EmbeddedFormDetector.slugFromHost("https://www.zoominfo.com/careers?x=1")).contains("zoominfo");
+        assertThat(EmbeddedFormDetector.slugFromHost("https://stripe.com/careers/1")).contains("stripe");
+        assertThat(EmbeddedFormDetector.slugFromHost("https://careers.vizientinc.com/x")).contains("vizientinc");
+        assertThat(EmbeddedFormDetector.slugFromHost("https://jobs.example.co.uk/x")).contains("example");
+        assertThat(EmbeddedFormDetector.slugFromHost("not a url")).isEmpty();
+    }
 }

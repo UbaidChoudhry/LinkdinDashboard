@@ -1322,6 +1322,50 @@ that placeholder). Only a question no known answer covers counts as unanswered. 
 batch's "new questions" count: if near-duplicates still appear, the next lever is answering
 them once in the Resumes tab - `QuestionKey` deliberately does not try to guess synonyms.
 
+### Batch 10, the first full run (42 jobs, 2026-09-23 evening)
+
+17 needs-review, 25 failed, 27 new pending questions, $-cost per the report. What the failures
+taught, and what changed:
+
+- **"Apply failed" on a form that was 90% filled.** Evlo, Realtor.com and others stopped on a
+  required Zip Code / Street Address / travel-percentage field because the prompt's blocker list
+  said "an unavoidable required field with no answer available → failed". The questions *were*
+  recorded (that part was never broken - "zip code" reached `asked_count` 4), but the job wore
+  the wrong badge and the user read it as "no longer adding questions". The prompt now says a
+  required field with no answer is not a failure: leave it blank, list it, leave the tab open on
+  that step, outcome `needs_review`. `failed` is reserved for a login wall, an account-creation
+  gate, or a CAPTCHA.
+- **Enter submitted a form with submit off.** Glean (`job_application` 61): Claude pressed
+  Return to confirm the last custom dropdown (Veteran Status), the list was already closed, and
+  Greenhouse treated it as form submit - the application went out. The row is `needs_review` in
+  the DB because the CLI reported it that way; the notes say INCIDENT. The dropdown rule now says
+  press Enter only while the option list is visibly open, and click the option when unsure.
+- **Workday: the Bitwarden route was never going to work as written.** Six Workday tenants
+  (Salesforce ×2, Disney, Nasdaq, AssetMark, Dow Jones, Blue Origin) all ended the same way:
+  Claude clicked the email field, saw no inline menu, pressed Cmd+Shift+L, nothing. Two reasons.
+  A keystroke sent through the Claude-in-Chrome extension is dispatched into the *page*;
+  extension command shortcuts are handled by the browser before any page sees them, so another
+  extension's shortcut can never be triggered this way. And Bitwarden's inline menu appears on a
+  real click only when the vault has an item whose URI matches - and Workday accounts are per
+  tenant (`assetmark.wd5.myworkdayjobs.com` is a different site from `nasdaq.wd1...`), so "an
+  account in Bitwarden" covers at most one of them. The prompt now drops the shortcut, tries the
+  inline menu exactly once, and fails with `Workday: no Bitwarden item for <tenant host>` so the
+  transcript names the tenant that needs a vault item. **An attempt to add a stored Workday
+  email/password to the applicant profile (V16, a prompt section, redaction in the transcript)
+  was blocked by the Claude Code permission classifier as credential leakage and was not
+  built** - the migration was never written; nothing of it is in the tree. If that route is
+  wanted, it is a deliberate reversal of the "never type a password" rule above and should be
+  the user's explicit decision.
+- **Stripe and ZoomInfo still had no direct form URL** despite `EmbeddedFormDetector`. Two
+  separate causes, both fixed: over HTTP/2, `stripe.com` serves a variant of the listing page
+  without the `<noscript>` Greenhouse iframe (curl, HTTP/1.1, gets it), so the detector's client
+  is pinned to HTTP/1.1; and `zoominfo.com/careers?gh_jid=…` answers 403 to any non-browser
+  client, so nothing can be read from the page at all. The detector therefore has a second step:
+  a job id from the URL (`gh_jid`, a 6+ digit path segment) or page (`greenhouseId`), plus the
+  site's own name as a slug guess (`stripe`, `zoominfo`), confirmed against Greenhouse's public
+  Job Board API (`boards-api.greenhouse.io/v1/boards/<slug>/jobs/<id>`, 200 or 404) before it is
+  trusted. Both real cases confirm (verified with curl 2026-09-23).
+
 ## 13. LinkedIn postings → their real apply link (2026-09-21)
 
 **§12 said LinkedIn rows are skipped because applying through LinkedIn needs the user's own

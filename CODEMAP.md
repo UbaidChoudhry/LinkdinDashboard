@@ -313,7 +313,10 @@ HANDOFF.md §12.
 apply link is a company's own careers page (Stripe): one server-side GET of that page, and if it
 embeds a Greenhouse (`embed/job_app?for=…&token=…`, or the `job_board/js` loader plus a job id)
 or Lever form, that standalone URL becomes the DIRECT APPLY FORM URL - the iframe the browser
-tools cannot see into is bypassed the same way a native Greenhouse row's is. `OrphanedApplyBatchReaper`
+tools cannot see into is bypassed the same way a native Greenhouse row's is. When the page can't
+be read (zoominfo.com 403s) or names no form, it guesses slug = the site's name and job id = the
+`gh_jid`/path number, and trusts the guess only if Greenhouse's public Job Board API confirms the
+pair (HANDOFF.md §12, "Batch 10"). `OrphanedApplyBatchReaper`
 is the apply twin of `sweep/OrphanedRunReaper`: at startup it closes any `apply_batch` still `running`
 from a process that died (status `interrupted`, its jobs `failed`), and the cancel endpoint does the
 same (`cancelled`) for a batch only the database thinks is running - without either, a restart

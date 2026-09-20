@@ -171,8 +171,11 @@ public class ApplyPromptBuilder {
                    text (or the first distinctive words of it), wait 1 second, press Enter. Never
                    scroll inside a dropdown list, never type "slowly", and never screenshot to look
                    for an option - if Enter picked the wrong value, read the field back and retry
-                   once with a more specific string. Ask read_page for a large max_chars so one call
-                   covers the whole form instead of one call per scroll position.
+                   once with a more specific string. Press Enter ONLY while a dropdown's option list is
+                   visibly open - Enter on a closed control or a text input submits the whole form (a
+                   Greenhouse form was submitted this way with submit disabled). If unsure whether the
+                   list is open, click the option instead. Ask read_page for a large max_chars so one
+                   call covers the whole form instead of one call per scroll position.
                 6. Do one verification pass with read_page (not screenshots) after filling, and fix
                    only the fields that don't match your plan. Do not paste the resume text into a
                    cover-letter or free-text field - if a cover letter is required, write two or three
@@ -193,22 +196,25 @@ public class ApplyPromptBuilder {
                 coordinates; after typing into a field, confirm the value actually appears (zoom or
                 read the field) before moving on - typed text has been observed not to register.
 
-                Workday postings: click Apply, then "Apply Manually". If you are already signed in, \
-                continue. If Workday shows a sign-in page, this rule overrides the login-wall rule below: \
-                click the email/username field and use the Bitwarden inline autofill menu that appears \
-                under it; if no menu appears, press Cmd+Shift+L (Bitwarden autofill), wait 2 seconds, and \
-                read the fields back. If both fields are now filled, sign in and continue. If they stay \
-                empty, stop with outcome failed and summary "Workday: no Bitwarden login for this site". \
-                If Bitwarden asks to unlock the vault, stop with outcome failed and summary "Bitwarden \
-                vault is locked - unlock it and retry". Never create an account and never type a password \
-                yourself.
+                Workday postings (*.myworkdayjobs.com): click Apply, then "Apply Manually". If you are \
+                already signed in, continue. Otherwise the tenant shows "Create Account" and/or "Sign In": \
+                open Sign In (the "Already have an account?" link if the page opened on Create Account), \
+                click the email field ONCE and take one screenshot. If Bitwarden's inline menu is showing \
+                under the field, click its entry, then the password field's entry if needed, sign in and \
+                continue. If the menu offers to unlock the vault, stop with outcome failed and summary \
+                "Bitwarden vault is locked - unlock it and retry". If no menu appears, stop with outcome \
+                failed and summary "Workday: no Bitwarden item for <tenant host>". Do not press keyboard \
+                shortcuts to summon Bitwarden - keys sent through the browser extension never reach it. \
+                Never create an account and never type a password yourself.
 
                 If the job posting is closed, expired, or the page returns a 404 / "not found", stop
                 immediately and set "outcome" to "not_found".
 
-                Otherwise, if you hit a blocker you cannot get past - a login wall, a CAPTCHA, an
-                unavoidable required field with no answer available - stop, set "outcome" to "failed",
-                and explain the blocker in "summary".
+                A REQUIRED field you have no answer for is NOT a failure: leave it blank, add its label
+                to "unanswered", fill everything else you can, leave the tab open on that step, and set
+                "outcome" to "needs_review" - the user answers it in the Resumes tab and the next batch
+                uses the answer. Only a blocker no answer could fix - a login wall or account-creation
+                gate with no saved login, a CAPTCHA - is "failed"; explain it in "summary".
 
                 Always fill in "summary" with a short, concrete account of what happened (what you
                 filled, what stage you reached, and why, if it didn't reach a normal ending).
