@@ -25,7 +25,8 @@ import java.util.regex.Pattern;
  * {@code https://job-boards.greenhouse.io/embed/job_app?for=<boardSlug>&token=<sourceJobId>}.
  * Lever serves one at {@code <jobUrl>/apply}. Workday has no equivalent, so it resolves to empty.
  * A LinkedIn row resolved to a company's own careers page (Stripe) is handed to
- * {@link EmbeddedFormDetector}, which reads the Greenhouse/Lever form that page embeds.
+ * {@link EmbeddedFormDetector}, which reads the Greenhouse/Lever form that page embeds. A
+ * {@link PastedUrlJobs pasted} URL is treated exactly like such a resolved link.
  */
 @Component
 public class ApplyUrlResolver {
@@ -73,7 +74,7 @@ public class ApplyUrlResolver {
             return switch (ats) {
                 case "greenhouse" -> greenhouseDirectUrl(job);
                 case "lever" -> leverDirectUrl(job);
-                case "linkedin" -> linkedinDirectUrl(job);
+                case "linkedin", PastedUrlJobs.SOURCE -> applyLinkDirectUrl(job);
                 default -> Optional.empty();
             };
         } catch (RuntimeException e) {
@@ -133,8 +134,9 @@ public class ApplyUrlResolver {
     }
 
     /**
-     * A LinkedIn row's direct apply link, once {@code apply/LinkedInApplyLinkResolver} has read
-     * its real destination out of the signed-in Chrome into {@code apply_url}. That destination
+     * The direct apply form behind an {@code apply_url} that points at someone else's site: a
+     * LinkedIn row's, read out of a signed-in Chrome before that step was removed (HANDOFF.md §13),
+     * or a {@link PastedUrlJobs pasted} row's, which is the URL itself. That destination
      * is whatever LinkedIn pointed at - for Greenhouse usually the hosted posting page
      * ({@code boards.greenhouse.io/<slug>/jobs/<id>}), which some companies (Stripe) redirect to
      * an iframe page the browser tools cannot see into (HANDOFF.md §12) - so a recognised hosted
@@ -147,7 +149,7 @@ public class ApplyUrlResolver {
      * empty, and Claude opens {@code apply_url} as the JOB URL and finds the form itself, without
      * the "DIRECT APPLY FORM URL, no iframe, no sign-in" framing meant only for a genuinely direct URL.
      */
-    private Optional<String> linkedinDirectUrl(JobListing job) {
+    private Optional<String> applyLinkDirectUrl(JobListing job) {
         String url = job.applyUrl();
         if (url == null || url.isBlank()) {
             return Optional.empty();

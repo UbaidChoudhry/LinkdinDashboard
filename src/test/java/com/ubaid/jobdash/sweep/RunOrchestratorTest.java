@@ -1,8 +1,6 @@
 package com.ubaid.jobdash.sweep;
 
 import com.ubaid.jobdash.ai.ResumeMatchService;
-import com.ubaid.jobdash.apply.LinkedInApplyLinkResolver;
-import com.ubaid.jobdash.apply.LinkedInLinkProperties;
 import com.ubaid.jobdash.source.location.LocationClassifier;
 import com.ubaid.jobdash.ai.ScanProgressListener;
 import com.ubaid.jobdash.domain.Resume;
@@ -64,11 +62,8 @@ class RunOrchestratorTest {
     private ResumeMatchService resumeMatchService;
     @Mock
     private LocationClassifier locationClassifier;
-    @Mock
-    private LinkedInApplyLinkResolver linkResolver;
 
     private RunOrchestrator orchestrator;
-    private LinkedInLinkProperties linkProperties;
     private RunProgressRegistry registry;
     private Clock clock;
 
@@ -79,10 +74,8 @@ class RunOrchestratorTest {
     void setUp() {
         clock = Clock.fixed(NOW, ZoneOffset.UTC);
         registry = new RunProgressRegistry();
-        linkProperties = new LinkedInLinkProperties(true, 8, 40, 120, 2.0, java.time.Duration.ofMinutes(10));
         orchestrator = new RunOrchestrator(sweepService, atsSweepService, detailFetchService, sweepRunRepository,
-                resumeRepository, resumeMatchService, locationClassifier, linkResolver, linkProperties,
-                registry, clock);
+                resumeRepository, resumeMatchService, locationClassifier, registry, clock);
     }
 
     @Test
@@ -377,96 +370,5 @@ class RunOrchestratorTest {
 
         verifyNoInteractions(detailFetchService, resumeMatchService);
         verify(sweepRunRepository, never()).finish(anyLong(), any(), any());
-    }
-
-    // ---- LinkedIn apply-link phase (status "matching") --------------------------------------------------------
-
-    /** The link resolver runs after the scan, over the same effective resume, with "matching" published meanwhile. */
-    @Test
-    void executeRunPublishesMatchingAfterTheScanAndUsesTheScannedResume() {
-        when(sweepService.createRun(SWEEP_REQUEST, "linkedin", 3L)).thenReturn(RUN_ID);
-        when(sweepService.collect(eq(RUN_ID), eq(SWEEP_REQUEST))).thenReturn("ok");
-        when(detailFetchService.fetchForRun(eq(RUN_ID), any())).thenReturn("ok");
-        java.util.concurrent.atomic.AtomicReference<String> statusDuringMatch = new java.util.concurrent.atomic.AtomicReference<>();
-        when(linkResolver.resolve(eq(RUN_ID), eq(3L), any())).thenAnswer(inv -> {
-            statusDuringMatch.set(registry.progress(RUN_ID).map(SweepProgress::status).orElse(null));
-            return LinkedInApplyLinkResolver.Summary.empty();
-        });
-
-        orchestrator.startRun(SWEEP_REQUEST, List.of("linkedin"), 3L, false);
-
-        InOrder order = inOrder(resumeMatchService, linkResolver, sweepRunRepository);
-        order.verify(resumeMatchService, timeout(2000))
-                .scan(eq(RUN_ID), eq(3L), any(BooleanSupplier.class), any(ScanProgressListener.class));
-        order.verify(linkResolver, timeout(2000)).resolve(eq(RUN_ID), eq(3L), any());
-        order.verify(sweepRunRepository, timeout(2000)).finish(eq(RUN_ID), any(), eq("ok"));
-        assertThat(statusDuringMatch.get()).isEqualTo("matching");
-    }
-
-    /** The Retry/resume path runs the link resolver after its own scan too, using the run's own resume. */
-    @Test
-    void executeResumePublishesMatchingAfterTheScan() {
-        when(sweepRunRepository.findById(RUN_ID))
-                .thenReturn(Optional.of(finishedRun("blocked", "linkedin,greenhouse", 3L)));
-        when(sweepRunRepository.reopen(RUN_ID, "fetching_details")).thenReturn(1);
-        when(detailFetchService.fetchForRun(eq(RUN_ID), any())).thenReturn("ok");
-        when(linkResolver.resolve(eq(RUN_ID), eq(3L), any()))
-                .thenReturn(LinkedInApplyLinkResolver.Summary.empty());
-
-        orchestrator.resumeRun(RUN_ID);
-
-        InOrder order = inOrder(resumeMatchService, linkResolver, sweepRunRepository);
-        order.verify(resumeMatchService, timeout(2000))
-                .scan(eq(RUN_ID), eq(3L), any(BooleanSupplier.class), any(ScanProgressListener.class));
-        order.verify(linkResolver, timeout(2000)).resolve(eq(RUN_ID), eq(3L), any());
-        order.verify(sweepRunRepository, timeout(2000)).finish(eq(RUN_ID), any(), eq("ok"));
-    }
-
-    /** A cancellation that lands during the scan must stop the link resolver from ever running. */
-    @Test
-    void matchingIsSkippedWhenCancelledDuringTheScan() {
-        when(sweepService.createRun(SWEEP_REQUEST, "linkedin", 3L)).thenReturn(RUN_ID);
-        when(sweepService.collect(eq(RUN_ID), eq(SWEEP_REQUEST))).thenReturn("ok");
-        when(detailFetchService.fetchForRun(eq(RUN_ID), any())).thenReturn("ok");
-        org.mockito.Mockito.doAnswer(inv -> {
-            registry.cancelFlag(RUN_ID).set(true);
-            return null;
-        }).when(resumeMatchService).scan(eq(RUN_ID), eq(3L), any(BooleanSupplier.class), any(ScanProgressListener.class));
-
-        orchestrator.startRun(SWEEP_REQUEST, List.of("linkedin"), 3L, false);
-
-        verify(sweepRunRepository, timeout(2000)).finish(eq(RUN_ID), any(), eq("cancelled"));
-        verifyNoInteractions(linkResolver);
-    }
-
-    /** apply.linkedin-links.enabled=false must skip the link resolver entirely, even after a successful scan. */
-    @Test
-    void matchingIsSkippedWhenDisabled() {
-        LinkedInLinkProperties disabled = new LinkedInLinkProperties(false, 8, 40, 120, 2.0, java.time.Duration.ofMinutes(10));
-        RunOrchestrator disabledOrchestrator = new RunOrchestrator(sweepService, atsSweepService, detailFetchService,
-                sweepRunRepository, resumeRepository, resumeMatchService, locationClassifier, linkResolver,
-                disabled, registry, clock);
-        when(sweepService.createRun(SWEEP_REQUEST, "linkedin", 3L)).thenReturn(RUN_ID);
-        when(sweepService.collect(eq(RUN_ID), eq(SWEEP_REQUEST))).thenReturn("ok");
-        when(detailFetchService.fetchForRun(eq(RUN_ID), any())).thenReturn("ok");
-
-        disabledOrchestrator.startRun(SWEEP_REQUEST, List.of("linkedin"), 3L, false);
-
-        verify(sweepRunRepository, timeout(2000)).finish(eq(RUN_ID), any(), eq("ok"));
-        verifyNoInteractions(linkResolver);
-    }
-
-    /** No resume at all means the scan was skipped too - nothing for the link resolver to work from. */
-    @Test
-    void matchingIsSkippedWhenThereIsNoResumeToScanWith() {
-        lenient().when(sweepRunRepository.create(any(), any(), any(), anyInt(), anyBoolean(), any(), any(), any()))
-                .thenReturn(RUN_ID);
-        when(atsSweepService.run(eq(RUN_ID), any(), any())).thenReturn("ok");
-        when(resumeRepository.findDefault()).thenReturn(Optional.empty());
-
-        orchestrator.startRun(SWEEP_REQUEST, List.of("greenhouse"), null, false);
-
-        verify(sweepRunRepository, timeout(2000)).finish(eq(RUN_ID), any(), eq("ok"));
-        verifyNoInteractions(linkResolver);
     }
 }

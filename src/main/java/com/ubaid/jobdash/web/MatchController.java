@@ -1,8 +1,6 @@
 package com.ubaid.jobdash.web;
 
 import com.ubaid.jobdash.ai.ResumeMatchService;
-import com.ubaid.jobdash.apply.LinkedInApplyLinkResolver;
-import com.ubaid.jobdash.apply.LinkedInLinkProperties;
 import com.ubaid.jobdash.domain.JobListing;
 import com.ubaid.jobdash.domain.SweepRun;
 import com.ubaid.jobdash.store.AiMatchRepository;
@@ -39,20 +37,15 @@ public class MatchController {
     private final SweepRunRepository sweepRunRepository;
     private final JobListingRepository jobListingRepository;
     private final AiMatchRepository aiMatchRepository;
-    private final LinkedInApplyLinkResolver linkResolver;
-    private final LinkedInLinkProperties linkProperties;
 
     public MatchController(ResumeMatchService resumeMatchService, ResumeRepository resumeRepository,
                             SweepRunRepository sweepRunRepository, JobListingRepository jobListingRepository,
-                            AiMatchRepository aiMatchRepository, LinkedInApplyLinkResolver linkResolver,
-                            LinkedInLinkProperties linkProperties) {
+                            AiMatchRepository aiMatchRepository) {
         this.resumeMatchService = resumeMatchService;
         this.resumeRepository = resumeRepository;
         this.sweepRunRepository = sweepRunRepository;
         this.jobListingRepository = jobListingRepository;
         this.aiMatchRepository = aiMatchRepository;
-        this.linkResolver = linkResolver;
-        this.linkProperties = linkProperties;
     }
 
     @PostMapping("/api/matches/scan")
@@ -62,21 +55,9 @@ public class MatchController {
 
         ResumeMatchService.ScanResult result;
         if (request.jobIds() != null && !request.jobIds().isEmpty()) {
-            // No run in scope for an explicit job-id rescan, and the link resolver works off a
-            // run's rows (findLinkedInUnmatchedByRun) - so this branch never runs it. A link
-            // resolved once (via a run) stays on the row on a later rescan regardless.
             result = resumeMatchService.rescan(request.jobIds(), resumeId, () -> false);
         } else {
-            long runId = resolveRunId(request.runId());
-            result = resumeMatchService.scan(runId, resumeId, () -> false);
-            if (linkProperties.enabled()) {
-                try {
-                    linkResolver.resolve(runId, resumeId, () -> false);
-                } catch (Exception e) {
-                    log.warn("linkedin link resolution after manual scan for run {} threw unexpectedly: {}", runId,
-                            e.toString());
-                }
-            }
+            result = resumeMatchService.scan(resolveRunId(request.runId()), resumeId, () -> false);
         }
         return MatchScanResponse.of(result);
     }

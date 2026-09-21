@@ -1,8 +1,6 @@
 package com.ubaid.jobdash.sweep;
 
 import com.ubaid.jobdash.ai.ResumeMatchService;
-import com.ubaid.jobdash.apply.LinkedInApplyLinkResolver;
-import com.ubaid.jobdash.apply.LinkedInLinkProperties;
 import com.ubaid.jobdash.source.location.LocationClassifier;
 import com.ubaid.jobdash.domain.Resume;
 import com.ubaid.jobdash.domain.SweepRun;
@@ -25,7 +23,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   3. LinkedIn descriptions DetailFetchService.fetchForRun (if 1 ran and ended "ok")
  *   4. Location judgement    LocationClassifier            (if 2 ran and ended "ok", and usOnly)
  *   5. AI resume scan        ResumeMatchService.scan       (unless cancelled)
- *   6. LinkedIn apply links  LinkedInApplyLinkResolver.resolve (if 5 ran and apply.linkedin-links is enabled)
  * </pre>
  * Phases 1 and 2 are independent - LinkedIn's budget, breaker and shard loop live entirely in
  * {@link SweepService}, the boards' in {@link AtsSweepService} - so one stopping early never
@@ -45,8 +42,6 @@ public class RunOrchestrator {
     private final ResumeRepository resumeRepository;
     private final ResumeMatchService resumeMatchService;
     private final LocationClassifier locationClassifier;
-    private final LinkedInApplyLinkResolver linkResolver;
-    private final LinkedInLinkProperties linkProperties;
     private final RunProgressRegistry progressRegistry;
     private final Clock clock;
 
@@ -54,7 +49,6 @@ public class RunOrchestrator {
                             DetailFetchService detailFetchService,
                             SweepRunRepository sweepRunRepository, ResumeRepository resumeRepository,
                             ResumeMatchService resumeMatchService, LocationClassifier locationClassifier,
-                            LinkedInApplyLinkResolver linkResolver, LinkedInLinkProperties linkProperties,
                             RunProgressRegistry progressRegistry, Clock clock) {
         this.sweepService = sweepService;
         this.atsSweepService = atsSweepService;
@@ -63,8 +57,6 @@ public class RunOrchestrator {
         this.resumeRepository = resumeRepository;
         this.resumeMatchService = resumeMatchService;
         this.locationClassifier = locationClassifier;
-        this.linkResolver = linkResolver;
-        this.linkProperties = linkProperties;
         this.progressRegistry = progressRegistry;
         this.clock = clock;
     }
@@ -148,12 +140,8 @@ public class RunOrchestrator {
             if (withLinkedIn && !cancelledNow(cancelFlag)) {
                 detailStatus = fetchDetailsSafely(runId, cancelFlag);
             }
-            Long effectiveResumeId = null;
             if (!cancelledNow(cancelFlag)) {
-                effectiveResumeId = runResumeScanIfPossible(runId, sources, resumeId, cancelFlag);
-            }
-            if (!cancelledNow(cancelFlag)) {
-                resolveLinkedInLinksSafely(runId, effectiveResumeId, cancelFlag);
+                runResumeScanIfPossible(runId, sources, resumeId, cancelFlag);
             }
             status = terminalStatus(cancelledNow(cancelFlag), null, null, detailStatus);
         } finally {
@@ -201,15 +189,8 @@ public class RunOrchestrator {
             // refusal partway through the detail phase still leaves real descriptions to read,
             // and a blocked LinkedIn phase says nothing about the boards. Only a cancellation
             // skips it.
-            Long effectiveResumeId = null;
             if (!cancelledNow(cancelFlag)) {
-                effectiveResumeId = runResumeScanIfPossible(runId, sources, resumeId, cancelFlag);
-            }
-            // The LinkedIn link resolver runs after the scan, over the same effective resume: it
-            // only has anything to do once ai_match verdicts exist for this run's resume. If the
-            // scan itself was skipped (no resume at all), there is nothing to resolve either.
-            if (!cancelledNow(cancelFlag)) {
-                resolveLinkedInLinksSafely(runId, effectiveResumeId, cancelFlag);
+                runResumeScanIfPossible(runId, sources, resumeId, cancelFlag);
             }
             status = terminalStatus(cancelledNow(cancelFlag), linkedInStatus, atsStatus, detailStatus);
         } finally {
@@ -282,16 +263,13 @@ public class RunOrchestrator {
      * run that successfully collected jobs. {@link ResumeMatchService} already guarantees it
      * never throws, but this still wraps the call: an AI failure must never turn a successful
      * collection run into a failed one.
-     *
-     * @return the resume id the scan actually ran against, or null if there was none (in which
-     * case the LinkedIn->ATS matcher, which needs a resume's verdicts to work from, is skipped too)
      */
-    private Long runResumeScanIfPossible(long runId, List<String> sources, Long resumeId,
+    private void runResumeScanIfPossible(long runId, List<String> sources, Long resumeId,
                                           AtomicBoolean cancelFlag) {
         Long effectiveResumeId = resumeId != null ? resumeId
                 : resumeRepository.findDefault().map(Resume::id).orElse(null);
         if (effectiveResumeId == null) {
-            return null;
+            return;
         }
 
         progressRegistry.publish(runId, phaseProgress(runId, sources, "scanning"));
@@ -305,30 +283,6 @@ public class RunOrchestrator {
                             .ifPresent(current -> progressRegistry.publish(runId, current.withScan(scanProgress))));
         } catch (Exception e) {
             log.warn("resume scan for run {} threw unexpectedly (ResumeMatchService should never throw): {}",
-                    runId, e.toString());
-        }
-        return effectiveResumeId;
-    }
-
-    /**
-     * Reads the external apply link of this run's newly-scanned recommended LinkedIn rows from
-     * the signed-in Chrome, publishing the {@code "matching"} in-flight status while it works.
-     * Skipped when the feature is disabled or there is no resume (the scan was skipped too, in
-     * that case). {@link LinkedInApplyLinkResolver} already guarantees it never throws, but this
-     * still wraps the call - the same defensive idiom as {@link #fetchDetailsSafely} and
-     * {@link #classifyLocations}: a link failure must never turn a successful run into a failed
-     * one.
-     */
-    private void resolveLinkedInLinksSafely(long runId, Long effectiveResumeId, AtomicBoolean cancelFlag) {
-        if (effectiveResumeId == null || !linkProperties.enabled()) {
-            return;
-        }
-        progressRegistry.progress(runId).ifPresent(current ->
-                progressRegistry.publish(runId, current.withStatus("matching")));
-        try {
-            linkResolver.resolve(runId, effectiveResumeId, () -> cancelledNow(cancelFlag));
-        } catch (Exception e) {
-            log.warn("linkedin link resolution for run {} threw unexpectedly (LinkedInApplyLinkResolver should never throw): {}",
                     runId, e.toString());
         }
     }

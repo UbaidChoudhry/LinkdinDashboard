@@ -3,12 +3,12 @@ package com.ubaid.jobdash.web.dto;
 import java.util.List;
 
 /**
- * Body of {@code POST /api/applications}.
+ * Body of {@code POST /api/applications/urls}: apply to job postings by URL, from the Apply tab.
  *
- * @param jobIds      jobs to apply to, in order; must be non-empty and every id must exist.
+ * @param urls        one posting URL per entry, in order; blank entries and repeats are ignored.
  * @param resumeId    resume to apply with; null means the current default resume.
  * @param submit      boxed {@link Boolean} - null means {@code false} (fill and stop before Submit).
  * @param concurrency how many applications to fill at once, 1 to 5; null means {@code apply.concurrency}.
  */
-public record ApplyRequest(List<Long> jobIds, Long resumeId, Boolean submit, Integer concurrency) {
+public record ApplyUrlsRequest(List<String> urls, Long resumeId, Boolean submit, Integer concurrency) {
 }

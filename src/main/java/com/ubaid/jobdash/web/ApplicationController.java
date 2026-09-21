@@ -3,6 +3,7 @@ package com.ubaid.jobdash.web;
 import com.ubaid.jobdash.ai.AiProperties;
 import com.ubaid.jobdash.apply.ApplyOrchestrator;
 import com.ubaid.jobdash.apply.ApplyProperties;
+import com.ubaid.jobdash.apply.PastedUrlJobs;
 import com.ubaid.jobdash.domain.ApplicantProfile;
 import com.ubaid.jobdash.domain.ApplyBatch;
 import com.ubaid.jobdash.domain.JobApplication;
@@ -19,6 +20,7 @@ import com.ubaid.jobdash.web.dto.ApplicantProfileRequest;
 import com.ubaid.jobdash.web.dto.ApplicantProfileResponse;
 import com.ubaid.jobdash.web.dto.ApplyBatchResponse;
 import com.ubaid.jobdash.web.dto.ApplyRequest;
+import com.ubaid.jobdash.web.dto.ApplyUrlsRequest;
 import com.ubaid.jobdash.web.dto.JobApplicationResponse;
 import com.ubaid.jobdash.web.dto.ProfileAnswerCreateRequest;
 import com.ubaid.jobdash.web.dto.ProfileAnswerResponse;
@@ -47,7 +49,7 @@ import java.util.Optional;
 
 /**
  * REST surface for the applicant profile and "Apply with Claude" batches: {@code /api/profile}
- * and {@code /api/applications}. All the actual browser-driving work lives in
+ * and {@code /api/applications} (a batch over job rows, or over pasted URLs at {@code /api/applications/urls}). All the actual browser-driving work lives in
  * {@link ApplyOrchestrator}; this controller only validates the request, resolves defaults (the
  * same {@code resolveResumeId} shape as {@link MatchController}), and translates HTTP.
  */
@@ -61,6 +63,7 @@ public class ApplicationController {
     private final ResumeRepository resumeRepository;
     private final JobListingRepository jobListingRepository;
     private final ApplyOrchestrator applyOrchestrator;
+    private final PastedUrlJobs pastedUrlJobs;
     private final ApplyProperties applyProperties;
     private final AiProperties aiProperties;
     private final Clock clock;
@@ -72,6 +75,7 @@ public class ApplicationController {
                                   ResumeRepository resumeRepository,
                                   JobListingRepository jobListingRepository,
                                   ApplyOrchestrator applyOrchestrator,
+                                  PastedUrlJobs pastedUrlJobs,
                                   ApplyProperties applyProperties,
                                   AiProperties aiProperties,
                                   Clock clock) {
@@ -82,6 +86,7 @@ public class ApplicationController {
         this.resumeRepository = resumeRepository;
         this.jobListingRepository = jobListingRepository;
         this.applyOrchestrator = applyOrchestrator;
+        this.pastedUrlJobs = pastedUrlJobs;
         this.applyProperties = applyProperties;
         this.aiProperties = aiProperties;
         this.clock = clock;
@@ -171,12 +176,9 @@ public class ApplicationController {
 
     @PostMapping("/api/applications")
     public ResponseEntity<Map<String, Long>> startApplications(@RequestBody(required = false) ApplyRequest body) {
-        ApplyRequest request = body == null ? new ApplyRequest(null, null, null) : body;
+        ApplyRequest request = body == null ? new ApplyRequest(null, null, null, null) : body;
 
-        ApplicantProfile profile = applicantProfileRepository.find()
-                .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST,
-                        "Fill in your applicant profile in the Resumes tab first."));
-
+        requireProfile();
         long resumeId = resolveResumeId(request.resumeId());
 
         List<Long> jobIds = request.jobIds();
@@ -189,21 +191,81 @@ public class ApplicationController {
             }
         }
 
+        int concurrency = resolveConcurrency(request.concurrency());
+        requireNothingInFlightAndCliAvailable();
+
+        boolean submit = request.submit() != null && request.submit();
+        long batchId = applyOrchestrator.start(jobIds, resumeId, submit, concurrency);
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(Map.of("batchId", batchId));
+    }
+
+    /**
+     * Applies to job postings by URL (the Apply tab): each URL becomes a {@code pasted} job row -
+     * reused if the same URL was pasted before - and the batch runs exactly like one started from
+     * the Results tab. Rows are only written once every guard has passed, so a rejected request
+     * leaves nothing behind.
+     */
+    @PostMapping("/api/applications/urls")
+    public ResponseEntity<Map<String, Long>> startUrlApplications(@RequestBody(required = false) ApplyUrlsRequest body) {
+        ApplyUrlsRequest request = body == null ? new ApplyUrlsRequest(null, null, null, null) : body;
+
+        requireProfile();
+        long resumeId = resolveResumeId(request.resumeId());
+
+        List<String> urls;
+        try {
+            urls = PastedUrlJobs.parse(request.urls() == null ? List.of() : request.urls());
+        } catch (IllegalArgumentException e) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
+        if (urls.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Paste at least one job posting URL.");
+        }
+        if (urls.size() > PastedUrlJobs.MAX_URLS) {
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "At most " + PastedUrlJobs.MAX_URLS + " URLs per batch - got " + urls.size() + ".");
+        }
+
+        int concurrency = resolveConcurrency(request.concurrency());
+        requireNothingInFlightAndCliAvailable();
+
+        List<Long> jobIds = pastedUrlJobs.importUrls(urls, clock.instant());
+        boolean submit = request.submit() != null && request.submit();
+        long batchId = applyOrchestrator.start(jobIds, resumeId, submit, concurrency);
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(Map.of("batchId", batchId));
+    }
+
+    private void requireProfile() {
+        if (applicantProfileRepository.find().isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Fill in your applicant profile in the Resumes tab first.");
+        }
+    }
+
+    /** The request's {@code concurrency}, or {@code apply.concurrency} when it names none. */
+    private int resolveConcurrency(Integer requested) {
+        if (requested == null) {
+            return Math.clamp(applyProperties.concurrency(), 1, ApplyOrchestrator.MAX_CONCURRENCY);
+        }
+        if (requested < 1 || requested > ApplyOrchestrator.MAX_CONCURRENCY) {
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "concurrency must be between 1 and " + ApplyOrchestrator.MAX_CONCURRENCY + ".");
+        }
+        return requested;
+    }
+
+    private void requireNothingInFlightAndCliAvailable() {
         Optional<Long> inFlight = applyOrchestrator.inFlightBatchId()
                 .or(() -> applyBatchRepository.findInFlight().map(ApplyBatch::id));
         if (inFlight.isPresent()) {
             throw new ApiException(HttpStatus.CONFLICT, "Apply batch " + inFlight.get()
-                    + " is already in progress - cancel it first (Results tab, Cancel) or wait for it to finish.");
+                    + " is already in progress - cancel it first (Cancel, on the Results or Apply tab) or wait for it"
+                    + " to finish.");
         }
 
         if (!applyProperties.enabled() || !cliAvailable(aiProperties.cliPath())) {
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
                     "Apply with Claude is not available: the claude CLI is not enabled or not on the path.");
         }
-
-        boolean submit = request.submit() != null && request.submit();
-        long batchId = applyOrchestrator.start(jobIds, resumeId, submit);
-        return ResponseEntity.status(HttpStatus.ACCEPTED).body(Map.of("batchId", batchId));
     }
 
     @GetMapping("/api/applications/current")

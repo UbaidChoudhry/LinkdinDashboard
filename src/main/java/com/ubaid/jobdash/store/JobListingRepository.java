@@ -206,7 +206,7 @@ public class JobListingRepository {
                         select company, count(*) as postings, count(distinct title) as titles,
                                count(distinct location) as locations
                         from job_listing
-                        where first_seen_at > :since
+                        where first_seen_at > :since and source <> 'pasted'
                         group by company having count(*) > :threshold
                         order by postings desc
                         """)
@@ -264,10 +264,15 @@ public class JobListingRepository {
     /**
      * Rows whose filter_version is older than {@code currentVersion}, for re-evaluation.
      * Includes rows with a null filter_version (never evaluated), since SQL's {@code <}
-     * comparison against null is never true.
+     * comparison against null is never true. A {@code pasted} row (a URL the user asked Claude to
+     * apply to directly, {@code apply.PastedUrlJobs}) is never evaluated: its verdict stays null so
+     * it can never surface in the Results triage views, which all read {@code filter_verdict = 'pass'}.
      */
     public List<JobListing> findWithFilterVersionLessThan(int currentVersion) {
-        return client.sql("select * from job_listing where filter_version < :currentVersion or filter_version is null")
+        return client.sql("""
+                        select * from job_listing
+                        where (filter_version < :currentVersion or filter_version is null) and source <> 'pasted'
+                        """)
                 .param("currentVersion", currentVersion)
                 .query(JobListingRepository::mapRow)
                 .list();
@@ -393,9 +398,9 @@ public class JobListingRepository {
                 .update();
     }
 
-    /** Rows that have never been evaluated by the filter engine yet (freshly inserted). */
+    /** Rows that have never been evaluated by the filter engine yet (freshly inserted); never a {@code pasted} row, see above. */
     public List<JobListing> findWithoutVerdict() {
-        return client.sql("select * from job_listing where filter_verdict is null")
+        return client.sql("select * from job_listing where filter_verdict is null and source <> 'pasted'")
                 .query(JobListingRepository::mapRow)
                 .list();
     }
@@ -542,46 +547,31 @@ public class JobListingRepository {
                 .update();
     }
 
+    /** The surrogate {@code job_id} of the row with this natural key, if one exists. */
+    public java.util.Optional<Long> findIdBySourceKey(String source, String sourceJobId) {
+        return client.sql("select job_id from job_listing where source = :source and source_job_id = :sourceJobId")
+                .param("source", source)
+                .param("sourceJobId", sourceJobId)
+                .query(Long.class)
+                .optional();
+    }
+
     /**
-     * Writes only the matcher's note for a job it could not match - {@code apply_url}/
-     * {@code apply_domain} are left null, so the row stays "apply manually".
+     * Replaces a row's title and company - only for a {@code pasted} row, whose real title and
+     * company are unknown until Claude reads the posting page. A row from any real source keeps
+     * what its source said.
      *
-     * @return 1 if the job existed and was updated, 0 otherwise
+     * @return 1 if a pasted row with that id was updated, 0 otherwise
      */
-    /** Sets {@code apply_kind} (onsite = Easy Apply, offsite = external apply) on one row. */
-    public int setApplyKind(long jobId, String applyKind) {
-        return client.sql("update job_listing set apply_kind = :kind where job_id = :id")
-                .param("kind", applyKind)
-                .param("id", jobId)
-                .update();
-    }
-
-    public int setApplyMatchNote(long jobId, String note) {
-        return client.sql("update job_listing set apply_match_note = :note where job_id = :id")
-                .param("note", note)
-                .param("id", jobId)
-                .update();
-    }
-
-    /**
-     * LinkedIn rows from one run whose external apply link the LinkedIn link resolver should read: not yet triaged,
-     * no apply link yet, carrying a real description (a scan-eligible row, same shape as
-     * {@link #findScannableByRun}), and not confidently non-US.
-     */
-    public List<JobListing> findLinkedInUnmatchedByRun(long runId) {
+    public int setPastedTitleAndCompany(long jobId, String title, String company) {
         return client.sql("""
-                        select * from job_listing
-                        where source = 'linkedin' and last_seen_run_id = :runId and user_status is null
-                          and apply_url is null
-                          and description is not null and trim(description) != ''
-                          -- Hide only a CONFIDENTLY non-US row; unclassified and low-confidence
-                          -- rows stay eligible. coalesce is load-bearing - see the note above.
-                          and not (coalesce(location_us, 1) = 0 and coalesce(location_confident, 0) = 1)
-                        order by posted_at desc
+                        update job_listing set title = :title, company = :company
+                        where job_id = :id and source = 'pasted'
                         """)
-                .param("runId", runId)
-                .query(JobListingRepository::mapRow)
-                .list();
+                .param("title", title)
+                .param("company", company)
+                .param("id", jobId)
+                .update();
     }
 
     /**

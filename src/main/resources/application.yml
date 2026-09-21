@@ -156,22 +156,7 @@ apply:
   # Passed as --effort. Each browser action is a model turn, so per-turn thinking is a large
   # share of an application's wall clock; medium keeps form-filling judgment, low is faster.
   effort: medium
-
-  # LinkedIn->ATS matcher: after every scan, cross-references each recommended LinkedIn posting
-  # against the company's own Greenhouse/Lever/Workday board so "Apply with Claude" can bypass
-  # LinkedIn entirely. The board requests this makes are public JSON, counted against the ATS
-  # daily caps in external_request_log - never against LinkedIn's own budget/breaker.
-  linkedin-links:
-    # After the AI scan, the recommended LinkedIn postings are opened in the user's Chrome -
-    # which must be signed in to a BURNER LinkedIn account, never the real one (HANDOFF.md §2,
-    # §13) - and each Apply button's external destination is read from the page. Nothing is
-    # ever applied to, clicked through, or changed; Easy Apply postings have no destination.
-    enabled: true
-    # Postings per `claude -p --chrome` call. The fixed ~25k-token overhead per call dominates
-    # (≈ $0.15 for a single posting), so batching is the cost lever.
-    batch-size: 8
-    # Hard cap on postings resolved in one run; the rest are noted and retried next run.
-    max-per-run: 40
-    max-turns: 120
-    max-budget-usd: 2.0
-    timeout: 10m
+  # Applications filled at the same time, each its own `claude -p --chrome` session in its own
+  # Chrome tab group (two concurrent sessions verified 2026-09-23, HANDOFF.md §12). A request can
+  # ask for 1-5. Two Workday jobs on the same tenant never run side by side - they share its sign-in.
+  concurrency: 3

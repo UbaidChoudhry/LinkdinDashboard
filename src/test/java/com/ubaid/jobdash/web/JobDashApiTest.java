@@ -606,6 +606,54 @@ class JobDashApiTest {
                 .andExpect(jsonPath("$.phone").value("555-1234"));
     }
 
+    // ---- apply by URL (Apply tab) -------------------------------------------------------------
+    // Only the rejections are exercised: an accepted request starts a batch, and that would run the
+    // real claude binary against a real browser.
+
+    @Test
+    void applyByUrlRejectsANonUrlLineAndWritesNoRows() throws Exception {
+        saveProfile();
+        insertResume(true);
+
+        mockMvc.perform(post("/api/applications/urls")
+                        .contentType("application/json")
+                        .content("{\"urls\":[\"https://jobs.lever.co/acme/1\",\"Senior Engineer at Acme\"]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(containsString("Senior Engineer at Acme")));
+
+        assertThat(client.sql("select count(*) from job_listing where source = 'pasted'").query(Integer.class).single())
+                .isZero();
+    }
+
+    @Test
+    void applyByUrlRejectsAnEmptyListAndAnOutOfRangeConcurrency() throws Exception {
+        saveProfile();
+        insertResume(true);
+
+        mockMvc.perform(post("/api/applications/urls")
+                        .contentType("application/json")
+                        .content("{\"urls\":[\"\", \"  \"]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Paste at least one job posting URL."));
+
+        mockMvc.perform(post("/api/applications/urls")
+                        .contentType("application/json")
+                        .content("{\"urls\":[\"https://jobs.lever.co/acme/1\"],\"concurrency\":9}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("concurrency must be between 1 and 5."));
+    }
+
+    @Test
+    void applyByUrlNeedsTheApplicantProfileFirst() throws Exception {
+        insertResume(true);
+
+        mockMvc.perform(post("/api/applications/urls")
+                        .contentType("application/json")
+                        .content("{\"urls\":[\"https://jobs.lever.co/acme/1\"]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Fill in your applicant profile in the Resumes tab first."));
+    }
+
     @Test
     void putProfileRejectsBlankFullName() throws Exception {
         mockMvc.perform(put("/api/profile")

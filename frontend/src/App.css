@@ -912,6 +912,20 @@ th.sortable.active .sort-button {
   opacity: 0.55;
 }
 
+/* Results-tab source filter: same box as the Min salary field, label underneath like its checkbox. */
+.source-filter-row select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-h);
+  font-size: 15px;
+}
+
+.table-controls .source-filter-row label {
+  margin-top: 6px;
+}
+
 /* ---------------------------------------------------------------------------
    Source multi-select (run form)
    --------------------------------------------------------------------------- */
@@ -1510,6 +1524,62 @@ tr.source-dead {
   font-size: 12px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* One line per job a batch is filling right now - a batch fills several at once, so the
+   running line lists each, with Claude's last action under it. */
+.apply-filling-job {
+  display: block;
+  margin-top: 4px;
+}
+
+/* ---------------------------------------------------------------------------
+   Apply tab: apply to pasted job URLs
+   --------------------------------------------------------------------------- */
+
+.url-apply {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.url-apply-form textarea {
+  min-height: 160px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-h);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  resize: vertical;
+}
+
+.url-apply-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 20px;
+}
+
+.url-apply-options select {
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-h);
+  font-size: 14px;
+}
+
+.url-apply-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.url-apply-batch h2 {
+  margin-bottom: 8px;
 }
 
 /* ---------------------------------------------------------------------------

@@ -29,7 +29,8 @@ public class ApplyPromptBuilder {
      * JSON schema for {@code --json-schema}: a required {@code outcome} (one of
      * {@code submitted}/{@code needs_review}/{@code failed}/{@code not_found}) and
      * {@code summary}, plus an optional {@code unanswered} array of questions neither the
-     * profile nor the resume could answer.
+     * profile nor the resume could answer, and the optional {@code jobTitle}/{@code company} as the
+     * page shows them - the only source of either for a {@link PastedUrlJobs pasted} URL.
      */
     public static final String APPLY_JSON_SCHEMA = """
             {
@@ -38,7 +39,9 @@ public class ApplyPromptBuilder {
               "properties": {
                 "outcome": {"enum": ["submitted", "needs_review", "failed", "not_found"]},
                 "summary": {"type": "string"},
-                "unanswered": {"type": "array", "items": {"type": "string"}}
+                "unanswered": {"type": "array", "items": {"type": "string"}},
+                "jobTitle": {"type": "string"},
+                "company": {"type": "string"}
               }
             }
             """;
@@ -95,7 +98,13 @@ public class ApplyPromptBuilder {
     public String build(JobListing job, Resume resume, Path resumeAbsolutePath, ApplicantProfile profile,
                          boolean submit, int maxDescriptionChars, String postingUrl, Optional<String> directFormUrl,
                          List<ProfileAnswer> answers, List<String> formQuestions) {
-        String description = PromptText.truncate(PromptText.stripHtml(job.description()), maxDescriptionChars);
+        // A pasted URL's row knows nothing but the URL - its title is a placeholder and its company a
+        // guess from the host - so Claude is told to read all three off the page instead.
+        boolean pasted = PastedUrlJobs.SOURCE.equals(job.source());
+        String readFromPage = "(not known - read it from the posting page)";
+        String description = pasted
+                ? readFromPage
+                : PromptText.truncate(PromptText.stripHtml(job.description()), maxDescriptionChars);
         String submitInstruction = submit
                 ? """
                   This run has SUBMIT ENABLED. After filling and reviewing the form, click the \
@@ -196,16 +205,30 @@ public class ApplyPromptBuilder {
                 coordinates; after typing into a field, confirm the value actually appears (zoom or
                 read the field) before moving on - typed text has been observed not to register.
 
-                Workday postings (*.myworkdayjobs.com): click Apply, then "Apply Manually". If you are \
-                already signed in, continue. Otherwise the tenant shows "Create Account" and/or "Sign In": \
-                open Sign In (the "Already have an account?" link if the page opened on Create Account), \
-                click the email field ONCE and take one screenshot. If Bitwarden's inline menu is showing \
-                under the field, click its entry, then the password field's entry if needed, sign in and \
-                continue. If the menu offers to unlock the vault, stop with outcome failed and summary \
-                "Bitwarden vault is locked - unlock it and retry". If no menu appears, stop with outcome \
-                failed and summary "Workday: no Bitwarden item for <tenant host>". Do not press keyboard \
-                shortcuts to summon Bitwarden - keys sent through the browser extension never reach it. \
-                Never create an account and never type a password yourself.
+                Workday postings (*.myworkdayjobs.com, *.myworkdaysite.com): click Apply, then "Apply
+                Manually". If you are already signed in, continue. Otherwise sign in with Bitwarden's
+                autofill - the candidate's login for this tenant is saved in their Bitwarden vault:
+                  a. Open Sign In (the "Already have an account?" link if the page opened on Create
+                     Account).
+                  b. Click the Email Address field ONCE, wait 1 second, and take one screenshot.
+                     Bitwarden draws its inline menu - a small Bitwarden list under the field, or a
+                     Bitwarden shield icon inside it (click the icon to open the list) - outside the
+                     page, so find and read_page cannot see it: use the screenshot and click it by
+                     coordinates.
+                  c. Click the login whose name or website matches this tenant's host (the "dowjones"
+                     in dowjones.wd1.myworkdayjobs.com); if the list shows exactly one login, click it.
+                     Never try a second login - a wrong password can lock the Workday account.
+                     Bitwarden fills both fields. Confirm it with the javascript tool, reading lengths
+                     only (document.querySelector('input[type=password]').value.length > 0) - never
+                     read or print the password value itself. Then click Sign In and continue.
+                  d. When the sign-in cannot go ahead, stop with outcome failed and the matching summary:
+                     the menu offers to unlock the vault: "Bitwarden vault is locked - unlock it and retry";
+                     no listed login matches this tenant: "Workday: no Bitwarden login for <tenant host>";
+                     no Bitwarden menu or icon appears at all: "Bitwarden autofill menu did not appear -
+                     turn on Show autofill suggestions on form fields in Bitwarden's Autofill settings";
+                     Workday rejects the sign-in or asks to verify an email: quote Workday's message.
+                Do not press keyboard shortcuts to summon Bitwarden - keys sent through the browser
+                extension never reach it. Never create an account and never type a password yourself.
 
                 If the job posting is closed, expired, or the page returns a 404 / "not found", stop
                 immediately and set "outcome" to "not_found".
@@ -217,7 +240,9 @@ public class ApplyPromptBuilder {
                 gate with no saved login, a CAPTCHA - is "failed"; explain it in "summary".
 
                 Always fill in "summary" with a short, concrete account of what happened (what you
-                filled, what stage you reached, and why, if it didn't reach a normal ending).
+                filled, what stage you reached, and why, if it didn't reach a normal ending). Also set
+                "jobTitle" and "company" to the posting's job title and hiring company exactly as the
+                page shows them.
 
                 Before finishing, whatever the outcome, set summary to a concrete account: which page
                 you reached, which fields you filled, which action failed and the exact error text.
@@ -250,9 +275,9 @@ public class ApplyPromptBuilder {
                 submitInstruction,
                 nullToEmpty(postingUrl),
                 directFormUrlLine,
-                nullToEmpty(job.title()),
-                nullToEmpty(job.company()),
-                nullToEmpty(job.location()),
+                pasted ? readFromPage : nullToEmpty(job.title()),
+                pasted ? readFromPage : nullToEmpty(job.company()),
+                pasted ? readFromPage : nullToEmpty(job.location()),
                 description,
                 resumeAbsolutePath.toAbsolutePath(),
                 formQuestionsSection,

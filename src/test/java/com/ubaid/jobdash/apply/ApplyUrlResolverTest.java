@@ -71,6 +71,24 @@ class ApplyUrlResolverTest {
     }
 
     @Test
+    void pastedUrlsResolveLikeAResolvedLinkedInApplyLink() {
+        ApplyUrlResolver resolver = new ApplyUrlResolver(new StubAtsCompanyRepository(Optional.empty()));
+
+        String greenhouse = "https://job-boards.greenhouse.io/stripe/jobs/8062305";
+        assertThat(resolver.directFormUrl(job(PastedUrlJobs.SOURCE, greenhouse, "stripe", greenhouse,
+                "greenhouse", greenhouse)))
+                .contains("https://job-boards.greenhouse.io/embed/job_app?for=stripe&token=8062305");
+
+        String lever = "https://jobs.lever.co/shieldai/0f8ae1f2-2a5c-4a5e-9d4b-1c2d3e4f5a6b";
+        assertThat(resolver.directFormUrl(job(PastedUrlJobs.SOURCE, lever, "shieldai", lever, "lever", lever)))
+                .contains(lever + "/apply");
+
+        String workday = "https://dowjones.wd1.myworkdayjobs.com/en-US/Dow_Jones_Career/job/NYC/SE-II_55287";
+        assertThat(resolver.directFormUrl(job(PastedUrlJobs.SOURCE, workday, "dowjones", workday, "workday",
+                workday))).isEmpty();
+    }
+
+    @Test
     void hostedGreenhouseUrlParsesSlugWithoutTouchingTheRepository() {
         StubAtsCompanyRepository repo = new StubAtsCompanyRepository(Optional.empty());
         ApplyUrlResolver resolver = new ApplyUrlResolver(repo);

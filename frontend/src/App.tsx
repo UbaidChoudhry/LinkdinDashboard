@@ -10,16 +10,18 @@ import { DataPanel } from "./components/DataPanel";
 import { SourcesPanel } from "./components/SourcesPanel";
 import { ResumesPanel } from "./components/ResumesPanel";
 import { RunsPanel } from "./components/RunsPanel";
+import { UrlApplyPanel } from "./components/UrlApplyPanel";
 import { useRunStream } from "./hooks/useRunStream";
 import { isRunFinished, isRunInFlight } from "./utils/runStatus";
 import type { RunResponse } from "./types/api";
 
 /** The top-level sections of the dashboard. Each is a tab; only one is visible at a time. */
-type AppTab = "search" | "results" | "sources" | "resumes" | "filters" | "runs" | "data";
+type AppTab = "search" | "results" | "apply" | "sources" | "resumes" | "filters" | "runs" | "data";
 
 const APP_TABS: { id: AppTab; label: string }[] = [
   { id: "search", label: "Search" },
   { id: "results", label: "Results" },
+  { id: "apply", label: "Apply" },
   { id: "sources", label: "Sources" },
   { id: "resumes", label: "Resumes" },
   { id: "filters", label: "Filters" },
@@ -125,6 +127,8 @@ function App() {
   // Stable identity: JobsPanel reports the count from an effect, so a fresh function every
   // render would re-fire that effect on every render.
   const handleJobCountChange = useCallback((count: number) => setResultCount(count), []);
+  // A finished Apply-tab batch has moved the jobs Claude submitted onto the Applied list.
+  const handleUrlBatchFinished = useCallback(() => setRefreshToken((t) => t + 1), []);
 
   // The panel shows the most recent run even when it finished before this page load: a run
   // LinkedIn's cooldown cut short is only retryable from its panel, and the cooldown itself
@@ -201,6 +205,10 @@ function App() {
             latestRun={lastKnownRun}
             onCountChange={handleJobCountChange}
           />
+        </div>
+
+        <div className="tab-panel" hidden={activeTab !== "apply"}>
+          <UrlApplyPanel resumeToken={resumeToken} onFinished={handleUrlBatchFinished} />
         </div>
 
         <div className="tab-panel tab-panel-wide" hidden={activeTab !== "sources"}>

@@ -12,7 +12,7 @@ frontend/  React + TypeScript dashboard (Vite dev server, :5173)
 src/       Spring Boot backend (Java 21, :8080)
              ├─ main/java/com/ubaid/jobdash/   application code, by package (below)
              ├─ main/resources/                application.yml, Flyway migrations
-             └─ test/                          mirrors main/java/, 386 tests
+             └─ test/                          mirrors main/java/, 542 tests
 data/      the SQLite database file (gitignored, created on first boot)
 ```
 
@@ -44,17 +44,13 @@ POST /api/runs { sources: [...] }            [RunController -> RunOrchestrator]
    3. if 1 ended "ok"       → DetailFetchService       (Flow A phase 2 — LinkedIn descriptions)
    4. if 2 ended "ok"       → LocationClassifier
    5. unless cancelled      → ResumeMatchService       (the AI scan, over everything collected)
-   6. if 5 ran, enabled     → LinkedInApplyLinkResolver (reads each recommended LinkedIn
-                                                          posting's external apply href from the
-                                                          signed-in Chrome, batched)
 ```
 Any mix is valid (since 2026-09-09). Phases 1 and 2 are independent - each has its own budget
 and stop reasons - so LinkedIn's breaker opening never stops the boards, and vice versa. The
 run's status is the first non-"ok" phase outcome in that order; the scan runs regardless.
-Phase 6 (added 2026-09-21, see HANDOFF.md §13) publishes its own in-flight status, `matching`,
-after the scan and before the run finishes, gated on `apply.linkedin-links.enabled` and skipped
-on cancellation; it never throws, so a resolver failure can't turn a successful run into a
-failed one.
+A sixth phase that read LinkedIn apply links out of a signed-in Chrome (and its `matching`
+status) existed 2026-09-21 to 09-23 and was removed after LinkedIn banned the account it used -
+HANDOFF.md §13.
 
 ### Flow A — starting a sweep (write path, hits LinkedIn)
 
@@ -278,36 +274,28 @@ stream into `RunProgress.tsx`, and the `jobdash.ai.scan` logger writes `logs/ai-
 ### `apply/` — driving a real browser to fill an application
 The step after the AI scan: instead of just judging a job, Claude *acts* on it. `ApplyOrchestrator`
 is the orchestrator (mirrors `ResumeMatchService`'s shape) — one `claude -p --chrome` invocation
-**per job, sequential**, on a virtual thread; an **unmatched** LinkedIn row is skipped with
-**zero** CLI calls ("apply manually" — see HANDOFF.md §12 for why); a LinkedIn row the resolver
-below resolved to a company-site posting gets the same CLI-driven flow as a native ATS row.
+**per job**, up to `apply.concurrency` (default 3, a request may ask 1-5) at once on virtual-thread
+workers fed by its `JobQueue`, which never runs two jobs on the same Workday tenant together
+(`exclusiveKey`; HANDOFF.md §12, "Apply tab, parallel batches"); an **unmatched** LinkedIn row is skipped with
+**zero** CLI calls ("apply manually" — see HANDOFF.md §12 for why); a LinkedIn row that already
+carries a company-site `apply_url` (resolved before HANDOFF.md §13's step was removed) gets the same
+CLI-driven flow as a native ATS row.
 `ApplyPromptBuilder` renders the prompt (resume
 text, applicant profile, the job's description) and owns the apply `--json-schema`
 (`outcome`/`summary`/`unanswered`). `ApplyProperties` is the typed `apply:` config block
 (`enabled`, `model`, `timeout`, `max-turns`, `max-budget-usd`, `max-description-chars`).
 
-`LinkedInApplyLinkResolver` (added 2026-09-21, HANDOFF.md §13, replacing a same-day
-catalog-matching approach that was built, measured at an 11/39 hit rate, and removed) is the
-reason a LinkedIn row can carry an apply link at all: run as run phase 6
-(`sweep/RunOrchestrator`), it takes every recommended LinkedIn row from a run that still has no
-apply link (skipping rows already known `apply_kind='onsite'`, i.e. Easy Apply) and drives the
-same Claude-in-Chrome CLI invocation `ApplyOrchestrator.chromeArgs` uses, in batches of
-`apply.linkedin-links.batch-size` postings per call, capped at `max-per-run`. On a signed-in
-`/jobs/view/{id}` page the Apply button's `href` is a LinkedIn safety redirect wrapping the real
-destination URL; Claude reads and URL-decodes it without clicking. Chrome must be signed in to a
-**burner** LinkedIn account, never the user's real one - see HANDOFF.md §13 for how that relates
-to the never-authenticate rule (HANDOFF.md §2). A resolved link writes `job_listing.apply_url` /
-`apply_domain` / `apply_kind='offsite'` / `apply_match_note` via
-`JobListingRepository.setApplyTarget`, exactly the columns a native Greenhouse/Lever/Workday row
-already has, so `ApplyUrlResolver` and `ApplyOrchestrator` treat a resolved LinkedIn row the same
-way as a native ATS row without either needing to know LinkedIn is involved. A sign-in wall stops
-the whole phase and notes every unresolved row; a CLI failure notes just that batch and continues.
-Each batch's transcript is `logs/apply/links-run-<run>-batch-<n>.log`. Progress
-and results land on the `apply_batch` / `job_application` rows, not an in-memory registry — the UI
+Progress and results land on the `apply_batch` / `job_application` rows, not an in-memory registry — the UI
 polls the DB. `ApplyOrchestrator` never throws, exactly like `ResumeMatchService`; a failed job
 becomes a `failed` row, not a failed batch. Logs go to `logs/apply.log` via the `jobdash.apply`
 logger — **never the resume text or profile**, same discipline as `logs/ai-scan.log`. See
 HANDOFF.md §12.
+
+`PastedUrlJobs` (2026-09-23) backs the Apply tab: each pasted URL becomes a `job_listing` row with
+`source='pasted'`, `last_seen_run_id=0`, and the URL as its `apply_url`, so every step below treats it
+exactly like a resolved LinkedIn row. The filter engine never evaluates a pasted row (so it can't
+reach the Results triage lists), and the apply schema's optional `jobTitle`/`company` replace its
+placeholder title and URL-guessed company once Claude has read the page.
 
 `EmbeddedFormDetector` (2026-09-23) is `ApplyUrlResolver`'s last resort for a LinkedIn row whose
 apply link is a company's own careers page (Stripe): one server-side GET of that page, and if it
@@ -358,7 +346,8 @@ repositories. This split exists because the `http` package was built in parallel
 One `@RestController` per resource area: `RunController`, `JobController`, `FilterController`,
 `ReportController`, `DataController`, `ApplicationController`. Each is thin — it translates HTTP
 to a service/repository call and back, no business logic. `ApplicationController` covers
-`GET/PUT /api/profile`, `POST /api/applications`, `GET /api/applications/current`,
+`GET/PUT /api/profile`, `POST /api/applications`, `POST /api/applications/urls` (the Apply tab),
+`GET /api/applications/current`,
 `GET /api/applications/{id}`, `POST /api/applications/{id}/cancel`. `web/dto/` holds every
 request/response shape; **the frontend's `frontend/src/types/api.ts` is a hand-kept mirror of
 these** — if you change a DTO, update both.
@@ -378,12 +367,14 @@ comparator is already correct for when that changes.
 `frontend/src/`
 
 ```
-App.tsx                     top-level tab shell: Search / Results / Filters / Data. Panels stay
+App.tsx                     top-level tab shell: Search / Results / Apply / Sources / Resumes /
+                            Filters / Runs / Data. Panels stay
                             mounted and toggle via `hidden` (so their state survives a switch),
                             hence the `[hidden]{display:none!important}` rule in App.css
 api/client.ts                every fetch() call in the app lives here, one function per endpoint
 types/api.ts                 hand-kept mirror of the backend DTOs — keep in sync manually
 hooks/useRunStream.ts        the SSE subscription for live run progress
+hooks/useApplyBatch.ts       an apply batch's lifecycle: start, 2s poll, re-attach after reload, cancel
 components/
   RunControls.tsx            the "start a run" form (+ source picker and resume picker)
   SourceSelect.tsx            multi-select dropdown for a run's sources; any combination is
@@ -397,11 +388,14 @@ components/
   ApplicantProfileForm.tsx    the single-row applicant profile (work authorization, sponsorship,
                               salary expectation, etc.) that fills in what a resume can't answer
   RunProgress.tsx            live counters + saturation warning + cancel button
-  JobsPanel.tsx               the 3-tab job table, owns which tab/sort is active + the Min salary filter
+  JobsPanel.tsx               the 3-tab job table, owns which tab/sort is active + the Source and
+                              Min salary filters (Source also narrows the AI buckets and Apply)
   ApplyControls.tsx           "Apply with Claude" button + Submit toggle, mounted in the Results
-                              tab's bucket bar next to Re-scan; owns its own 2s poll against
-                              `/api/applications/{id}` and re-attaches to an in-flight batch on
-                              reload via `/api/applications/current`
+                              tab's bucket bar next to Re-scan (batch lifecycle: useApplyBatch)
+  UrlApplyPanel.tsx           the Apply tab: paste posting URLs, pick resume / how many at a time /
+                              Submit, then watch the batch
+  ApplyBatchView.tsx          what both of the above render for a batch: the status line (every
+                              job filling right now, with Claude's last action) and the Details list
   JobRow.tsx                  one row: title link, company, location, posted, salary (+ source label), actions,
                               application status badge
   SortableHeader.tsx          clickable <th>, shared by the job table
@@ -461,8 +455,8 @@ One SQLite file, `data/jobdash.db`, WAL mode. Schema lives in
 ```
 job_listing        the results. See JobListingRepository above for the upsert rule.
                      apply_kind: LinkedIn's own Easy Apply (onsite) vs offsite marker, informational
-                     only (V15). apply_match_note: LinkedInApplyLinkResolver's outcome, resolved or not -
-                     the ↗ apply link's tooltip and what to read when a row got no link (V15)
+                     only (V15). apply_match_note: why a row has the apply_url it has (the ↗ link's
+                     tooltip) - "pasted URL", or a note left by the removed LinkedIn link step (V15)
 sweep_run           one row per run, updated live while it's running (+ sources, resume_id,
                      companies_done/total from V8)
 exclude_word        user's title-exclusion list, seeded with 8 defaults
@@ -509,7 +503,7 @@ Test packages mirror `main/java` exactly — if you're looking for tests of
   file names for what each fixture represents (the two 26-byte files are the real end-of-results
   sentinel, not corrupt captures).
 
-Current count: **386 tests**. Run `./mvnw test`. Salary tests follow the same rules — the
+Current count: **542 tests**. Run `./mvnw test`. Salary tests follow the same rules — the
 Adzuna / h1bapi sources are driven through `StubHttpClient`, `SalaryRateLimiter` through
 `FakeClock`/`FakeSleeper`, and `LcaImportServiceTest` generates a tiny `.xlsx` in memory.
 
@@ -550,6 +544,7 @@ Adzuna / h1bapi sources are driven through `StubHttpClient`, `SalaryRateLimiter`
 | Read a batch's end-of-run report | `logs/apply/batch-<id>-report.md`, or Show run report on the Results tab |
 | Find out why an application failed or got stuck | the row's **Details** in the Results tab: its notes, the last browser action, **View log** (the per-job transcript under `logs/apply/`), and the `claude --resume <sessionId> --chrome` command to continue that session and ask Claude directly. `logs/apply.log` has one line per browser action across all jobs |
 | Turn "Apply with Claude" off | `application.yml` → `apply.enabled: false` |
-| Change how LinkedIn apply links are read | `apply/LinkedInApplyLinkResolver.buildPrompt` (the prompt that tells Claude to read and decode the Apply button's redirect href, never click it), batching/caps in `application.yml` → `apply.linkedin-links.*`. HANDOFF.md §13 |
-| See why a LinkedIn row got no ↗ apply link | its `job_listing.apply_match_note` (also the link's tooltip when there is one), the resolver phase's `logs/apply.log` lines, and that batch's transcript under `logs/apply/links-run-<run>-batch-<n>.log` |
-| Sign the burner LinkedIn account into Chrome, or see the sign-in-wall note | `apply.linkedin-links` needs Chrome signed in to a **burner** LinkedIn account, never the real one (HANDOFF.md §13, §2). If the resolver hits a sign-in wall it stops and every unresolved row gets `apply_match_note` "LinkedIn is not signed in in Chrome - sign in to the burner account and Re-scan" - sign in and click **Re-scan** |
+| Apply to specific postings by URL | the Apply tab → `POST /api/applications/urls` → `apply/PastedUrlJobs` (URL → `pasted` job row) → the normal batch |
+| Change how many applications run at once | `application.yml` → `apply.concurrency` (the default), or the Apply tab's "At a time"; ceiling `ApplyOrchestrator.MAX_CONCURRENCY`. Same-tenant Workday jobs are serialized by `ApplyOrchestrator.exclusiveKey` |
+| Workday sign-in / Bitwarden | the Workday section of `ApplyPromptBuilder`'s prompt: Claude picks the tenant's login from Bitwarden's inline menu, never types a password. Setup and the 2026-09-23 probe: README "Applying with Claude", HANDOFF.md §12 |
+| Apply to a LinkedIn job | open it, click Apply, and paste the company's URL into the Apply tab - nothing in jobdash signs in to LinkedIn (the signed-in link step was removed 2026-09-23, HANDOFF.md §13) |

@@ -54,7 +54,7 @@ public class RunController {
     private static final List<String> VALID_SOURCES = List.of("linkedin", "greenhouse", "lever", "workday");
     /** Statuses a run passes through before reaching a terminal one. Mirror of the frontend's IN_FLIGHT_STATUSES. */
     private static final List<String> IN_FLIGHT_STATUSES =
-            List.of("running", "fetching_details", "scanning", "matching");
+            List.of("running", "fetching_details", "scanning");
 
     private final RunOrchestrator runOrchestrator;
     private final RunProgressRegistry runProgressRegistry;

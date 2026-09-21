@@ -309,8 +309,23 @@ export function startApplications(body: {
   jobIds: number[];
   resumeId?: number | null;
   submit: boolean;
+  /** Applications filled at once, 1-5; omitted means the backend's apply.concurrency. */
+  concurrency?: number;
 }): Promise<{ batchId: number }> {
   return request<{ batchId: number }>("/api/applications", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** POST /api/applications/urls - the Apply tab: apply to pasted posting URLs, one per entry. */
+export function startUrlApplications(body: {
+  urls: string[];
+  resumeId?: number | null;
+  submit: boolean;
+  concurrency?: number;
+}): Promise<{ batchId: number }> {
+  return request<{ batchId: number }>("/api/applications/urls", {
     method: "POST",
     body: JSON.stringify(body),
   });

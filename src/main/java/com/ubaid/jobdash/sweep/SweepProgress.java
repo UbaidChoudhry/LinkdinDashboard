@@ -12,10 +12,8 @@ import com.ubaid.jobdash.ai.ScanProgress;
  *                        {@code "blocked"}, {@code "failed"}, {@code "cancelled"} or
  *                        {@code "no_sources"}) once done, or one of the transient phases a run
  *                        passes through after collection: {@code "fetching_details"} (a
- *                        LinkedIn run reading job descriptions), {@code "scanning"} (the
- *                        AI resume scan, for any kind of run), and {@code "matching"} (the
- *                        LinkedIn->ATS matcher cross-referencing recommended LinkedIn postings
- *                        against company boards, after the scan).
+ *                        LinkedIn run reading job descriptions) and {@code "scanning"} (the
+ *                        AI resume scan, for any kind of run).
  * @param scan          live AI-scan progress while {@code status} is {@code "scanning"}; null
  *                       for a LinkedIn run and before the scan phase begins.
  * @param currentShard   the shard currently being paginated, or null when the run isn't

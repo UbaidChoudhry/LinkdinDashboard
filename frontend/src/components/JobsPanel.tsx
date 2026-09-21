@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { ApiError, bulkDeleteJobs, bulkSetJobStatus, listJobs, scanMatches } from "../api/client";
-import type { JobResponse, JobTab, RunResponse } from "../types/api";
+import { SOURCE_LABELS, type JobResponse, type JobSourceName, type JobTab, type RunResponse } from "../types/api";
 import { DEFAULT_SORT, filterByMinSalary, nextSortState, sortJobsBy, type SortState } from "../utils/sort";
 import { groupByCompany, type CompanyGroup } from "../utils/group";
 import { isRunInFlight } from "../utils/runStatus";
@@ -27,6 +27,12 @@ const TABS: { id: JobTab; label: string }[] = [
   { id: "applied", label: "Applied" },
   { id: "not_interested", label: "Not interested" },
 ];
+
+/** "linkedin" -> "LinkedIn"; a pasted URL's row (Apply tab) and anything unknown fall back sensibly. */
+function sourceLabel(source: string): string {
+  if (source === "pasted") return "Pasted URL";
+  return SOURCE_LABELS[source as JobSourceName] ?? source;
+}
 
 /** 130000 -> "130,000". Empty string when there's no value. */
 function groupDigits(value: number | null): string {
@@ -64,6 +70,9 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
   // back on without retyping. On by default: typing a figure normally means you want it applied.
   const [minSalaryOn, setMinSalaryOn] = useState(true);
   const [groupByCompanyOn, setGroupByCompanyOn] = useState(false);
+  // "all", or one job source. Narrows everything below it - the AI buckets and their counts, the
+  // table, and which jobs Apply with Claude would act on.
+  const [sourceFilter, setSourceFilter] = useState<string>("all");
   // Which AI bucket to show. "all" keeps every row, including rows that were never scanned
   // (a row with no description - e.g. a LinkedIn row whose detail fetch hasn't happened yet).
   type Bucket = "all" | "recommended" | "not_recommended" | "not_scanned";
@@ -106,40 +115,55 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
     setMinSalaryOn(true);
     setExpandedGroups(new Set());
     setBucket("all");
+    setSourceFilter("all");
     setSelectedIds(new Set());
     setDeleteConfirming(false);
   }, [activeTab]);
+
+  // The dropdown lists only sources present in this tab's list, busiest first, with counts from
+  // the unfiltered list - plus the current choice even if a reload emptied it, so it stays visible.
+  const sourceOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const j of jobs ?? []) counts.set(j.source ?? "unknown", (counts.get(j.source ?? "unknown") ?? 0) + 1);
+    if (sourceFilter !== "all" && !counts.has(sourceFilter)) counts.set(sourceFilter, 0);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  }, [jobs, sourceFilter]);
+
+  const sourceJobs = useMemo(
+    () => (jobs && sourceFilter !== "all" ? jobs.filter((j) => (j.source ?? "unknown") === sourceFilter) : jobs),
+    [jobs, sourceFilter],
+  );
 
   // Null when the toggle is off - the typed value stays in the box, it just isn't applied.
   const effectiveMinSalary = minSalaryOn ? minSalary : null;
 
   const sortedJobs = useMemo(() => {
-    if (!jobs) return jobs;
+    if (!sourceJobs) return sourceJobs;
     const byBucket =
       bucket === "all"
-        ? jobs
-        : jobs.filter((j) => {
+        ? sourceJobs
+        : sourceJobs.filter((j) => {
             if (bucket === "recommended") return j.aiRecommended === true;
             if (bucket === "not_recommended") return j.aiRecommended === false;
             return j.aiRecommended == null;
           });
     return filterByMinSalary(sortJobsBy(byBucket, sort), effectiveMinSalary);
-  }, [jobs, sort, effectiveMinSalary, bucket]);
+  }, [sourceJobs, sort, effectiveMinSalary, bucket]);
 
-  // Counts come from the unfiltered list so the bucket tabs keep showing totals even while a
-  // bucket is selected.
+  // Counts ignore the selected bucket, so the bucket tabs keep showing totals while one is
+  // selected - but they follow the source filter, since that narrows what the buckets split.
   const bucketCounts = useMemo(() => {
-    const recommended = jobs?.filter((j) => j.aiRecommended === true).length ?? 0;
-    const notRecommended = jobs?.filter((j) => j.aiRecommended === false).length ?? 0;
-    const unscanned = jobs?.filter((j) => j.aiRecommended == null).length ?? 0;
+    const recommended = sourceJobs?.filter((j) => j.aiRecommended === true).length ?? 0;
+    const notRecommended = sourceJobs?.filter((j) => j.aiRecommended === false).length ?? 0;
+    const unscanned = sourceJobs?.filter((j) => j.aiRecommended == null).length ?? 0;
     return { recommended, notRecommended, unscanned };
-  }, [jobs]);
+  }, [sourceJobs]);
 
   // Apply with Claude only ever acts on the Untriaged tab's recommended, non-LinkedIn rows -
   // LinkedIn postings are listed as "apply manually" instead of being sent to the CLI.
   const recommendedJobs = useMemo(
-    () => (activeTab === "search" ? jobs?.filter((j) => j.aiRecommended === true) ?? [] : []),
-    [activeTab, jobs],
+    () => (activeTab === "search" ? sourceJobs?.filter((j) => j.aiRecommended === true) ?? [] : []),
+    [activeTab, sourceJobs],
   );
   const eligibleJobIds = useMemo(
     () =>
@@ -389,7 +413,7 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
             className={bucket === "all" ? "bucket-tab active" : "bucket-tab"}
             onClick={() => setBucket("all")}
           >
-            All <span className="bucket-count">{jobs?.length ?? 0}</span>
+            All <span className="bucket-count">{sourceJobs?.length ?? 0}</span>
           </button>
           <button
             type="button"
@@ -432,6 +456,19 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
       {/* One horizontal toolbar rather than three stacked rows - the vertical space it saves
           goes to the table, which is what the tab is actually for. */}
       <div className="table-controls">
+        <div className="field-row source-filter-row">
+          <select id="jp-source" value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)}>
+            <option value="all">All sources ({jobs?.length ?? 0})</option>
+            {sourceOptions.map(([source, count]) => (
+              <option key={source} value={source}>
+                {sourceLabel(source)} ({count})
+              </option>
+            ))}
+          </select>
+          {/* Under the control, like the Min salary label beside it. */}
+          <label htmlFor="jp-source">Source</label>
+        </div>
+
         <div className={minSalaryOn ? "field-row min-salary-row" : "field-row min-salary-row off"}>
           {/*
             type="text", not "number": a number input requires its value to parse as a plain

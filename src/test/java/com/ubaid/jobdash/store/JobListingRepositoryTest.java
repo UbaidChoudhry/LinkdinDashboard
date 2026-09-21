@@ -387,34 +387,6 @@ class JobListingRepositoryTest extends AbstractStoreTest {
     }
 
     @Test
-    void setApplyKindWritesOnlyTheKind() {
-        long runId = sweepRunRepository.create(Instant.now(), "java", "remote", 24, false, null);
-        jobListingRepository.upsertAll(List.of(card(22, "A")), runId, Instant.now());
-        long jobId = jobIdFor("22");
-
-        assertThat(jobListingRepository.setApplyKind(jobId, "onsite")).isEqualTo(1);
-
-        JobListing job = jobListingRepository.findById(jobId).orElseThrow();
-        assertThat(job.applyKind()).isEqualTo("onsite");
-        assertThat(job.applyUrl()).isNull();
-        assertThat(job.applyMatchNote()).isNull();
-    }
-
-    @Test
-    void setApplyMatchNoteWritesOnlyTheNoteLeavingApplyUrlAndDomainNull() {
-        long runId = sweepRunRepository.create(Instant.now(), "java", "remote", 24, false, null);
-        jobListingRepository.upsertAll(List.of(card(21, "A")), runId, Instant.now());
-        long jobId = jobIdFor("21");
-
-        assertThat(jobListingRepository.setApplyMatchNote(jobId, "no title match")).isEqualTo(1);
-
-        JobListing job = jobListingRepository.findById(jobId).orElseThrow();
-        assertThat(job.applyMatchNote()).isEqualTo("no title match");
-        assertThat(job.applyUrl()).isNull();
-        assertThat(job.applyDomain()).isNull();
-    }
-
-    @Test
     void upsertAllReUpsertingTheSameRowDoesNotClearApplyUrlDomainOrKind() {
         long runId = sweepRunRepository.create(Instant.now(), "java", "remote", 24, false, null);
         jobListingRepository.upsertAll(List.of(card(22, "A")), runId, Instant.now());
@@ -431,31 +403,5 @@ class JobListingRepositoryTest extends AbstractStoreTest {
                 .isEqualTo("https://jobs.lever.co/acme/xyz/apply");
         assertThat(job.applyDomain()).as("apply_domain must survive a re-upsert").isEqualTo("lever");
         assertThat(job.applyKind()).as("apply_kind must survive a re-upsert").isEqualTo("onsite");
-    }
-
-    @Test
-    void findLinkedInUnmatchedByRunExcludesMatchedAndTriagedRows() {
-        long runId = sweepRunRepository.create(Instant.now(), "java", "remote", 24, false, null);
-        jobListingRepository.upsertAll(List.of(
-                new JobCardInsert("linkedin", "30", "Unmatched", "Acme", "NY",
-                        Instant.parse("2026-09-01T00:00:00Z"), "u30", null, "a real description"),
-                new JobCardInsert("linkedin", "31", "Matched", "Acme", "NY",
-                        Instant.parse("2026-09-01T00:00:00Z"), "u31", null, "a real description"),
-                new JobCardInsert("linkedin", "32", "Triaged", "Acme", "NY",
-                        Instant.parse("2026-09-01T00:00:00Z"), "u32", null, "a real description"),
-                new JobCardInsert("lever", "33", "Not LinkedIn", "Acme", "NY",
-                        Instant.parse("2026-09-01T00:00:00Z"), "u33", null, "a real description")),
-                runId, Instant.now());
-
-        long unmatched = jobIdFor("30");
-        long matched = jobIdFor("31");
-        long triaged = jobIdFor("32");
-
-        jobListingRepository.setApplyTarget(matched, "https://jobs.lever.co/acme/xyz/apply", "lever", "matched");
-        jobListingRepository.setUserStatus(triaged, UserStatus.NOT_INTERESTED, Instant.now());
-
-        assertThat(jobListingRepository.findLinkedInUnmatchedByRun(runId))
-                .extracting(JobListing::jobId)
-                .containsExactly(unmatched);
     }
 }

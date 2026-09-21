@@ -28,6 +28,8 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -57,7 +59,7 @@ class ApplyOrchestratorTest extends AbstractStoreTest {
 
     private ApplyProperties props() {
         return new ApplyProperties(true, "sonnet", Duration.ofSeconds(10), 60, 2.0, 4000,
-                Duration.ofMinutes(3), tempDir.resolve("apply-logs").toString(), "medium");
+                Duration.ofMinutes(3), tempDir.resolve("apply-logs").toString(), "medium", 1);
     }
 
     private ApplyOrchestrator orchestrator(FakeCliClient cli) {
@@ -708,5 +710,135 @@ class ApplyOrchestratorTest extends AbstractStoreTest {
         assertThat(cli.prompts().get(0)).contains("RESUME FILE PATH: " + expected.toAbsolutePath());
         assertThat(cli.prompts().get(0)).doesNotContain("RESUME FILE PATH: " + stored.toAbsolutePath());
         assertThat(Files.readAllBytes(expected)).containsExactly(37, 80, 68, 70);
+    }
+
+    // ---- parallel batches (2026-09-23) ------------------------------------------------------------
+
+    @Test
+    void jobsRunSideBySideUpToTheRequestedConcurrency() throws InterruptedException {
+        long resumeId = insertResume();
+        saveProfile();
+        long runId = newRun();
+        List<Long> jobIds = List.of(insertJob(runId, 80L, "greenhouse"), insertJob(runId, 81L, "greenhouse"),
+                insertJob(runId, 82L, "greenhouse"));
+
+        AtomicInteger running = new AtomicInteger();
+        AtomicInteger maxRunning = new AtomicInteger();
+        CountDownLatch twoStarted = new CountDownLatch(2);
+        FakeCliClient cli = new FakeCliClient(prompt -> {
+            maxRunning.accumulateAndGet(running.incrementAndGet(), Math::max);
+            twoStarted.countDown();
+            awaitQuietly(twoStarted);
+            running.decrementAndGet();
+            return ok("needs_review", "filled");
+        });
+        ApplyOrchestrator orchestrator = orchestrator(cli);
+
+        long batchId = orchestrator.start(jobIds, resumeId, false, 2);
+        orchestrator.awaitLastBatch();
+
+        // The first two calls only return once both are in flight, so a sequential batch would
+        // time out the latch and still report 1 here.
+        assertThat(maxRunning.get()).isEqualTo(2);
+        com.ubaid.jobdash.domain.ApplyBatch batch = applyBatchRepository.findById(batchId).orElseThrow();
+        assertThat(batch.status()).isEqualTo("ok");
+        assertThat(batch.done()).isEqualTo(3);
+        assertThat(batch.needsReview()).isEqualTo(3);
+        assertThat(applicationRepository.findByBatch(batchId)).extracting(JobApplication::status)
+                .containsOnly("needs_review");
+    }
+
+    @Test
+    void twoJobsOnOneWorkdayTenantNeverOverlapButOtherJobsRunBesideThem() throws InterruptedException {
+        long resumeId = insertResume();
+        saveProfile();
+        long runId = newRun();
+        long firstWorkday = insertJob(runId, 90L, "linkedin");
+        setApplyMatch(firstWorkday, "workday", "https://acme.wd5.myworkdayjobs.com/en-US/Careers/job/A_R-90");
+        long secondWorkday = insertJob(runId, 91L, "linkedin");
+        setApplyMatch(secondWorkday, "workday", "https://acme.wd5.myworkdayjobs.com/en-US/Careers/job/B_R-91");
+        long greenhouse = insertJob(runId, 92L, "greenhouse");
+
+        AtomicInteger workdayRunning = new AtomicInteger();
+        AtomicInteger maxWorkdayRunning = new AtomicInteger();
+        CountDownLatch greenhouseStarted = new CountDownLatch(1);
+        AtomicInteger workdayCalls = new AtomicInteger();
+        FakeCliClient cli = new FakeCliClient(prompt -> {
+            if (!prompt.contains("acme.wd5.myworkdayjobs.com")) {
+                greenhouseStarted.countDown();
+                return ok("needs_review", "filled");
+            }
+            maxWorkdayRunning.accumulateAndGet(workdayRunning.incrementAndGet(), Math::max);
+            if (workdayCalls.incrementAndGet() == 1) {
+                // Holds the tenant until the Greenhouse job has started: proves it did not wait.
+                awaitQuietly(greenhouseStarted);
+            }
+            workdayRunning.decrementAndGet();
+            return ok("needs_review", "filled");
+        });
+        ApplyOrchestrator orchestrator = orchestrator(cli);
+
+        long batchId = orchestrator.start(List.of(firstWorkday, secondWorkday, greenhouse), resumeId, false, 3);
+        orchestrator.awaitLastBatch();
+
+        assertThat(greenhouseStarted.getCount()).isZero();
+        assertThat(maxWorkdayRunning.get()).isEqualTo(1);
+        assertThat(cli.invocationCount()).isEqualTo(3);
+        assertThat(applyBatchRepository.findById(batchId).orElseThrow().needsReview()).isEqualTo(3);
+    }
+
+    @Test
+    void workdayJobsAreKeyedByTenantHostAndEverythingElseRunsFree() {
+        JobListing sameTenant = jobListingRow("workday", "https://dowjones.wd1.myworkdayjobs.com/en-US/X/job/Y", null);
+        JobListing viaLinkedin = jobListingRow("linkedin", "https://www.linkedin.com/jobs/view/1",
+                "https://DowJones.wd1.myworkdayjobs.com/en-US/X/job/Z/apply");
+        JobListing greenhouseRow = jobListingRow("greenhouse", "https://job-boards.greenhouse.io/acme/jobs/1", null);
+
+        assertThat(ApplyOrchestrator.exclusiveKey(sameTenant)).isEqualTo("dowjones.wd1.myworkdayjobs.com");
+        assertThat(ApplyOrchestrator.exclusiveKey(viaLinkedin)).isEqualTo("dowjones.wd1.myworkdayjobs.com");
+        assertThat(ApplyOrchestrator.exclusiveKey(greenhouseRow)).isNull();
+        assertThat(ApplyOrchestrator.exclusiveKey(null)).isNull();
+    }
+
+    @Test
+    void pastedRowTakesTitleAndCompanyFromClaudeAndOtherRowsKeepTheirs() throws InterruptedException {
+        long resumeId = insertResume();
+        saveProfile();
+        long runId = newRun();
+        String url = "https://jobs.lever.co/acme/0f8ae1f2-2a5c-4a5e-9d4b-1c2d3e4f5a6b";
+        long pasted = new PastedUrlJobs(jobListingRepository).importUrls(List.of(url), Instant.now()).get(0);
+        long greenhouse = insertJob(runId, 95L, "greenhouse");
+
+        FakeCliClient cli = new FakeCliClient(prompt -> new CliJsonResult.Ok(JsonMapper.builder().build().readTree(
+                "{\"outcome\":\"needs_review\",\"summary\":\"filled\",\"jobTitle\":\"Platform Engineer\","
+                        + "\"company\":\"Acme Robotics\"}"), 0.10, 1000));
+        ApplyOrchestrator orchestrator = orchestrator(cli);
+
+        orchestrator.start(List.of(pasted, greenhouse), resumeId, false, 2);
+        orchestrator.awaitLastBatch();
+
+        JobListing pastedRow = jobListingRepository.findById(pasted).orElseThrow();
+        assertThat(pastedRow.title()).isEqualTo("Platform Engineer");
+        assertThat(pastedRow.company()).isEqualTo("Acme Robotics");
+        JobListing greenhouseRow = jobListingRepository.findById(greenhouse).orElseThrow();
+        assertThat(greenhouseRow.title()).isEqualTo("Backend Engineer");
+        assertThat(greenhouseRow.company()).isEqualTo("Acme Corp");
+    }
+
+    private static void awaitQuietly(CountDownLatch latch) {
+        try {
+            latch.await(5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static JobListing jobListingRow(String source, String jobUrl, String applyUrl) {
+        return new JobListing(
+                1L, "1", source, "Backend Engineer", "Acme", "Remote",
+                Instant.parse("2026-08-27T00:00:00Z"), Instant.parse("2026-08-27T00:00:00Z"),
+                Instant.parse("2026-08-27T00:00:00Z"), 1L, jobUrl, null,
+                FilterVerdict.PASS, 1, null, (UserStatus) null, null, null, null, applyUrl, null,
+                "desc", "hash", null, null, null, null, false, null, null, null, null);
     }
 }

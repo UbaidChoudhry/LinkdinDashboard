@@ -66,7 +66,6 @@ export type RunStatus =
   | "running"
   | "fetching_details"
   | "scanning"
-  | "matching"
   | "no_sources"
   | "ok"
   | "capped"

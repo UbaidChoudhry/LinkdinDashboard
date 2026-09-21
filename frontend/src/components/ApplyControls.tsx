@@ -1,14 +1,7 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import {
-  ApiError,
-  applicationLogUrl,
-  cancelApplyBatch,
-  getApplyBatch,
-  getApplyReport,
-  getCurrentApplyBatch,
-  startApplications,
-} from "../api/client";
-import type { ApplyBatchResponse, JobApplicationResponse } from "../types/api";
+import { Fragment, useState } from "react";
+import { startApplications } from "../api/client";
+import { useApplyBatch } from "../hooks/useApplyBatch";
+import { ApplyBatchDetails, ApplyBatchStatus } from "./ApplyBatchView";
 import { InfoTip } from "./InfoTip";
 
 interface ApplyControlsProps {
@@ -20,215 +13,14 @@ interface ApplyControlsProps {
   onFinished: () => void;
 }
 
-const POLL_MS = 2000;
-
-// Same labels JobRow uses for the per-row application badge, reused here for the details list.
-const APPLICATION_STATUS_LABELS: Record<string, string> = {
-  needs_review: "Needs review",
-  submitted: "Submitted",
-  failed: "Apply failed",
-  skipped: "Apply manually",
-  filling: "Applying…",
-  queued: "Queued",
-};
-
-function summaryLine(batch: ApplyBatchResponse): string {
-  return (
-    `Done: ${batch.needsReview} need review, ${batch.submitted} submitted, ` +
-    `${batch.skipped} skipped (LinkedIn: apply manually), ${batch.failed} failed · ` +
-    `$${batch.costUsd.toFixed(2)}`
-  );
-}
-
-function CopyResumeButton({ sessionId }: { sessionId: string }) {
-  const [copied, setCopied] = useState(false);
-
-  async function handleCopy() {
-    try {
-      await navigator.clipboard.writeText(`claude --resume ${sessionId} --chrome`);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Clipboard access can be denied/unavailable - nothing else to do here.
-    }
-  }
-
-  return (
-    <button type="button" className="secondary" onClick={handleCopy}>
-      {copied ? "Copied" : "Copy"}
-    </button>
-  );
-}
-
-function DetailsRow({ job, batchId }: { job: JobApplicationResponse; batchId: number }) {
-  const showActivity = (job.status === "filling" || job.status === "failed") && job.lastActivity;
-  return (
-    <div className="apply-details-row">
-      <span className={`application-badge ${job.status}`}>
-        {APPLICATION_STATUS_LABELS[job.status] ?? job.status}
-      </span>{" "}
-      <strong>
-        {job.title} — {job.company}
-      </strong>
-      {job.notes && <div>{job.notes}</div>}
-      {showActivity && <div className="apply-activity">Claude: {job.lastActivity}</div>}
-      {job.hasLog && (
-        <div>
-          <a href={applicationLogUrl(batchId, job.id)} target="_blank" rel="noreferrer">
-            View log
-          </a>
-        </div>
-      )}
-      {job.sessionId && (
-        <div>
-          Resume in terminal: <code>claude --resume {job.sessionId} --chrome</code>{" "}
-          <CopyResumeButton sessionId={job.sessionId} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function RunReport({ batchId }: { batchId: number }) {
-  const [visible, setVisible] = useState(false);
-  const [report, setReport] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function handleShow() {
-    setVisible(true);
-    if (report != null) return;
-    setLoading(true);
-    setError(null);
-    try {
-      setReport(await getApplyReport(batchId));
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to load the run report.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <div className="apply-report-section">
-      {!visible ? (
-        <button type="button" className="secondary" onClick={handleShow}>
-          Show run report
-        </button>
-      ) : (
-        <button type="button" className="secondary" onClick={() => setVisible(false)}>
-          Hide
-        </button>
-      )}
-      {visible && loading && <p className="muted">Loading…</p>}
-      {visible && error && (
-        <p className="form-error" role="alert">
-          {error}
-        </p>
-      )}
-      {visible && report != null && <pre className="apply-report">{report}</pre>}
-    </div>
-  );
-}
-
 export function ApplyControls({ eligibleJobIds, linkedinCount, onFinished }: ApplyControlsProps) {
   const [submitChecked, setSubmitChecked] = useState(false);
-  const [batch, setBatch] = useState<ApplyBatchResponse | null>(null);
-  const [starting, setStarting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [showDetails, setShowDetails] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Guards against onFinished() firing twice for the same batch (e.g. a poll tick landing right
-  // after cancel/finish has already been handled).
-  const finishedBatchIdRef = useRef<number | null>(null);
+  const { batch, running, starting, error, start, cancel } = useApplyBatch(onFinished);
 
-  const stopPolling = useCallback(() => {
-    if (pollRef.current != null) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
-
-  const handleFinished = useCallback(
-    (finished: ApplyBatchResponse) => {
-      stopPolling();
-      setBatch(finished);
-      if (finishedBatchIdRef.current !== finished.id) {
-        finishedBatchIdRef.current = finished.id;
-        onFinished();
-      }
-    },
-    [onFinished, stopPolling],
-  );
-
-  const poll = useCallback(
-    (batchId: number) => {
-      stopPolling();
-      pollRef.current = setInterval(async () => {
-        try {
-          const latest = await getApplyBatch(batchId);
-          setBatch(latest);
-          if (latest.status !== "running") {
-            handleFinished(latest);
-          }
-        } catch {
-          // A transient poll failure isn't worth surfacing as an error - the next tick retries.
-        }
-      }, POLL_MS);
-    },
-    [handleFinished, stopPolling],
-  );
-
-  // Re-attach to a batch that's still running after a page reload.
-  useEffect(() => {
-    (async () => {
-      try {
-        const current = await getCurrentApplyBatch();
-        if (current) {
-          setBatch(current);
-          if (current.status === "running") {
-            poll(current.id);
-          }
-        }
-      } catch {
-        // No current batch, or the endpoint isn't reachable yet - nothing to re-attach to.
-      }
-    })();
-    return stopPolling;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function handleApply() {
-    setStarting(true);
-    setError(null);
-    try {
-      const { batchId } = await startApplications({ jobIds: eligibleJobIds, submit: submitChecked });
-      finishedBatchIdRef.current = null;
-      const fresh = await getApplyBatch(batchId);
-      setBatch(fresh);
-      if (fresh.status === "running") {
-        poll(batchId);
-      }
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to start applying.");
-    } finally {
-      setStarting(false);
-    }
+  function handleApply() {
+    void start(() => startApplications({ jobIds: eligibleJobIds, submit: submitChecked }));
   }
-
-  async function handleCancel() {
-    if (!batch) return;
-    setError(null);
-    try {
-      await cancelApplyBatch(batch.id);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to cancel.");
-    }
-  }
-
-  const running = batch?.status === "running";
-  const currentJob = running ? batch?.jobs.find((j) => j.status === "filling" || j.status === "queued") : undefined;
-  const fillingJob = running ? batch?.jobs.find((j) => j.status === "filling") : undefined;
 
   return (
     <Fragment>
@@ -248,46 +40,22 @@ export function ApplyControls({ eligibleJobIds, linkedinCount, onFinished }: App
           <label htmlFor="apply-submit">Submit applications</label>
         </span>
         <InfoTip label="About Apply with Claude">
-          Runs over the Recommended bucket. Unchecked, Claude fills each form and stops before
-          Submit, leaving the tab open for review; checked, it submits.
+          Runs over the Recommended bucket, several applications at once (apply.concurrency, default
+          3). Unchecked, Claude fills each form and stops before Submit, leaving the tab open for
+          review; checked, it submits.
           {linkedinCount > 0 && (
             <>
               {" "}
-              {linkedinCount} LinkedIn job{linkedinCount === 1 ? " has" : "s have"} no external apply
-              link (Easy Apply, closed, or not resolved yet) and will be skipped.
+              {linkedinCount} LinkedIn job{linkedinCount === 1 ? " has" : "s have"} no company apply
+              link and will be skipped - open the posting, copy its Apply link, and paste it into the
+              Apply tab.
             </>
           )}{" "}
           If a job gets stuck, open its log or resume the session in a terminal - the browser tabs
           are gone once the session ends, but Claude can reopen them.
         </InfoTip>
 
-        {running && batch && (
-          <span className="apply-note apply-progress">
-            <span>
-              Applying {batch.done}/{batch.total}
-              {currentJob ? ` · ${currentJob.title} — ${currentJob.company}…` : "…"}
-              {fillingJob?.lastActivity && (
-                <span className="apply-activity">Claude: {fillingJob.lastActivity}</span>
-              )}
-            </span>
-            <button type="button" className="secondary" onClick={handleCancel}>
-              Cancel
-            </button>
-          </span>
-        )}
-
-        {!running && batch && batch.status !== "running" && (
-          <span className="apply-note">
-            {summaryLine(batch)}
-            {batch.newQuestions > 0 && (
-              <>
-                {" · "}
-                <strong>{batch.newQuestions}</strong> new question
-                {batch.newQuestions === 1 ? "" : "s"} → Resumes tab
-              </>
-            )}
-          </span>
-        )}
+        {batch && <ApplyBatchStatus batch={batch} onCancel={cancel} />}
 
         {batch && (
           <button type="button" className="secondary" onClick={() => setShowDetails((v) => !v)}>
@@ -302,14 +70,7 @@ export function ApplyControls({ eligibleJobIds, linkedinCount, onFinished }: App
         )}
       </div>
 
-      {batch && showDetails && (
-        <div className="apply-details">
-          {batch.hasReport && <RunReport batchId={batch.id} />}
-          {batch.jobs.map((job) => (
-            <DetailsRow key={job.id} job={job} batchId={batch.id} />
-          ))}
-        </div>
-      )}
+      {batch && showDetails && <ApplyBatchDetails batch={batch} />}
     </Fragment>
   );
 }

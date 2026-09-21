@@ -26,11 +26,6 @@ export const RUN_STATUS_INFO: Record<string, RunStatusInfo> = {
     message: "All sources have been fetched; Claude is now comparing each job description against your resume.",
     kind: "info",
   },
-  matching: {
-    label: "Resolving links",
-    message: "Reading LinkedIn postings' external apply links in Chrome…",
-    kind: "info",
-  },
   ok: {
     label: "Completed",
     message: "The run finished normally.",
@@ -92,21 +87,19 @@ export function runStatusInfo(status: string | null | undefined): RunStatusInfo 
 }
 
 /**
- * Statuses that mean the run is still working. `fetching_details`, `scanning`, and `matching` are
+ * Statuses that mean the run is still working. `fetching_details` and `scanning` are
  * deliberately included: they are the phases after collection, and the server keeps the SSE
  * stream open through them (RunController's IN_FLIGHT_STATUSES is the mirror of this set).
  *
  * Treating anything that isn't `"running"` as finished is the bug this exists to prevent - it
  * made the browser hang up the moment the scan began, so the scan's progress never arrived and
- * the page had to be reloaded by hand to see any result. `matching` (the AI-to-ATS matching phase
- * that runs after the scan) is the same family of bug: every in-flight status the backend can
+ * the page had to be reloaded by hand to see any result. Every in-flight status the backend can
  * publish must be listed here or the SSE stream hangs up early. See HANDOFF.md §9.
  */
 export const IN_FLIGHT_STATUSES: ReadonlySet<string> = new Set([
   "running",
   "fetching_details",
   "scanning",
-  "matching",
 ]);
 
 /** True while a run is still working (collecting or scanning). */

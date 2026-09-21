@@ -10,7 +10,9 @@ import java.time.Duration;
  * the description-truncation length used by {@link ApplyPromptBuilder}, the idle-activity
  * ceiling ({@code idleTimeout}) that kills a job whose CLI call has gone silent (e.g. a frozen
  * native file-picker dialog), and the directory ({@code transcriptDir}) where each job's
- * per-job stream-json transcript is written.
+ * per-job stream-json transcript is written. {@code concurrency} is how many applications a batch
+ * fills at once when the request does not say (each is its own Claude-in-Chrome session in its own
+ * tab group - see {@link ApplyOrchestrator}).
  */
 @ConfigurationProperties(prefix = "apply")
 public record ApplyProperties(
@@ -22,6 +24,7 @@ public record ApplyProperties(
         int maxDescriptionChars,
         Duration idleTimeout,
         String transcriptDir,
-        String effort
+        String effort,
+        int concurrency
 ) {
 }

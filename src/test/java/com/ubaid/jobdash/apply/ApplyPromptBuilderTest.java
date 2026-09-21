@@ -134,17 +134,44 @@ class ApplyPromptBuilderTest {
         String prompt = builder.build(job("<p>Great role</p>"), resume(), Path.of("/data/resumes/1.pdf"),
                 profile(), false, 4000);
 
-        assertThat(prompt).contains("Workday postings (*.myworkdayjobs.com): click Apply, then \"Apply Manually\"");
-        assertThat(prompt).contains("If Bitwarden's inline menu is showing");
-        assertThat(prompt).contains("Workday: no Bitwarden item for <tenant host>");
+        assertThat(prompt).contains("Workday postings (*.myworkdayjobs.com, *.myworkdaysite.com): click Apply");
+        // The inline menu is drawn outside the page (2026-09-23 probe: find/read_page never saw it),
+        // so it is read from a screenshot and clicked by coordinates.
+        assertThat(prompt).contains("use the screenshot and click it by");
+        assertThat(prompt).contains("Click the login whose name or website matches this tenant's host");
+        assertThat(prompt).contains("Never try a second login");
+        assertThat(prompt).contains("reading lengths");
+        assertThat(prompt).contains("read or print the password value itself");
+        // Each way the sign-in can fail names its own fix, so the row's notes say what to do.
         assertThat(prompt).contains("Bitwarden vault is locked - unlock it and retry");
+        assertThat(prompt).contains("Workday: no Bitwarden login for <tenant host>");
+        assertThat(prompt).contains("Bitwarden autofill menu did not appear");
+        assertThat(prompt).contains("Show autofill suggestions on form fields");
         assertThat(prompt).contains("Never create an account and never type a password yourself");
 
-        int workdayIndex = prompt.indexOf("Workday postings (*.myworkdayjobs.com): click Apply");
+        int workdayIndex = prompt.indexOf("Workday postings (*.myworkdayjobs.com, *.myworkdaysite.com): click Apply");
         int loginWallIndex = prompt.indexOf("Only a blocker no answer could fix");
         assertThat(workdayIndex).isGreaterThan(-1);
         assertThat(loginWallIndex).isGreaterThan(-1);
         assertThat(workdayIndex).isLessThan(loginWallIndex);
+    }
+
+    @Test
+    void pastedRowAsksClaudeToReadTitleCompanyAndDescriptionOffThePage() {
+        JobListing pasted = new JobListing(
+                1L, "https://jobs.lever.co/acme/1", PastedUrlJobs.SOURCE, PastedUrlJobs.TITLE_PLACEHOLDER, "acme",
+                null, null, Instant.parse("2026-09-23T00:00:00Z"), Instant.parse("2026-09-23T00:00:00Z"), 0L,
+                "https://jobs.lever.co/acme/1", null, null, null, null, (UserStatus) null, null, null, null,
+                "https://jobs.lever.co/acme/1", "lever", null, null, null, null, null, null, false, null, null,
+                null, null);
+
+        String prompt = builder.build(pasted, resume(), Path.of("/data/resumes/1.pdf"), profile(), false, 4000);
+
+        assertThat(prompt).contains("TITLE: (not known - read it from the posting page)");
+        assertThat(prompt).contains("COMPANY: (not known - read it from the posting page)");
+        assertThat(prompt).doesNotContain(PastedUrlJobs.TITLE_PLACEHOLDER);
+        assertThat(prompt).contains("\"jobTitle\" and \"company\" to the posting's job title and hiring company");
+        assertThat(ApplyPromptBuilder.APPLY_JSON_SCHEMA).contains("\"jobTitle\"").contains("\"company\"");
     }
 
     @Test

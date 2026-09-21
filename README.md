@@ -121,7 +121,7 @@ cd frontend && npm install && npm run dev   # front end (first run needs the ins
 ## Tests
 
 ```bash
-./mvnw test                         # 386 tests, no network access
+./mvnw test                         # 542 tests, no network access
 cd frontend && npm run build        # tsc -b && vite build - type errors fail the build
 cd frontend && npm run lint
 ```
@@ -134,8 +134,8 @@ so they assert scheduling without sleeping.
 
 ## Using the dashboard
 
-The dashboard has six top-level tabs — **Search**, **Results**, **Sources**, **Resumes**,
-**Filters**, **Data**. Switching
+The dashboard has eight top-level tabs — **Search**, **Results**, **Apply**, **Sources**,
+**Resumes**, **Filters**, **Runs**, **Data**. Switching
 between them keeps each panel's state (the results table's sort, min-salary filter and sub-tab
 all survive), and a run in progress shows a live pill in the header from any tab.
 
@@ -173,6 +173,10 @@ The status tabs deliberately ignore which run a job came from — a job you appl
 shouldn't vanish because this morning's run replaced the view.
 
 Click any column header to sort by it; click again to reverse.
+
+**Filter by source.** The **Source** dropdown beside Min salary narrows the list to one
+source — LinkedIn, Greenhouse, Lever, Workday — with a count for each. The AI buckets, their
+counts, and what **Apply with Claude** acts on all follow it.
 
 **Group by company.** A checkbox that collapses each company with more than one posting into a
 single collapsed row (job count, distinct-location count, newest posting, top salary) that you
@@ -289,19 +293,8 @@ apply:
   max-budget-usd: 4.0           # per job
   idle-timeout: 3m              # no browser action for this long = stuck, job killed
   max-description-chars: 4000
-  linkedin-links:
-    enabled: true
-    batch-size: 8          # LinkedIn postings per Claude-in-Chrome call
-    max-per-run: 40        # recommended LinkedIn rows resolved per run
-    max-turns: 120
-    max-budget-usd: 2.0
-    timeout: 10m
+  concurrency: 3                # applications filled at once; a request may ask for 1-5
 ```
-
-`apply.linkedin-links` reads each recommended LinkedIn row's real apply destination out of a
-**signed-in Chrome window** rather than guessing at a company-catalog match — see
-[Applying with Claude](#applying-with-claude) for why and how. Nothing here counts against the
-`ats:` daily caps above; it's LinkedIn pages Claude is reading, not board JSON.
 
 **`batch-size` is the cost lever that matters.** The cost shown in the UI is whatever the Claude
 CLI reports for each invocation — jobdash sums it, it does not compute it. Every invocation carries
@@ -416,6 +409,22 @@ resume or profile is left blank and listed in the row's notes for you to fill in
 **With Submit on**, a successful application clicks through the confirmation page too and the job
 moves straight to **Applied**.
 
+**Apply to specific postings (the Apply tab).** Paste job posting URLs, one per line — a
+Greenhouse or Lever posting, a Workday job, a company's own careers page — pick a resume, how many
+to run at a time, and the Submit toggle, and click **Apply with Claude**. Each URL is applied to
+exactly like a recommended job: Greenhouse and Lever links are opened as their standalone form, a
+careers page that embeds one is read for it first, and anything else Claude navigates itself.
+Claude also reads the job title and company off the page, and they replace the URL-based
+placeholder on the tab's list. Pasted jobs never show up in the Results triage lists; one Claude
+submits moves to **Applied** like any other. Pasting a URL again reuses the same job.
+
+**Several at once.** A batch — from either tab — fills up to `apply.concurrency` (3)
+applications at the same time, each its own Claude session in its own Chrome tab group, so you'll
+see that many tab groups working side by side. The progress line lists every job in flight with
+Claude's last action. Two jobs on the **same Workday company** always run one after the other,
+since they'd share one signed-in session. Cost per application is unchanged; a batch just
+finishes sooner.
+
 **The applicant profile.** A resume answers "what have you done," not "are you authorized to work
 here" or "what's your salary expectation" — those need a real answer, and Claude is never allowed
 to guess one. Fill in the **applicant profile** form at the bottom of the **Resumes** tab once
@@ -434,39 +443,38 @@ answers and a **Show run report** button: every job's outcome and cost, which ta
 for you, the resume-in-terminal command per job, and the list of new questions. The same report
 is written to `logs/apply/batch-<id>-report.md`.
 
-**LinkedIn rows get their real apply link read out of a signed-in Chrome, not guessed at.** After
-every scan, and after a manual Re-scan, every recommended LinkedIn job without a link yet is
-handed to Claude in batches: on the posting's page, Claude reads the Apply button's redirect href
-and decodes the real destination it points to — without clicking it, so nothing is ever submitted,
-applied to, or changed. This needs **Chrome signed in to a LinkedIn account**, and that account
-should be a **burner, not your real one** — this project's one non-negotiable rule (see
-[How it gets the data](#how-it-gets-the-data)) is that your real LinkedIn account must never be
-exposed to automation, and reading an Apply button's href is still automation against LinkedIn's
-own pages. A resolved link shows up on the job's row as an **↗ Apply on Greenhouse/Lever/Workday**
-(or the destination's own host, e.g. `jobbol.com.br`) link next to the source tag; "Apply with
-Claude" then drives it exactly like a native board posting. A LinkedIn posting that's **Easy
-Apply** has no redirect to read at all, so it gets an **Easy Apply** tag instead and stays manual.
-If Chrome isn't signed in, the phase stops and every remaining row is noted "LinkedIn is not
-signed in in Chrome — sign in to the burner account and Re-scan" rather than guessing. Expect
-**about $0.06 per posting** in the default batches of 8 (measured: 39 postings, 5 calls, $2.25) and
-roughly $0.15 for a posting on its own — every `claude`
-invocation carries a fixed overhead regardless of payload size (see the AI-scan `batch-size` note
-above), so batching several postings per call is what keeps the cost down.
+**LinkedIn jobs are applied to by URL.** LinkedIn's logged-out job pages don't say where the Apply
+button goes, and nothing in jobdash signs in to LinkedIn: open the posting yourself, click Apply,
+copy the company's application URL, and paste it into the **Apply** tab. A LinkedIn posting that's
+**Easy Apply** gets an **Easy Apply** tag — it has no outside link at all. (Until 2026-09-23 a run
+read these links out of a Chrome signed in to a throwaway LinkedIn account; LinkedIn banned that
+account for suspicious activity and the step was removed. Rows it had already resolved keep their
+**↗ Apply on …** link, and Apply with Claude still uses it.)
 
-**A LinkedIn row resolved to a Workday posting still needs a sign-in**, so it carries extra
-prerequisites beyond the ones below: the [Bitwarden](https://bitwarden.com/) Chrome extension
-installed, its vault **unlocked**, and a login already saved for that specific Workday tenant.
-Claude clicks the sign-in page's email field and tries Bitwarden's inline autofill menu (falling
-back to Cmd+Shift+L), never creates an account, and never types a password itself — if Bitwarden
-doesn't fill the fields, the job ends `failed` with a note explaining why. This path is not yet
-verified against a live tenant; treat it as best-effort until it's used for real.
+**Workday postings need a sign-in, and Claude signs in through Bitwarden** — your password never
+passes through Claude. One-time setup:
+
+1. The [Bitwarden](https://bitwarden.com/) Chrome extension, signed in, with its inline menu **on**:
+   Bitwarden → Settings → Autofill → **Show autofill suggestions on form fields**. As of
+   2026-09-23 it was off on this machine: clicking a Workday email field showed no Bitwarden menu
+   at all.
+2. A login saved for each Workday company you apply to, with that company's Workday site as its
+   website (for example `dowjones.wd1.myworkdayjobs.com`). Workday accounts are per company.
+3. The vault **unlocked** while a batch runs.
+
+On the sign-in page Claude clicks the email field, picks that company's login from Bitwarden's
+menu (by its name or website, never a second guess, since a wrong password can lock the Workday
+account), lets Bitwarden fill both fields, and signs in. It never creates an account and never
+types a password. When it can't sign in, the job ends `failed` with a note saying why: vault
+locked, no login for that company, the Bitwarden menu never appeared, or Workday's own error. This
+path has not yet been watched working end to end — check the first Workday job's log.
 
 **Where Claude is sent.** Greenhouse and Lever both serve the application form as a standalone
 page (Greenhouse's `embed/job_app` URL, Lever's `/apply`), so Claude opens that directly instead
 of the company's own careers page - several companies (Stripe, for one) embed the form in a
 cross-origin iframe there, which the browser extension cannot see into. **Workday postings need a
-candidate account** on each company's Workday tenant; Claude will not create one, so those end as
-**Apply failed** with "Workday account required" until you have signed up there yourself.
+candidate account** on each company's Workday tenant, which Claude signs in to through Bitwarden
+(above) and will never create — sign up there yourself first.
 
 **Prerequisites**, one-time:
 
@@ -494,8 +502,8 @@ awake: the batch runs `caffeinate -i` itself, but a closed lid still sleeps the 
 the job until it wakes.
 The batch view shows a running total from the CLI's own reported cost.
 
-**Watching it, and unsticking it.** While a batch runs the Results tab shows which job is in
-progress and, under it, the last thing Claude did (`Claude: tool …navigate {"url": …}`), plus a
+**Watching it, and unsticking it.** While a batch runs, the tab that started it (Results or Apply)
+shows every job in progress and, under each, the last thing Claude did (`Claude: tool …navigate {"url": …}`), plus a
 Cancel button. A **Details** toggle lists every job in the batch with its notes, a **View log** link
 that opens the full per-job transcript, and a **Resume in terminal** command. Three levels of
 detail, from a terminal:

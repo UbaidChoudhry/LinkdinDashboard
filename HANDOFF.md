@@ -261,7 +261,7 @@ which has zero commits. First commit is yours to make.
 before the first commit** — `data/jobdash.db` may contain real scraped job data you don't want
 in version control.
 
-Test counts by suite are in [CODEMAP.md](CODEMAP.md). Run `./mvnw test` and expect **386
+Test counts by suite are in [CODEMAP.md](CODEMAP.md). Run `./mvnw test` and expect **542
 passing**.
 
 ---
@@ -1366,7 +1366,109 @@ taught, and what changed:
   Job Board API (`boards-api.greenhouse.io/v1/boards/<slug>/jobs/<id>`, 200 or 404) before it is
   trusted. Both real cases confirm (verified with curl 2026-09-23).
 
-## 13. LinkedIn postings → their real apply link (2026-09-21)
+### Apply tab, parallel batches, and the Bitwarden decision (2026-09-23, night)
+
+Three asks from the user: a tab where they paste URLs and Claude applies to them, several
+applications at once instead of one at a time, and Workday sign-in from the accounts they keep in
+Bitwarden.
+
+**Parallel applications - probed before building.** Two `claude -p --chrome` processes started at
+the same moment (read-only probe, two Workday sign-in pages) both finished in 31 s, $0.37 in total,
+each in its own Chrome tab group (`tabGroupId` 699715399 and 1424052738). The Chrome native host
+owns one Unix socket (`/tmp/claude-mcp-browser-bridge-<user>/<pid>.sock`) and every
+`claude --chrome` process connects to it as a client, so nothing in the extension serializes
+sessions. **This supersedes "One CLI call per job, sequential" above**: it is still one CLI call
+and one session per job - the blast-radius argument is unchanged - but a batch now runs up to
+`apply.concurrency` (default 3) of them at once; a request may ask for 1-5
+(`ApplyOrchestrator.MAX_CONCURRENCY`). Only two at once has been observed live; watch the first
+batch at 3. How it is built:
+
+- `runBatch` starts that many virtual-thread workers, each taking the next job from a `JobQueue`
+  in batch order. **Two Workday jobs on the same tenant host never run side by side** (the queue
+  passes over a job whose tenant another worker holds; `ApplyOrchestrator.exclusiveKey`). They
+  would share one signed-in session and account, and a second tab signing in under a half-filled
+  form is not worth finding out about - a precaution, not a failure seen in a transcript.
+- Results land through one lock (`BatchTally`), which also writes the `apply_batch` progress row.
+  `ProfileAnswerRepository.recordUnanswered` reads then inserts, so two jobs finishing with the
+  same new question would both insert it - that bookkeeping runs under `questionLock`. The
+  named resume copy (`ResumeUploadFile.forUpload`) is made once per batch so workers never race
+  refreshing it. The report lists jobs in batch order, not finish order.
+- A batch's terminal status is now `cancelled` whenever the cancel flag is set at the end; before,
+  a cancel that landed during the last job still finished `ok`.
+- The UI shows every job currently filling, each with Claude's last action
+  (`ApplyBatchView.ApplyBatchStatus`).
+
+**The Apply tab.** `POST /api/applications/urls {urls, resumeId?, submit?, concurrency?}` turns each
+URL into a `job_listing` row with `source='pasted'` (`apply/PastedUrlJobs`) and starts an ordinary
+batch over them. A pasted row is shaped exactly like a LinkedIn row §13's resolver has resolved -
+`apply_url` = the URL, `apply_domain` by host (`LinkedInApplyLinkResolver.domainOf`) - so
+`ApplyUrlResolver` rewrites a Greenhouse link to its embed form and a Lever link to `/apply`, and
+hands a company careers page to `EmbeddedFormDetector`, without a pasted-specific branch beyond
+the `case`. Deliberate details:
+
+- `source_job_id` is the URL itself, so pasting the same URL again reuses its row.
+- `last_seen_run_id = 0` (no run saw it), and **`FilterEngine` skips `source = 'pasted'`**
+  (`findWithoutVerdict`, `findWithFilterVersionLessThan`): its `filter_verdict` stays null, so it
+  can never appear in the Results triage views, which all read `filter_verdict = 'pass'`. The
+  company-volume report skips it too. A pasted job Claude submits is marked `applied` and appears
+  on the Applied tab like any other.
+- Title and company are unknown until Claude reads the page: the row starts as
+  "(title not read yet)" plus a company guessed from the URL (board slug, Workday tenant, or host),
+  the prompt tells Claude to read all three off the page instead, and the apply schema grew
+  optional `jobTitle` / `company`, which `setPastedTitleAndCompany` writes back - its `WHERE`
+  includes `source = 'pasted'`, so a real source's title can never be overwritten.
+- Rows are written only after every guard (profile, resume, URL parse, concurrency, 409, CLI)
+  has passed, so a rejected request leaves nothing behind.
+
+**Workday sign-in: the user chose Bitwarden autofill, not the Bitwarden CLI.** The alternative put
+to them was the `bw` CLI: the backend looks up the login whose URI matches the tenant and Claude
+types it. That works whatever the extension's settings are, but the password would pass through
+the model's context (sent to Anthropic, and kept in the CLI session file `--resume` reads).
+Autofill keeps the password inside Bitwarden - it goes from the vault straight into the page, and
+Claude only chooses which login.
+
+The same probe as above answered why batch 10's six Workday jobs saw nothing. On both sign-in
+pages, a click in the Email Address field (by element ref on one, by coordinates on the other)
+produced **no Bitwarden UI at all** - not the login list, not "No items to show", not the
+unlock prompt - while Bitwarden 2026.8.0 is installed and enabled in the Chrome profile Claude
+drives. When the inline menu is on, Bitwarden shows *something* on focus even for a locked vault
+or a site with no login, so the likely cause is that **the inline menu is switched off**
+(Bitwarden → Settings → Autofill → "Show autofill suggestions on form fields"), or the extension
+is logged out - not the per-tenant URI mismatch batch 10's note guessed at. The prompt's Workday
+section is rewritten for the autofill route:
+
+- The menu is drawn in an extension iframe that `find`/`read_page` cannot see, so Claude reads it
+  from one screenshot and clicks by coordinates.
+- Claude picks the login whose name or website matches the tenant (with Bitwarden's default
+  base-domain matching, a login saved for one `*.myworkdayjobs.com` tenant may be offered on all
+  of them), and never tries a second one - a wrong password can lock the Workday account.
+- It confirms the fill by reading `.value.length` of the password field, never the value.
+- Each way the sign-in can fail has its own summary, so the row says what to fix: vault locked,
+  no login for `<tenant host>`, menu never appeared (turn the setting on), or Workday's own
+  rejection quoted.
+
+**Still unverified end to end**: nobody has watched Claude sign in through the menu yet. It needs
+the setting on, the vault unlocked, and a login saved for a tenant; the first real Workday
+transcript is the test. Re-run the two-page probe above (scratch prompt: open a tenant's
+`/apply/applyManually` URL, click Sign In, click the email field, screenshot, report) after
+turning the setting on - it costs about $0.20 and settles whether the menu appears to a CDP click.
+
+## 13. LinkedIn postings → their real apply link (2026-09-21) - REMOVED 2026-09-23
+
+**Removed.** On 2026-09-23 LinkedIn banned the burner account this section's resolver signed in
+with, for suspicious activity. It had read about 40 postings per run across runs 29-31, and in
+run 31 it was signed out mid-phase after ~34 postings in about 3 minutes, shortly before the ban.
+At the user's request the whole signed-in step is gone: `LinkedInApplyLinkResolver`,
+`LinkedInLinkProperties`, the `apply.linkedin-links` config block, run phase 6 and its `matching`
+status (removed from `RunController.IN_FLIGHT_STATUSES`, `runStatus.ts` and the `RunStatus`
+type), the Re-scan hook that ran it, and the repository methods only it used
+(`findLinkedInUnmatchedByRun`, `setApplyMatchNote`, `setApplyKind`). **The lesson for §2's rule:
+even read-only, never-click automation on a signed-in LinkedIn account gets that account banned,
+burner or not - do not bring back anything that signs in to LinkedIn.** The user now opens LinkedIn
+postings by hand and pastes the company's apply URL into the Apply tab (§12, "Apply tab, parallel
+batches"). Links the resolver had already written stay on their rows (`apply_url`/`apply_domain`)
+and Apply with Claude still uses them - that is company-site data, and using it touches no LinkedIn
+page. Everything below is the history of what was built and why.
 
 **§12 said LinkedIn rows are skipped because applying through LinkedIn needs the user's own
 logged-in account - that rule is untouched.** What changed is that most recommended jobs come
@@ -1439,8 +1541,10 @@ both the run and resume paths, and after a manual Re-scan - and, for the run's r
 LinkedIn rows that still have no apply link (skipping rows already known `apply_kind='onsite'`,
 i.e. Easy Apply), drives the same Claude-in-Chrome CLI invocation Apply with Claude uses
 (`apply/ApplyOrchestrator.chromeArgs`) in batches of `apply.linkedin-links.batch-size` (8)
-postings per call, capped at `max-per-run` (40); each batch is its own session with a transcript
-at `logs/apply/links-run-<run>-batch-<n>.log`.
+postings per call, every candidate in the run; each batch is its own session with a transcript
+at `logs/apply/links-run-<run>-batch-<n>.log`. **There is no per-run cap.** One (`max-per-run: 40`)
+was added here unasked and removed on 2026-09-23 at the user's request: run 31 had 117 candidates,
+resolved 26, and left 77 untouched as "link cap reached - retried next run".
 
 **The probe result, verbatim, that made this viable:** on a signed-in `/jobs/view/{id}` page the
 Apply button's `href` is `https://www.linkedin.com/safety/go/?url=<url-encoded destination>` -
@@ -1470,8 +1574,10 @@ and continues to the next; a missing CLI binary or a disconnected extension stop
 
 **Cost:** roughly $0.15 per posting resolved one at a time; batches of 8 bring that down because
 the ~25k-token fixed overhead per `claude` invocation (§9) is paid once per batch, not once per
-posting. Config: `apply.linkedin-links: enabled, batch-size 8, max-per-run 40, max-turns 120,
-max-budget-usd 2.0, timeout 10m`.
+posting, so a run with ~120 candidates costs about $7. Config: `apply.linkedin-links: enabled,
+batch-size 8, max-turns 120, max-budget-usd 2.0, timeout 10m` (the last three are per batch).
+Run 31 also showed the other limit: LinkedIn signed the burner account out after ~34 postings in
+about 3 minutes, and the phase stops at a sign-in wall - sign back in and Re-scan to continue.
 
 ### Where the `matching` phase sits in the run, and why it had to touch the scanning checklist
 
@@ -1503,7 +1609,10 @@ than left silent.
   same way §12 treats a from-scratch Workday account today - watch the first real transcript
   before trusting it. Unaffected by the matcher's removal: a Workday `apply_url` can now arrive
   via the resolver above just as it used to arrive via a match, and either way it reaches the same
-  untested Bitwarden prompt rule in `ApplyPromptBuilder`.
+  untested Bitwarden prompt rule in `ApplyPromptBuilder`. **Update 2026-09-23 night:** the probe was
+  run (§12, "Apply tab, parallel batches, and the Bitwarden decision") - no Bitwarden menu appears
+  at all on a Workday email field, most likely because the inline menu is switched off; the prompt
+  rule was rewritten, and the sign-in itself is still unwatched.
 
 **First live run of the resolver (run 29, Re-scan, 2026-09-21):** candidates=39, external=32,
 easy-apply=2, closed=5, unresolved=0, 5 batches of 8, 172 browser actions in total, 705 s wall
