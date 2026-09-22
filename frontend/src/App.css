@@ -507,6 +507,53 @@ td {
   font-variant-numeric: tabular-nums;
 }
 
+/* ---- Match column: the company-link finder's confidence ---------------------------------------
+   Same pill and colours as .application-badge: green = confident, amber = plausible, red = weak.
+   A dashed border means the match was too weak to become the job's apply link. */
+.col-match {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.match-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  text-decoration: none;
+  color: var(--text);
+}
+
+.match-badge.high {
+  border-color: rgba(22, 163, 74, 0.5);
+  color: #16a34a;
+}
+
+.match-badge.medium {
+  border-color: rgba(234, 179, 8, 0.5);
+  color: #ca8a04;
+}
+
+@media (prefers-color-scheme: dark) {
+  .match-badge.medium {
+    color: #eab308;
+  }
+}
+
+.match-badge.low {
+  border-color: rgba(220, 38, 38, 0.5);
+  color: #dc2626;
+}
+
+.match-badge.unused {
+  border-style: dashed;
+}
+
+.match-badge.none {
+  opacity: 0.65;
+}
+
 .salary-source {
   color: var(--text);
   font-size: 11px;

@@ -20,6 +20,7 @@ import type {
   RunResponse,
   ScanResultResponse,
   SourceSummaryResponse,
+  CompanyLinkProgress,
 } from "../types/api";
 
 /** Thrown for any non-2xx API response. Always carries a user-facing message. */
@@ -316,6 +317,21 @@ export function startApplications(body: {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+/** Starts a search of employers' own careers sites for the latest run's recommended LinkedIn jobs. */
+export function startCompanyLinkSearch(): Promise<{ total: number }> {
+  return request<{ total: number }>("/api/company-links/search", { method: "POST" });
+}
+
+/** The running company-link search, or the last to finish; null before the first. */
+export async function getCompanyLinkSearch(): Promise<CompanyLinkProgress | null> {
+  const progress = await request<CompanyLinkProgress | undefined>("/api/company-links/search");
+  return progress ?? null;
+}
+
+export function cancelCompanyLinkSearch(): Promise<void> {
+  return request<void>("/api/company-links/search/cancel", { method: "POST" });
 }
 
 /** POST /api/applications/urls - the Apply tab: apply to pasted posting URLs, one per entry. */

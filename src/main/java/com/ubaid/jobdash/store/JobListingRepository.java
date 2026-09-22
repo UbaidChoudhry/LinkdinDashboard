@@ -547,6 +547,28 @@ public class JobListingRepository {
                 .update();
     }
 
+    /**
+     * LinkedIn rows from one run for the company-link finder ({@code apply.CompanyLinkFinder}):
+     * recommended against {@code resumeId}, untriaged, no apply link yet, a description to match
+     * against, not confidently non-US, and never searched before (no {@code company_link_match}
+     * row). Easy Apply rows are included - the employer often posts the same job on its own site.
+     */
+    public List<JobListing> findCompanyLinkCandidates(long runId, long resumeId) {
+        return client.sql("""
+                        select j.* from job_listing j
+                        join ai_match m on m.job_id = j.job_id and m.resume_id = :resumeId and m.recommended = 1
+                        where j.source = 'linkedin' and j.last_seen_run_id = :runId and j.user_status is null
+                          and j.apply_url is null and j.description is not null
+                          and not (coalesce(j.location_us, 1) = 0 and coalesce(j.location_confident, 0) = 1)
+                          and not exists (select 1 from company_link_match c where c.job_id = j.job_id)
+                        order by j.posted_at desc, j.job_id desc
+                        """)
+                .param("runId", runId)
+                .param("resumeId", resumeId)
+                .query(JobListingRepository::mapRow)
+                .list();
+    }
+
     /** The surrogate {@code job_id} of the row with this natural key, if one exists. */
     public java.util.Optional<Long> findIdBySourceKey(String source, String sourceJobId) {
         return client.sql("select job_id from job_listing where source = :source and source_job_id = :sourceJobId")

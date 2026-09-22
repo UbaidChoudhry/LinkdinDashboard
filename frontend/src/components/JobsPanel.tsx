@@ -6,6 +6,7 @@ import { DEFAULT_SORT, filterByMinSalary, nextSortState, sortJobsBy, type SortSt
 import { groupByCompany, type CompanyGroup } from "../utils/group";
 import { isRunInFlight } from "../utils/runStatus";
 import { ApplyControls } from "./ApplyControls";
+import { CompanyLinkControls } from "./CompanyLinkControls";
 import { JobRow } from "./JobRow";
 import { CompanyGroupRow } from "./CompanyGroupRow";
 import { PlainHeader, SortableHeader } from "./SortableHeader";
@@ -447,6 +448,7 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
           <button type="button" className="bucket-rescan" onClick={handleRescan} disabled={scanning}>
             {scanning ? "Scanning…" : "Re-scan"}
           </button>
+          <CompanyLinkControls onFinished={load} />
           <ApplyControls eligibleJobIds={eligibleJobIds} linkedinCount={linkedinCount} onFinished={load} />
         </div>
       )}
@@ -627,6 +629,7 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
                 <SortableHeader column="location" label="Location" sort={sort} onSort={handleSort} />
                 <SortableHeader column="postedAt" label="Posted" sort={sort} onSort={handleSort} />
                 <SortableHeader column="salary" label="Salary" sort={sort} onSort={handleSort} />
+                <SortableHeader column="match" label="Match" sort={sort} onSort={handleSort} />
                 <PlainHeader label="Actions" />
               </tr>
             </thead>

@@ -30,6 +30,16 @@ export interface JobResponse {
   applyKind?: string | null;
   /** Notes on how `applyUrl`/`applyDomain` were matched to the company's own ATS board, if at all. */
   applyMatchNote?: string | null;
+  /**
+   * The company-link finder's result for a LinkedIn job (apply/CompanyLinkFinder): the posting it
+   * found on the employer's own site ("" when it found none) and a 0-100 confidence that it is the
+   * same job. Shown even below the backend's min-confidence; `applyUrl` is only set at or above it,
+   * so `applyUrl === companyLinkUrl` means Apply with Claude will use it. All null = never searched.
+   */
+  companyLinkUrl?: string | null;
+  companyLinkConfidence?: number | null;
+  companyLinkMatchedOn?: string[] | null;
+  companyLinkNote?: string | null;
   salaryMin: number | null;
   salaryMax: number | null;
   salarySource?: string | null;
@@ -66,6 +76,7 @@ export type RunStatus =
   | "running"
   | "fetching_details"
   | "scanning"
+  | "finding_links"
   | "no_sources"
   | "ok"
   | "capped"
@@ -216,6 +227,20 @@ export const SOURCE_LABELS: Record<JobSourceName, string> = {
   workday: "Workday",
 };
 
+
+/** A company-link search's progress. Mirrors apply/CompanyLinkFinder.Progress. */
+export interface CompanyLinkProgress {
+  runId: number;
+  running: boolean;
+  total: number;
+  done: number;
+  /** Jobs that got a link at any confidence. */
+  found: number;
+  /** Of those, confident enough to become the job's apply link. */
+  linked: number;
+  costUsd: number;
+  error: string | null;
+}
 
 /** A company in the ATS slug catalog. Mirrors web/dto/AtsCompanyResponse.java. */
 export interface AtsCompanyResponse {

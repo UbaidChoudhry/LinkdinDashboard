@@ -46,9 +46,9 @@ export function ApplyControls({ eligibleJobIds, linkedinCount, onFinished }: App
           {linkedinCount > 0 && (
             <>
               {" "}
-              {linkedinCount} LinkedIn job{linkedinCount === 1 ? " has" : "s have"} no company apply
-              link and will be skipped - open the posting, copy its Apply link, and paste it into the
-              Apply tab.
+              {linkedinCount} LinkedIn job{linkedinCount === 1 ? " has" : "s have"} no confident
+              company-site link yet and will be skipped - use Find company links, or open the posting
+              and paste its Apply link into the Apply tab.
             </>
           )}{" "}
           If a job gets stuck, open its log or resume the session in a terminal - the browser tabs

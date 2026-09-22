@@ -12,7 +12,7 @@ frontend/  React + TypeScript dashboard (Vite dev server, :5173)
 src/       Spring Boot backend (Java 21, :8080)
              ├─ main/java/com/ubaid/jobdash/   application code, by package (below)
              ├─ main/resources/                application.yml, Flyway migrations
-             └─ test/                          mirrors main/java/, 542 tests
+             └─ test/                          mirrors main/java/, 555 tests
 data/      the SQLite database file (gitignored, created on first boot)
 ```
 
@@ -44,13 +44,16 @@ POST /api/runs { sources: [...] }            [RunController -> RunOrchestrator]
    3. if 1 ended "ok"       → DetailFetchService       (Flow A phase 2 — LinkedIn descriptions)
    4. if 2 ended "ok"       → LocationClassifier
    5. unless cancelled      → ResumeMatchService       (the AI scan, over everything collected)
+   6. if 5 ran, enabled     → CompanyLinkFinder        (web-searches each recommended LinkedIn job
+                                                          on the employer's own site; status
+                                                          finding_links)
 ```
 Any mix is valid (since 2026-09-09). Phases 1 and 2 are independent - each has its own budget
 and stop reasons - so LinkedIn's breaker opening never stops the boards, and vice versa. The
 run's status is the first non-"ok" phase outcome in that order; the scan runs regardless.
-A sixth phase that read LinkedIn apply links out of a signed-in Chrome (and its `matching`
-status) existed 2026-09-21 to 09-23 and was removed after LinkedIn banned the account it used -
-HANDOFF.md §13.
+Phase 6 (HANDOFF.md §14) replaced one that read LinkedIn apply links out of a signed-in Chrome
+(status `matching`, 2026-09-21 to 09-23), removed after LinkedIn banned the account it used (§13).
+It never throws and is skipped on cancellation, when disabled, or with no resume.
 
 ### Flow A — starting a sweep (write path, hits LinkedIn)
 
@@ -291,6 +294,14 @@ becomes a `failed` row, not a failed batch. Logs go to `logs/apply.log` via the 
 logger — **never the resume text or profile**, same discipline as `logs/ai-scan.log`. See
 HANDOFF.md §12.
 
+`CompanyLinkFinder` (2026-09-23, HANDOFF.md §14) finds a recommended LinkedIn job's posting on the
+employer's own site: `claude -p` with web search and fetch only (LinkedIn refused), batches of
+`apply.company-links.batch-size`, `concurrency` calls at once, every candidate
+(`JobListingRepository.findCompanyLinkCandidates`). Each answer - URL, 0-100 confidence, which fields
+agreed, a note - goes in `company_link_match`; one at or above `min-confidence` also becomes the
+job's `apply_url`. LinkedIn/aggregator links and links answering 404 are dropped. Run phase 6 calls
+`find`; the Results tab's button calls `startInBackground` via `web/CompanyLinkController`.
+
 `PastedUrlJobs` (2026-09-23) backs the Apply tab: each pasted URL becomes a `job_listing` row with
 `source='pasted'`, `last_seen_run_id=0`, and the URL as its `apply_url`, so every step below treats it
 exactly like a resolved LinkedIn row. The filter engine never evaluates a pasted row (so it can't
@@ -333,6 +344,7 @@ scattered elsewhere.
 | `AtsCompanyRepository` | `ats_company` — the company catalog. `findForRun` returns only enabled, non-dead rows; `recordFailure` retires a slug after `ats.dead-slug-threshold` consecutive 404s |
 | `ResumeRepository` | `resume` — uploaded resumes; `setDefault` keeps exactly one default row |
 | `AiMatchRepository` | `ai_match` — cached AI verdicts keyed `(job_id, resume_id)` |
+| `CompanyLinkMatchRepository` | `company_link_match` — the company-link finder's answer per LinkedIn job (URL, confidence, what agreed, note); `findByJobIds` feeds the Match column |
 | `ApplicantProfileRepository` | `applicant_profile` — single row (`id=1`), upserted, never inserted twice |
 | `ApplyBatchRepository` | `apply_batch` — one row per "Apply with Claude" click; `findInFlight()` is the 409 guard |
 | `ApplicationRepository` | `job_application` — one row per job per batch attempt; `findLatestByJobIds` mirrors `AiMatchRepository.findByJobIds` for the `JobResponse` batched lookup |
@@ -396,7 +408,8 @@ components/
                               Submit, then watch the batch
   ApplyBatchView.tsx          what both of the above render for a batch: the status line (every
                               job filling right now, with Claude's last action) and the Details list
-  JobRow.tsx                  one row: title link, company, location, posted, salary (+ source label), actions,
+  CompanyLinkControls.tsx     "Find company links" button + live progress, in the Results tab's bucket bar
+  JobRow.tsx                  one row: title link, company, location, posted, salary (+ source label), Match, actions,
                               application status badge
   SortableHeader.tsx          clickable <th>, shared by the job table
   RunsPanel.tsx               "Runs" tab: a static table of past runs (newest first) for
@@ -475,6 +488,7 @@ applicant_profile    single row (id=1): work authorization, sponsorship, salary,
 apply_batch           one row per "Apply with Claude" click: status, per-outcome counters (V12)
 job_application       one row per job per attempt: status, notes, cost; session_id, last_activity, log_path (V13) drive the live activity line, the transcript link and the resume command
 profile_answer        question → answer table behind the applicant profile; pending rows are questions Claude could not answer (V14)
+company_link_match    the company-link finder's answer per LinkedIn job: url ('' = none found), confidence 0-100, matched_on, note (V16)
 ```
 
 Two indexes worth knowing about:
@@ -503,7 +517,7 @@ Test packages mirror `main/java` exactly — if you're looking for tests of
   file names for what each fixture represents (the two 26-byte files are the real end-of-results
   sentinel, not corrupt captures).
 
-Current count: **542 tests**. Run `./mvnw test`. Salary tests follow the same rules — the
+Current count: **555 tests**. Run `./mvnw test`. Salary tests follow the same rules — the
 Adzuna / h1bapi sources are driven through `StubHttpClient`, `SalaryRateLimiter` through
 `FakeClock`/`FakeSleeper`, and `LcaImportServiceTest` generates a tiny `.xlsx` in memory.
 
@@ -547,4 +561,6 @@ Adzuna / h1bapi sources are driven through `StubHttpClient`, `SalaryRateLimiter`
 | Apply to specific postings by URL | the Apply tab → `POST /api/applications/urls` → `apply/PastedUrlJobs` (URL → `pasted` job row) → the normal batch |
 | Change how many applications run at once | `application.yml` → `apply.concurrency` (the default), or the Apply tab's "At a time"; ceiling `ApplyOrchestrator.MAX_CONCURRENCY`. Same-tenant Workday jobs are serialized by `ApplyOrchestrator.exclusiveKey` |
 | Workday sign-in / Bitwarden | the Workday section of `ApplyPromptBuilder`'s prompt: Claude picks the tenant's login from Bitwarden's inline menu, never types a password. Setup and the 2026-09-23 probe: README "Applying with Claude", HANDOFF.md §12 |
-| Apply to a LinkedIn job | open it, click Apply, and paste the company's URL into the Apply tab - nothing in jobdash signs in to LinkedIn (the signed-in link step was removed 2026-09-23, HANDOFF.md §13) |
+| Apply to a LinkedIn job | `apply/CompanyLinkFinder` finds it on the employer's site (run phase 6, or Find company links); a 70%+ match becomes its apply link. Or open it and paste the company's URL into the Apply tab. Nothing in jobdash signs in to LinkedIn (HANDOFF.md §13, §14) |
+| Change how LinkedIn jobs are matched to company postings | `CompanyLinkFinder.buildPrompt` (search strategy, confidence rubric) and `application.yml` → `apply.company-links.*` (`min-confidence`, batching). HANDOFF.md §14 |
+| See why a LinkedIn job got no link, or re-search one | its Match cell's tooltip, or `company_link_match.note`; `logs/apply.log` `company links` lines. To search again: `delete from company_link_match where job_id = ?` |

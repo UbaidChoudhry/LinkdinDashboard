@@ -160,3 +160,17 @@ apply:
   # Chrome tab group (two concurrent sessions verified 2026-09-23, HANDOFF.md §12). A request can
   # ask for 1-5. Two Workday jobs on the same tenant never run side by side - they share its sign-in.
   concurrency: 3
+
+  # Finds each recommended LinkedIn job's posting on the employer's own careers site or ATS with
+  # web search + fetch (never linkedin.com), and makes it the job's apply link when the match is
+  # confident enough. Probe 2026-09-23 (HANDOFF.md §14): 4 jobs in one call, 3 found at 95/95/75,
+  # the 4th correctly not found, $0.72, 2 minutes. Every candidate is searched - no per-run cap.
+  company-links:
+    enabled: true
+    model: sonnet
+    batch-size: 4          # jobs per claude call
+    concurrency: 3         # calls at once
+    min-confidence: 70     # a weaker match is shown in the Match column but never applied to
+    max-turns: 80          # per call
+    max-budget-usd: 3.0    # per call
+    timeout: 15m           # per call

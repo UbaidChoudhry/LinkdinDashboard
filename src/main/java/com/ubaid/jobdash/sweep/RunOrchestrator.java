@@ -1,6 +1,8 @@
 package com.ubaid.jobdash.sweep;
 
 import com.ubaid.jobdash.ai.ResumeMatchService;
+import com.ubaid.jobdash.apply.CompanyLinkFinder;
+import com.ubaid.jobdash.apply.CompanyLinkProperties;
 import com.ubaid.jobdash.source.location.LocationClassifier;
 import com.ubaid.jobdash.domain.Resume;
 import com.ubaid.jobdash.domain.SweepRun;
@@ -23,6 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   3. LinkedIn descriptions DetailFetchService.fetchForRun (if 1 ran and ended "ok")
  *   4. Location judgement    LocationClassifier            (if 2 ran and ended "ok", and usOnly)
  *   5. AI resume scan        ResumeMatchService.scan       (unless cancelled)
+ *   6. Company links         CompanyLinkFinder.find        (if 5 ran and apply.company-links is enabled)
  * </pre>
  * Phases 1 and 2 are independent - LinkedIn's budget, breaker and shard loop live entirely in
  * {@link SweepService}, the boards' in {@link AtsSweepService} - so one stopping early never
@@ -42,6 +45,8 @@ public class RunOrchestrator {
     private final ResumeRepository resumeRepository;
     private final ResumeMatchService resumeMatchService;
     private final LocationClassifier locationClassifier;
+    private final CompanyLinkFinder companyLinkFinder;
+    private final CompanyLinkProperties companyLinkProperties;
     private final RunProgressRegistry progressRegistry;
     private final Clock clock;
 
@@ -49,6 +54,7 @@ public class RunOrchestrator {
                             DetailFetchService detailFetchService,
                             SweepRunRepository sweepRunRepository, ResumeRepository resumeRepository,
                             ResumeMatchService resumeMatchService, LocationClassifier locationClassifier,
+                            CompanyLinkFinder companyLinkFinder, CompanyLinkProperties companyLinkProperties,
                             RunProgressRegistry progressRegistry, Clock clock) {
         this.sweepService = sweepService;
         this.atsSweepService = atsSweepService;
@@ -57,6 +63,8 @@ public class RunOrchestrator {
         this.resumeRepository = resumeRepository;
         this.resumeMatchService = resumeMatchService;
         this.locationClassifier = locationClassifier;
+        this.companyLinkFinder = companyLinkFinder;
+        this.companyLinkProperties = companyLinkProperties;
         this.progressRegistry = progressRegistry;
         this.clock = clock;
     }
@@ -140,8 +148,14 @@ public class RunOrchestrator {
             if (withLinkedIn && !cancelledNow(cancelFlag)) {
                 detailStatus = fetchDetailsSafely(runId, cancelFlag);
             }
+            Long effectiveResumeId = null;
             if (!cancelledNow(cancelFlag)) {
-                runResumeScanIfPossible(runId, sources, resumeId, cancelFlag);
+                effectiveResumeId = runResumeScanIfPossible(runId, sources, resumeId, cancelFlag);
+            }
+            // Company links need the scan's verdicts (only recommended jobs are searched), so they
+            // follow it, over the same resume - and are skipped with it when there is no resume.
+            if (!cancelledNow(cancelFlag)) {
+                findCompanyLinksSafely(runId, effectiveResumeId, cancelFlag);
             }
             status = terminalStatus(cancelledNow(cancelFlag), null, null, detailStatus);
         } finally {
@@ -189,8 +203,14 @@ public class RunOrchestrator {
             // refusal partway through the detail phase still leaves real descriptions to read,
             // and a blocked LinkedIn phase says nothing about the boards. Only a cancellation
             // skips it.
+            Long effectiveResumeId = null;
             if (!cancelledNow(cancelFlag)) {
-                runResumeScanIfPossible(runId, sources, resumeId, cancelFlag);
+                effectiveResumeId = runResumeScanIfPossible(runId, sources, resumeId, cancelFlag);
+            }
+            // Company links need the scan's verdicts (only recommended jobs are searched), so they
+            // follow it, over the same resume - and are skipped with it when there is no resume.
+            if (!cancelledNow(cancelFlag)) {
+                findCompanyLinksSafely(runId, effectiveResumeId, cancelFlag);
             }
             status = terminalStatus(cancelledNow(cancelFlag), linkedInStatus, atsStatus, detailStatus);
         } finally {
@@ -263,13 +283,16 @@ public class RunOrchestrator {
      * run that successfully collected jobs. {@link ResumeMatchService} already guarantees it
      * never throws, but this still wraps the call: an AI failure must never turn a successful
      * collection run into a failed one.
+     *
+     * @return the resume id the scan ran against, or null if there was none (phase 6, which works
+     * from that resume's recommendations, is then skipped too)
      */
-    private void runResumeScanIfPossible(long runId, List<String> sources, Long resumeId,
+    private Long runResumeScanIfPossible(long runId, List<String> sources, Long resumeId,
                                           AtomicBoolean cancelFlag) {
         Long effectiveResumeId = resumeId != null ? resumeId
                 : resumeRepository.findDefault().map(Resume::id).orElse(null);
         if (effectiveResumeId == null) {
-            return;
+            return null;
         }
 
         progressRegistry.publish(runId, phaseProgress(runId, sources, "scanning"));
@@ -283,6 +306,28 @@ public class RunOrchestrator {
                             .ifPresent(current -> progressRegistry.publish(runId, current.withScan(scanProgress))));
         } catch (Exception e) {
             log.warn("resume scan for run {} threw unexpectedly (ResumeMatchService should never throw): {}",
+                    runId, e.toString());
+        }
+        return effectiveResumeId;
+    }
+
+    /**
+     * Phase 6: looks for each newly recommended LinkedIn job on the employer's own careers site
+     * ({@link CompanyLinkFinder}), publishing the {@code "finding_links"} in-flight status meanwhile.
+     * Skipped when disabled or when there was no resume to scan with. The finder never throws;
+     * this still wraps the call, the same idiom as {@link #fetchDetailsSafely}: a link search must
+     * never turn a successful run into a failed one.
+     */
+    private void findCompanyLinksSafely(long runId, Long effectiveResumeId, AtomicBoolean cancelFlag) {
+        if (effectiveResumeId == null || !companyLinkProperties.enabled()) {
+            return;
+        }
+        progressRegistry.progress(runId).ifPresent(current ->
+                progressRegistry.publish(runId, current.withStatus("finding_links")));
+        try {
+            companyLinkFinder.find(runId, effectiveResumeId, () -> cancelledNow(cancelFlag));
+        } catch (Exception e) {
+            log.warn("company link search for run {} threw unexpectedly (CompanyLinkFinder should never throw): {}",
                     runId, e.toString());
         }
     }

@@ -121,7 +121,7 @@ cd frontend && npm install && npm run dev   # front end (first run needs the ins
 ## Tests
 
 ```bash
-./mvnw test                         # 542 tests, no network access
+./mvnw test                         # 555 tests, no network access
 cd frontend && npm run build        # tsc -b && vite build - type errors fail the build
 cd frontend && npm run lint
 ```
@@ -294,6 +294,10 @@ apply:
   idle-timeout: 3m              # no browser action for this long = stuck, job killed
   max-description-chars: 4000
   concurrency: 3                # applications filled at once; a request may ask for 1-5
+  company-links:                # find LinkedIn jobs on the employer's own site (web search only)
+    batch-size: 4               # jobs per claude call
+    concurrency: 3              # calls at once
+    min-confidence: 70          # a weaker match is shown in the Match column but never applied to
 ```
 
 **`batch-size` is the cost lever that matters.** The cost shown in the UI is whatever the Claude
@@ -443,13 +447,27 @@ answers and a **Show run report** button: every job's outcome and cost, which ta
 for you, the resume-in-terminal command per job, and the list of new questions. The same report
 is written to `logs/apply/batch-<id>-report.md`.
 
-**LinkedIn jobs are applied to by URL.** LinkedIn's logged-out job pages don't say where the Apply
-button goes, and nothing in jobdash signs in to LinkedIn: open the posting yourself, click Apply,
-copy the company's application URL, and paste it into the **Apply** tab. A LinkedIn posting that's
-**Easy Apply** gets an **Easy Apply** tag — it has no outside link at all. (Until 2026-09-23 a run
-read these links out of a Chrome signed in to a throwaway LinkedIn account; LinkedIn banned that
-account for suspicious activity and the step was removed. Rows it had already resolved keep their
-**↗ Apply on …** link, and Apply with Claude still uses it.)
+**LinkedIn jobs: Claude finds the same job on the employer's own site.** LinkedIn's logged-out job
+pages don't say where the Apply button goes, and nothing in jobdash signs in to LinkedIn. Instead,
+at the end of every run (and when you click **Find company links** on the Results tab), each
+recommended LinkedIn job with no link is looked up on the employer's own careers site or job board
+with a web search — never by opening LinkedIn — comparing the title, location, description,
+requisition id and posting date. The **Match** column shows the result:
+
+| Match | Meaning |
+|---|---|
+| **95%** (green, 80+), **72%** (amber, 60-79), **45%** (red) | the posting it found, and how sure it is it's the same job; click to open it, hover for what agreed |
+| dashed border | below 70% — shown so you can check it, but Apply with Claude won't use it (paste it into the **Apply** tab if it's right) |
+| **none** | searched, no posting found on the employer's site |
+| **exact** | a link read straight off LinkedIn before that was removed |
+| — | not searched yet |
+
+A match of 70% or more becomes the job's **↗ Apply on …** link, and **Apply with Claude** applies
+there — first checking the page really is the same job, and stopping if it isn't. Expect **about
+$0.20 per job** searched (each job is searched once). Easy Apply jobs are searched too: the
+employer often posts them on its own site as well. You can still open any LinkedIn posting yourself
+and paste its link into the **Apply** tab. (Until 2026-09-23 links were read out of a Chrome signed
+in to a throwaway LinkedIn account; LinkedIn banned that account and that step was removed.)
 
 **Workday postings need a sign-in, and Claude signs in through Bitwarden** — your password never
 passes through Claude. One-time setup:

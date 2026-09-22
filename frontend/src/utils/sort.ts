@@ -41,7 +41,7 @@ export function filterByMinSalary(jobs: JobResponse[], min: number | null): JobR
 }
 
 /** Any table column the user can click to sort by. "default" is the salary-bucket view above. */
-export type SortColumn = "default" | "title" | "company" | "location" | "postedAt" | "salary";
+export type SortColumn = "default" | "title" | "company" | "location" | "postedAt" | "salary" | "match";
 export type SortDirection = "asc" | "desc";
 
 export interface SortState {
@@ -76,6 +76,16 @@ function compareNullableNumber(a: number | null, b: number | null): number {
   return a - b;
 }
 
+/**
+ * The Match column's sort value: the company-link finder's confidence; 100 for a link read
+ * straight off LinkedIn's Apply button (before that step was removed); null - last - when never
+ * searched.
+ */
+function matchConfidence(job: JobResponse): number | null {
+  if (job.companyLinkConfidence != null) return job.companyLinkConfidence;
+  return job.source === "linkedin" && job.applyDomain ? 100 : null;
+}
+
 function columnCompare(column: SortColumn, a: JobResponse, b: JobResponse): number {
   switch (column) {
     case "title":
@@ -88,6 +98,8 @@ function columnCompare(column: SortColumn, a: JobResponse, b: JobResponse): numb
       return compareNullableTime(a.postedAt, b.postedAt);
     case "salary":
       return compareNullableNumber(a.salaryMax, b.salaryMax);
+    case "match":
+      return compareNullableNumber(matchConfidence(a), matchConfidence(b));
     case "default":
       return compareJobs(a, b);
   }

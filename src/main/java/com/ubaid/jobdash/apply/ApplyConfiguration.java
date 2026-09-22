@@ -4,11 +4,11 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Registers {@link ApplyProperties}, mirroring
+ * Registers {@link ApplyProperties} and {@link CompanyLinkProperties}, mirroring
  * {@code ai.AiConfiguration}'s explicit {@code @EnableConfigurationProperties} pattern so this
  * package self-registers without touching the application's main class.
  */
 @Configuration
-@EnableConfigurationProperties(ApplyProperties.class)
+@EnableConfigurationProperties({ApplyProperties.class, CompanyLinkProperties.class})
 public class ApplyConfiguration {
 }

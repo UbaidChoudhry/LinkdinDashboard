@@ -175,6 +175,26 @@ class ApplyPromptBuilderTest {
     }
 
     @Test
+    void aLinkedInJobsMatchedLinkIsCheckedForTheSameJobBeforeFilling() {
+        JobListing linkedin = new JobListing(
+                1L, "4462098122", "linkedin", "Software Development Engineer", "Amazon", "Seattle, WA",
+                Instant.parse("2026-09-23T00:00:00Z"), Instant.parse("2026-09-23T00:00:00Z"),
+                Instant.parse("2026-09-23T00:00:00Z"), 31L, "https://www.linkedin.com/jobs/view/4462098122", null,
+                FilterVerdict.PASS, 1, null, (UserStatus) null, null, null, "ok",
+                "https://www.amazon.jobs/en/jobs/10523955/sde", "amazon.jobs", "<p>Build things.</p>", "hash",
+                null, null, null, null, false, null, null, null, null);
+
+        String matched = builder.build(linkedin, resume(), Path.of("/data/resumes/1.pdf"), profile(), false, 4000,
+                linkedin.applyUrl(), Optional.empty(), List.of(), List.of());
+        String native_ = builder.build(job("<p>Great role</p>"), resume(), Path.of("/data/resumes/1.pdf"), profile(),
+                false, 4000);
+
+        assertThat(matched).contains("found by matching a LinkedIn posting to the employer's own site");
+        assertThat(matched).contains("\"matched link is a different job: \"");
+        assertThat(native_).doesNotContain("found by matching a LinkedIn posting");
+    }
+
+    @Test
     void postingUrlOverloadRendersAsJobUrl() {
         String applyUrl = "https://boards.greenhouse.io/embed/job_app?for=acme&token=999";
         String prompt = builder.build(job("<p>Great role</p>"), resume(), Path.of("/data/resumes/1.pdf"),

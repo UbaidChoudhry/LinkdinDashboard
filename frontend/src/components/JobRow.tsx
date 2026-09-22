@@ -26,6 +26,54 @@ const APPLICATION_STATUS_LABELS: Record<string, string> = {
   queued: "Queued",
 };
 
+/**
+ * The Match column: how sure the company-link finder is that the posting it found on the
+ * employer's own site is this LinkedIn job. The badge links to that posting; only a match the
+ * backend was confident enough to make the apply link (applyUrl) is used by Apply with Claude.
+ */
+function MatchCell({ job }: { job: JobResponse }) {
+  if (job.source !== "linkedin") return <span className="muted">—</span>;
+  const confidence = job.companyLinkConfidence;
+  if (confidence == null) {
+    return job.applyDomain ? (
+      <span className="match-badge high" title="Read from LinkedIn's own Apply button">
+        exact
+      </span>
+    ) : (
+      <span className="muted" title="Not searched yet - use Find company links">
+        —
+      </span>
+    );
+  }
+  const compared = job.companyLinkMatchedOn?.length ? `Agreed on: ${job.companyLinkMatchedOn.join(", ")}. ` : "";
+  if (!job.companyLinkUrl) {
+    return (
+      <span className="match-badge none" title={`No posting found on the employer's site. ${job.companyLinkNote ?? ""}`}>
+        none
+      </span>
+    );
+  }
+  const used = job.applyUrl === job.companyLinkUrl;
+  const tier = confidence >= 80 ? "high" : confidence >= 60 ? "medium" : "low";
+  const title =
+    compared +
+    (job.companyLinkNote ?? "") +
+    (used
+      ? "\nApply with Claude uses this link."
+      : "\nToo uncertain to apply to automatically - open it, and if it's the right job paste it into the Apply tab.");
+  return (
+    <a
+      className={used ? `match-badge ${tier}` : `match-badge ${tier} unused`}
+      href={job.companyLinkUrl}
+      target="_blank"
+      rel="noreferrer"
+      title={title}
+    >
+      {confidence}%
+    </a>
+  );
+}
+
 /** Human-readable label for the `salarySource` recorded by the backend enrichment step. */
 function salarySourceLabel(source: string | null | undefined): string | null {
   switch (source) {
@@ -165,6 +213,9 @@ export function JobRow({ job, tab, onChanged, onError, grouped = false, selected
         ) : (
           sourceLabel && <span className="salary-source"> {sourceLabel}</span>
         )}
+      </td>
+      <td className="col-match">
+        <MatchCell job={job} />
       </td>
       <td className="col-actions">
         {tab === "search" && (

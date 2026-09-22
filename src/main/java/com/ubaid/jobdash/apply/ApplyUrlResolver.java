@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Optional;
@@ -92,6 +93,36 @@ public class ApplyUrlResolver {
             return Optional.empty();
         }
         return Optional.of(greenhouseEmbedUrl(slug, job.sourceJobId()));
+    }
+
+    /**
+     * {@code greenhouse} / {@code lever} / {@code workday} by host, otherwise the host itself
+     * without a leading {@code www.} (e.g. {@code jobbol.com.br}); {@code other} when unparseable - what
+     * {@code job_listing.apply_domain} holds for a link that did not come from the job's own source.
+     */
+    public static String domainOf(String url) {
+        if (url == null || url.isBlank()) {
+            return "other";
+        }
+        try {
+            String host = URI.create(url.trim()).getHost();
+            if (host == null || host.isBlank()) {
+                return "other";
+            }
+            String h = host.toLowerCase();
+            if (h.contains("greenhouse.io")) {
+                return "greenhouse";
+            }
+            if (h.contains("lever.co")) {
+                return "lever";
+            }
+            if (h.contains("myworkdayjobs.com")) {
+                return "workday";
+            }
+            return h.startsWith("www.") ? h.substring(4) : h;
+        } catch (RuntimeException e) {
+            return "other";
+        }
     }
 
     /**

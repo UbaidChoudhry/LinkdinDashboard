@@ -75,6 +75,7 @@ export function CompanyGroupRow({ group, expanded, onToggle, selectedCount, onTo
       </td>
       <td title={absoluteTime(newest)}>{relativeTime(newest)}</td>
       <td className="col-salary">{topSalary == null ? "–" : `up to ${formatUsd(topSalary)}`}</td>
+      <td className="col-match" />
       <td className="col-actions" />
     </tr>
   );

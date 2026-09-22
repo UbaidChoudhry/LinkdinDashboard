@@ -26,6 +26,11 @@ export const RUN_STATUS_INFO: Record<string, RunStatusInfo> = {
     message: "All sources have been fetched; Claude is now comparing each job description against your resume.",
     kind: "info",
   },
+  finding_links: {
+    label: "Finding company links",
+    message: "Looking for each recommended LinkedIn job on the employer's own careers site…",
+    kind: "info",
+  },
   ok: {
     label: "Completed",
     message: "The run finished normally.",
@@ -87,8 +92,8 @@ export function runStatusInfo(status: string | null | undefined): RunStatusInfo 
 }
 
 /**
- * Statuses that mean the run is still working. `fetching_details` and `scanning` are
- * deliberately included: they are the phases after collection, and the server keeps the SSE
+ * Statuses that mean the run is still working. `fetching_details`, `scanning` and
+ * `finding_links` are deliberately included: they are the phases after collection, and the server keeps the SSE
  * stream open through them (RunController's IN_FLIGHT_STATUSES is the mirror of this set).
  *
  * Treating anything that isn't `"running"` as finished is the bug this exists to prevent - it
@@ -100,6 +105,7 @@ export const IN_FLIGHT_STATUSES: ReadonlySet<string> = new Set([
   "running",
   "fetching_details",
   "scanning",
+  "finding_links",
 ]);
 
 /** True while a run is still working (collecting or scanning). */

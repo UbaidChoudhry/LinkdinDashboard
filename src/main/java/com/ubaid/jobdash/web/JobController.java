@@ -1,6 +1,7 @@
 package com.ubaid.jobdash.web;
 
 import com.ubaid.jobdash.domain.AiMatch;
+import com.ubaid.jobdash.domain.CompanyLinkMatch;
 import com.ubaid.jobdash.domain.FilterVerdict;
 import com.ubaid.jobdash.domain.JobApplication;
 import com.ubaid.jobdash.domain.JobListing;
@@ -10,6 +11,7 @@ import com.ubaid.jobdash.domain.UserStatus;
 import com.ubaid.jobdash.filter.FilterEngine;
 import com.ubaid.jobdash.store.AiMatchRepository;
 import com.ubaid.jobdash.store.ApplicationRepository;
+import com.ubaid.jobdash.store.CompanyLinkMatchRepository;
 import com.ubaid.jobdash.store.JobListingRepository;
 import com.ubaid.jobdash.store.ResumeRepository;
 import com.ubaid.jobdash.store.SweepRunRepository;
@@ -46,18 +48,20 @@ public class JobController {
     private final ResumeRepository resumeRepository;
     private final AiMatchRepository aiMatchRepository;
     private final ApplicationRepository applicationRepository;
+    private final CompanyLinkMatchRepository companyLinkMatchRepository;
     private final Clock clock;
 
     public JobController(JobListingRepository jobListingRepository, SweepRunRepository sweepRunRepository,
                           FilterEngine filterEngine, ResumeRepository resumeRepository,
                           AiMatchRepository aiMatchRepository, ApplicationRepository applicationRepository,
-                          Clock clock) {
+                          CompanyLinkMatchRepository companyLinkMatchRepository, Clock clock) {
         this.jobListingRepository = jobListingRepository;
         this.sweepRunRepository = sweepRunRepository;
         this.filterEngine = filterEngine;
         this.resumeRepository = resumeRepository;
         this.aiMatchRepository = aiMatchRepository;
         this.applicationRepository = applicationRepository;
+        this.companyLinkMatchRepository = companyLinkMatchRepository;
         this.clock = clock;
     }
 
@@ -92,9 +96,12 @@ public class JobController {
                 : aiMatchRepository.findByJobIds(sorted.stream().map(JobListing::jobId).toList(), effectiveResumeId);
         Map<Long, JobApplication> applications = applicationRepository.findLatestByJobIds(
                 sorted.stream().map(JobListing::jobId).toList());
+        Map<Long, CompanyLinkMatch> companyLinks = companyLinkMatchRepository.findByJobIds(
+                sorted.stream().map(JobListing::jobId).toList());
 
         return sorted.stream()
-                .map(job -> JobResponse.from(job, aiMatches.get(job.jobId()), applications.get(job.jobId())))
+                .map(job -> JobResponse.from(job, aiMatches.get(job.jobId()), applications.get(job.jobId()),
+                        companyLinks.get(job.jobId())))
                 .toList();
     }
 

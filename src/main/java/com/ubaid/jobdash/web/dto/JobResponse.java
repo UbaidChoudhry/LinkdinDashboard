@@ -50,7 +50,11 @@ public record JobResponse(
         String applicationStatus,
         String applicationNotes,
         String applyKind,
-        String applyMatchNote
+        String applyMatchNote,
+        String companyLinkUrl,
+        Integer companyLinkConfidence,
+        java.util.List<String> companyLinkMatchedOn,
+        String companyLinkNote
 ) {
 
     /** Builds a response with no AI match context - {@code aiRecommended}/{@code aiReason} are null. */
@@ -69,6 +73,17 @@ public record JobResponse(
      * "never attempted", not "failed".
      */
     public static JobResponse from(JobListing job, AiMatch aiMatch, JobApplication application) {
+        return from(job, aiMatch, application, null);
+    }
+
+    /**
+     * As above, plus the company-link finder's result for a LinkedIn job, if it has looked:
+     * {@code companyLinkUrl} is the posting it found (empty when it found none, and shown even below
+     * {@code apply.company-links.min-confidence} - {@code applyUrl} is only set at or above it),
+     * {@code companyLinkConfidence} 0-100. All four null means it never looked.
+     */
+    public static JobResponse from(JobListing job, AiMatch aiMatch, JobApplication application,
+                                   com.ubaid.jobdash.domain.CompanyLinkMatch companyLink) {
         return new JobResponse(
                 job.jobId(),
                 job.source(),
@@ -99,7 +114,11 @@ public record JobResponse(
                 application == null ? null : application.status(),
                 application == null ? null : application.notes(),
                 job.applyKind(),
-                job.applyMatchNote()
+                job.applyMatchNote(),
+                companyLink == null ? null : companyLink.url(),
+                companyLink == null ? null : companyLink.confidence(),
+                companyLink == null ? null : companyLink.matchedOn(),
+                companyLink == null ? null : companyLink.note()
         );
     }
 }

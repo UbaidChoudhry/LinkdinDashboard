@@ -261,7 +261,7 @@ which has zero commits. First commit is yours to make.
 before the first commit** — `data/jobdash.db` may contain real scraped job data you don't want
 in version control.
 
-Test counts by suite are in [CODEMAP.md](CODEMAP.md). Run `./mvnw test` and expect **542
+Test counts by suite are in [CODEMAP.md](CODEMAP.md). Run `./mvnw test` and expect **555
 passing**.
 
 ---
@@ -1466,7 +1466,7 @@ type), the Re-scan hook that ran it, and the repository methods only it used
 even read-only, never-click automation on a signed-in LinkedIn account gets that account banned,
 burner or not - do not bring back anything that signs in to LinkedIn.** The user now opens LinkedIn
 postings by hand and pastes the company's apply URL into the Apply tab (§12, "Apply tab, parallel
-batches"). Links the resolver had already written stay on their rows (`apply_url`/`apply_domain`)
+batches") - and, the same day, §14 replaced the step with a web search of the employer's own site. Links the resolver had already written stay on their rows (`apply_url`/`apply_domain`)
 and Apply with Claude still uses them - that is company-site data, and using it touches no LinkedIn
 page. Everything below is the history of what was built and why.
 
@@ -1632,3 +1632,77 @@ next boot failed Flyway validation ("Migration checksum mismatch for migration v
 Flyway checksums the whole file, comments included. Reverting the two lines byte-for-byte fixed
 it. The §5 rule "never hand-edit a shipped migration" covers comments too; explain history here,
 not in the migration.
+
+## 14. LinkedIn jobs → the same job on the employer's own site (2026-09-23)
+
+**What it does.** For each recommended LinkedIn job with no apply link, `apply/CompanyLinkFinder`
+asks Claude - with **web search and web fetch only**, no browser, LinkedIn fetches refused - to find
+the same posting on the employer's own careers site or ATS, comparing title, location,
+description, requisition id and posting date, and to say how confident it is (0-100). The result
+is shown in the Results tab's **Match** column; a match at or above
+`apply.company-links.min-confidence` (70) becomes the job's `apply_url`, so Apply with Claude
+applies there. It runs as run phase 6 after the AI scan (status `finding_links`) and from the
+Results tab's **Find company links** button (`POST /api/company-links/search`), one search at a
+time. It replaces §13's signed-in route, which got the account banned, at the user's request.
+
+**Why this works where §13's first approach (the catalog matcher, 11/39) did not:** that matcher
+could only compare against boards in the `ats_company` catalog, and 28 of 39 companies were not in
+it. A web search is not limited to a catalog - amazon.jobs, careers.walmart.com and an Ashby board
+were all found in the first probe.
+
+**Measured before building (2026-09-23), `claude -p --safe-mode --tools WebSearch WebFetch`:**
+
+| Run | Jobs | Result | Cost | Time |
+|---|---|---|---|---|
+| Probe (shell) | AWS, Walmart, Klarity, voiceERP (Easy Apply) | amazon.jobs 95, careers.walmart.com R-2586222 95, Klarity's Ashby board 75, voiceERP correctly "not found" (only on aggregators) | $0.72 | 2:03 |
+| Live check through the Java code | Walmart, LiveRamp | Walmart **missed** (20, no link); LiveRamp's Workday "Senior Software Engineer - Healthcare" at 45 - a level mismatch, rightly below the bar | $0.45 | 1:43 |
+| Same, after the prompt fix below | Walmart | R-2586222 at 97, requisition matched, became the apply link | $0.24 | 0:49 |
+
+Things those runs established:
+
+- **The init event lists exactly `StructuredOutput`, `WebFetch`, `WebSearch`** with `--safe-mode`, so
+  no MCP server (no Chrome) is reachable. LinkedIn is refused twice: `--disallowedTools
+  "WebFetch(domain:linkedin.com)" "WebFetch(domain:www.linkedin.com)"` and the prompt. Search results
+  may *mention* LinkedIn pages; that is Anthropic's search, not a request from this machine.
+- **Web search is not deterministic.** The same live Walmart posting was found at 95 and then missed
+  with the same prompt. Walmart has dozens of "Software Engineer III, Bentonville" openings, and the
+  hit came from searching a phrase unique to the description ("Atlas WMS"). The prompt now says to
+  search a distinctive description phrase in quotes whenever an employer has many openings with that
+  title, that a 404 is a closed posting to look past, and allows about five searches per job.
+- **A server-side check catches dead links, not invented ones.** A made-up amazon.jobs URL answers
+  404; a made-up Ashby URL answers 200 with a generic "Jobs" page (a JS app). So the finder drops a
+  404/410, and relies on the prompt's "only return a URL you fetched or saw in search results" for
+  the rest. Workday pages are JS-rendered too, so `WebFetch` often cannot read them and confidence
+  comes out lower (LiveRamp) - by design, not a bug.
+- **Cost is about $0.18-0.24 per job** at 4 jobs per call, 3 calls at once - roughly $20-28 for a run
+  with ~117 recommended LinkedIn jobs. **There is no per-run cap** (the user's standing rule after
+  §13's `max-per-run` - never add a limit they did not ask for). `min-confidence` is a quality bar,
+  not a cap: every job is searched, weaker matches are shown, they just are not applied to.
+
+**Design decisions:**
+
+- **Results live in their own table, `company_link_match` (V16), not new `job_listing` columns.**
+  It keeps every answer - weak matches and "not found" included - so the Match column can show them,
+  and a job with a row is never searched again. `JobListing` is also constructed positionally in a
+  large number of tests; a side table read with one batched query (`findByJobIds`, like `ai_match`)
+  avoids touching all of them. Only a confident match writes `job_listing.apply_url`/`apply_domain`
+  (`apply_match_note` "company site, 95% match: ..."), which is all `ApplyUrlResolver` and
+  `ApplyOrchestrator` need - a Greenhouse/Lever link is rewritten to its form page and a company page
+  goes through `EmbeddedFormDetector`, exactly as for a pasted URL.
+- **Easy Apply jobs are searched too.** The LinkedIn posting being Easy Apply says nothing about
+  whether the employer also posts it on its own site.
+- **A failed or unreported job is retried, a "not found" is not.** A CLI failure or timeout writes
+  no rows, so the next search picks those jobs up; a job Claude answered for (found or not) has a
+  row and is skipped. To search one again, delete its row: `delete from company_link_match where
+  job_id = ?`.
+- **Apply with Claude double-checks a LinkedIn job's page.** Its prompt now says the JOB URL came from
+  a match and could be a different job: compare the page's title, company and location first, and
+  stop with outcome `not_found` and "matched link is a different job: ..." if it clearly is.
+- **`finding_links` went through the whole in-flight checklist** (§13, "Where the `matching` phase
+  sits"): `RunController.IN_FLIGHT_STATUSES`, `SweepProgress`'s javadoc, `runStatus.ts`'s
+  `IN_FLIGHT_STATUSES` *and* `RUN_STATUS_INFO`, and the `RunStatus` type.
+
+**Open items:** nobody has watched a full run's worth yet - the first real search over run 31's ~117
+jobs is the test of the hit rate and the cost estimate; read `logs/apply.log`'s `company links`
+lines. The description goes into the prompt truncated to 1,500 characters (`DESCRIPTION_CHARS`),
+which is what the probes used.

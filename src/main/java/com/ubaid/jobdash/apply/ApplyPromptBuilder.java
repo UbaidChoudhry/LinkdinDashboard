@@ -135,6 +135,19 @@ public class ApplyPromptBuilder {
 
         String directFormUrlLine = directFormUrl.map(url -> "\nDIRECT APPLY FORM URL: " + url).orElse("");
 
+        // A LinkedIn job's apply link is someone's match of that posting to the employer's own site
+        // (CompanyLinkFinder), not a link LinkedIn gave us - so the page could be a different job.
+        String sameJobCheck = "linkedin".equals(job.source())
+                ? """
+                  The JOB URL below was found by matching a LinkedIn posting to the employer's own site, \
+                  so it could be a different job. Before filling anything, check the page's job title, \
+                  company and location against TITLE, COMPANY and LOCATION below. If it is clearly a \
+                  different job, stop and set "outcome" to "not_found" with summary "matched link is a \
+                  different job: " followed by the page's title and location.
+
+                  """
+                : "";
+
         String knownAnswers = knownAnswersSection(answers);
         String pendingQuestions = pendingQuestionsSection(answers);
         String formQuestionsSection = formQuestionsSection(formQuestions);
@@ -196,7 +209,7 @@ public class ApplyPromptBuilder {
 
                 %s
 
-                The application form may sit inside a cross-origin iframe on the company's own site;
+                %sThe application form may sit inside a cross-origin iframe on the company's own site;
                 if find/read_page cannot see the form's fields, do not keep trying coordinates - go to
                 the DIRECT APPLY FORM URL (or stop with outcome failed, summary "form in cross-origin
                 iframe, no direct URL"), never click Attach/Browse.
@@ -273,6 +286,7 @@ public class ApplyPromptBuilder {
                 """.formatted(
                 openStep,
                 submitInstruction,
+                sameJobCheck,
                 nullToEmpty(postingUrl),
                 directFormUrlLine,
                 pasted ? readFromPage : nullToEmpty(job.title()),

@@ -1,6 +1,8 @@
 package com.ubaid.jobdash.sweep;
 
 import com.ubaid.jobdash.ai.ResumeMatchService;
+import com.ubaid.jobdash.apply.CompanyLinkFinder;
+import com.ubaid.jobdash.apply.CompanyLinkProperties;
 import com.ubaid.jobdash.source.location.LocationClassifier;
 import com.ubaid.jobdash.ai.ScanProgressListener;
 import com.ubaid.jobdash.domain.Resume;
@@ -62,6 +64,8 @@ class RunOrchestratorTest {
     private ResumeMatchService resumeMatchService;
     @Mock
     private LocationClassifier locationClassifier;
+    @Mock
+    private CompanyLinkFinder companyLinkFinder;
 
     private RunOrchestrator orchestrator;
     private RunProgressRegistry registry;
@@ -75,7 +79,8 @@ class RunOrchestratorTest {
         clock = Clock.fixed(NOW, ZoneOffset.UTC);
         registry = new RunProgressRegistry();
         orchestrator = new RunOrchestrator(sweepService, atsSweepService, detailFetchService, sweepRunRepository,
-                resumeRepository, resumeMatchService, locationClassifier, registry, clock);
+                resumeRepository, resumeMatchService, locationClassifier, companyLinkFinder, linkProperties(true),
+                registry, clock);
     }
 
     @Test
@@ -370,5 +375,97 @@ class RunOrchestratorTest {
 
         verifyNoInteractions(detailFetchService, resumeMatchService);
         verify(sweepRunRepository, never()).finish(anyLong(), any(), any());
+    }
+
+    // ---- Company links phase (status "finding_links") ---------------------------------------------------------
+
+    private static CompanyLinkProperties linkProperties(boolean enabled) {
+        return new CompanyLinkProperties(enabled, "sonnet", 4, 3, 70, 80, 3.0, java.time.Duration.ofMinutes(15));
+    }
+
+    /** The finder runs after the scan, over the scan's resume, with "finding_links" published meanwhile. */
+    @Test
+    void executeRunFindsCompanyLinksAfterTheScanWithTheScannedResume() {
+        when(sweepService.createRun(SWEEP_REQUEST, "linkedin", 3L)).thenReturn(RUN_ID);
+        when(sweepService.collect(eq(RUN_ID), eq(SWEEP_REQUEST))).thenReturn("ok");
+        when(detailFetchService.fetchForRun(eq(RUN_ID), any())).thenReturn("ok");
+        java.util.concurrent.atomic.AtomicReference<String> statusDuringSearch = new java.util.concurrent.atomic.AtomicReference<>();
+        when(companyLinkFinder.find(eq(RUN_ID), eq(3L), any())).thenAnswer(inv -> {
+            statusDuringSearch.set(registry.progress(RUN_ID).map(SweepProgress::status).orElse(null));
+            return Optional.empty();
+        });
+
+        orchestrator.startRun(SWEEP_REQUEST, List.of("linkedin"), 3L, false);
+
+        InOrder order = inOrder(resumeMatchService, companyLinkFinder, sweepRunRepository);
+        order.verify(resumeMatchService, timeout(2000))
+                .scan(eq(RUN_ID), eq(3L), any(BooleanSupplier.class), any(ScanProgressListener.class));
+        order.verify(companyLinkFinder, timeout(2000)).find(eq(RUN_ID), eq(3L), any());
+        order.verify(sweepRunRepository, timeout(2000)).finish(eq(RUN_ID), any(), eq("ok"));
+        assertThat(statusDuringSearch.get()).isEqualTo("finding_links");
+    }
+
+    /** The Retry/resume path searches after its own scan too, with the run's own resume. */
+    @Test
+    void executeResumeFindsCompanyLinksAfterTheScan() {
+        when(sweepRunRepository.findById(RUN_ID))
+                .thenReturn(Optional.of(finishedRun("blocked", "linkedin,greenhouse", 3L)));
+        when(sweepRunRepository.reopen(RUN_ID, "fetching_details")).thenReturn(1);
+        when(detailFetchService.fetchForRun(eq(RUN_ID), any())).thenReturn("ok");
+
+        orchestrator.resumeRun(RUN_ID);
+
+        InOrder order = inOrder(resumeMatchService, companyLinkFinder, sweepRunRepository);
+        order.verify(resumeMatchService, timeout(2000))
+                .scan(eq(RUN_ID), eq(3L), any(BooleanSupplier.class), any(ScanProgressListener.class));
+        order.verify(companyLinkFinder, timeout(2000)).find(eq(RUN_ID), eq(3L), any());
+        order.verify(sweepRunRepository, timeout(2000)).finish(eq(RUN_ID), any(), eq("ok"));
+    }
+
+    /** A cancellation during the scan must stop the search from ever starting. */
+    @Test
+    void companyLinksAreSkippedWhenCancelledDuringTheScan() {
+        when(sweepService.createRun(SWEEP_REQUEST, "linkedin", 3L)).thenReturn(RUN_ID);
+        when(sweepService.collect(eq(RUN_ID), eq(SWEEP_REQUEST))).thenReturn("ok");
+        when(detailFetchService.fetchForRun(eq(RUN_ID), any())).thenReturn("ok");
+        org.mockito.Mockito.doAnswer(inv -> {
+            registry.cancelFlag(RUN_ID).set(true);
+            return null;
+        }).when(resumeMatchService).scan(eq(RUN_ID), eq(3L), any(BooleanSupplier.class), any(ScanProgressListener.class));
+
+        orchestrator.startRun(SWEEP_REQUEST, List.of("linkedin"), 3L, false);
+
+        verify(sweepRunRepository, timeout(2000)).finish(eq(RUN_ID), any(), eq("cancelled"));
+        verifyNoInteractions(companyLinkFinder);
+    }
+
+    /** apply.company-links.enabled=false skips the search entirely. */
+    @Test
+    void companyLinksAreSkippedWhenDisabled() {
+        RunOrchestrator disabledOrchestrator = new RunOrchestrator(sweepService, atsSweepService, detailFetchService,
+                sweepRunRepository, resumeRepository, resumeMatchService, locationClassifier, companyLinkFinder,
+                linkProperties(false), registry, clock);
+        when(sweepService.createRun(SWEEP_REQUEST, "linkedin", 3L)).thenReturn(RUN_ID);
+        when(sweepService.collect(eq(RUN_ID), eq(SWEEP_REQUEST))).thenReturn("ok");
+        when(detailFetchService.fetchForRun(eq(RUN_ID), any())).thenReturn("ok");
+
+        disabledOrchestrator.startRun(SWEEP_REQUEST, List.of("linkedin"), 3L, false);
+
+        verify(sweepRunRepository, timeout(2000)).finish(eq(RUN_ID), any(), eq("ok"));
+        verifyNoInteractions(companyLinkFinder);
+    }
+
+    /** No resume means no scan, so no recommendations to search for. */
+    @Test
+    void companyLinksAreSkippedWhenThereIsNoResumeToScanWith() {
+        lenient().when(sweepRunRepository.create(any(), any(), any(), anyInt(), anyBoolean(), any(), any(), any()))
+                .thenReturn(RUN_ID);
+        when(atsSweepService.run(eq(RUN_ID), any(), any())).thenReturn("ok");
+        when(resumeRepository.findDefault()).thenReturn(Optional.empty());
+
+        orchestrator.startRun(SWEEP_REQUEST, List.of("greenhouse"), null, false);
+
+        verify(sweepRunRepository, timeout(2000)).finish(eq(RUN_ID), any(), eq("ok"));
+        verifyNoInteractions(companyLinkFinder);
     }
 }

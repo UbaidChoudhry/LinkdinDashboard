@@ -84,39 +84,10 @@ public class PastedUrlJobs {
                     url, null, null);
             jobListingRepository.upsertAll(List.of(card), 0, now);
             long jobId = jobListingRepository.findIdBySourceKey(SOURCE, url).orElseThrow();
-            jobListingRepository.setApplyTarget(jobId, url, domainOf(url), "pasted URL");
+            jobListingRepository.setApplyTarget(jobId, url, ApplyUrlResolver.domainOf(url), "pasted URL");
             jobIds.add(jobId);
         }
         return jobIds;
-    }
-
-    /**
-     * {@code greenhouse} / {@code lever} / {@code workday} by host, otherwise the host itself
-     * without a leading {@code www.} (e.g. {@code jobbol.com.br}); {@code other} when unparseable.
-     */
-    static String domainOf(String url) {
-        if (url == null || url.isBlank()) {
-            return "other";
-        }
-        try {
-            String host = URI.create(url.trim()).getHost();
-            if (host == null || host.isBlank()) {
-                return "other";
-            }
-            String h = host.toLowerCase();
-            if (h.contains("greenhouse.io")) {
-                return "greenhouse";
-            }
-            if (h.contains("lever.co")) {
-                return "lever";
-            }
-            if (h.contains("myworkdayjobs.com")) {
-                return "workday";
-            }
-            return h.startsWith("www.") ? h.substring(4) : h;
-        } catch (RuntimeException e) {
-            return "other";
-        }
     }
 
     /**
