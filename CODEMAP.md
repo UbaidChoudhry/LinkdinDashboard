@@ -12,7 +12,7 @@ frontend/  React + TypeScript dashboard (Vite dev server, :5173)
 src/       Spring Boot backend (Java 21, :8080)
              ├─ main/java/com/ubaid/jobdash/   application code, by package (below)
              ├─ main/resources/                application.yml, Flyway migrations
-             └─ test/                          mirrors main/java/, 555 tests
+             └─ test/                          mirrors main/java/, 568 tests
 data/      the SQLite database file (gitignored, created on first boot)
 ```
 
@@ -43,6 +43,8 @@ POST /api/runs { sources: [...] }            [RunController -> RunOrchestrator]
    2. any board selected    → AtsSweepService.run      (Flow A' — one pass per enabled company)
    3. if 1 ended "ok"       → DetailFetchService       (Flow A phase 2 — LinkedIn descriptions)
    4. if 2 ended "ok"       → LocationClassifier
+   4b. unless cancelled     → RemoteClassifier         (remote or not, from each description; every
+                                                          undecided row, any run - HANDOFF.md §15)
    5. unless cancelled      → ResumeMatchService       (the AI scan, over everything collected)
    6. if 5 ran, enabled     → CompanyLinkFinder        (web-searches each recommended LinkedIn job
                                                           on the employer's own site; status
@@ -250,7 +252,7 @@ must switch exhaustively. Implementations **never throw** — same discipline as
 | `source/lever/` | one request returns the whole board; ids are UUIDs, `createdAt` is epoch ms. **HTTP 200 + `[]` is a live board with no jobs, NOT a dead slug** |
 | `source/workday/` | two-phase: a server-side-filtered search page, then one detail request per job for the description and real date; the run's hours window is enforced on that date (and the prose `postedOn` skips obviously stale jobs before a detail request). `WorkdaySiteResolver` discovers the site id from the tenant's `robots.txt` |
 | `source/ats/` | `AtsRateLimiter` (pacing + per-source daily cap off `external_request_log` — **never** LinkedIn's `request_log`), `AtsProperties`, and `SlugCatalogImportService` / `SlugImportRunner` behind `./import-slugs.sh` |
-| `source/location/` | `LocationClassifier` asks Claude whether each free-form location is in the US, once per run and cached forever in `location_verdict`. Non-US rows are hidden by a predicate in `JobListingRepository`'s read queries, **not** by `filter_verdict` (FilterEngine would overwrite it). See HANDOFF.md §9 |
+| `source/location/` | `LocationClassifier` asks Claude whether each free-form location is in the US, once per run and cached forever in `location_verdict`. Non-US rows are hidden by a predicate in `JobListingRepository`'s read queries, **not** by `filter_verdict` (FilterEngine would overwrite it). See HANDOFF.md §9. `RemoteClassifier` decides remote-or-not per job into `job_listing.remote`: no call for a posting that never mentions remote work, otherwise batched description excerpts to Claude. Run phase 4b and the Re-scan button. See HANDOFF.md §15 |
 
 `sweep/OrphanedRunReaper` runs once at startup and closes out any run left `running` by a killed
 process. Without it a single interrupted run blocks every future run **and** cannot be cancelled
@@ -400,8 +402,9 @@ components/
   ApplicantProfileForm.tsx    the single-row applicant profile (work authorization, sponsorship,
                               salary expectation, etc.) that fills in what a resume can't answer
   RunProgress.tsx            live counters + saturation warning + cancel button
-  JobsPanel.tsx               the 3-tab job table, owns which tab/sort is active + the Source and
-                              Min salary filters (Source also narrows the AI buckets and Apply)
+  JobsPanel.tsx               the 3-tab job table, owns which tab/sort is active + the Company and
+                              Location search, Remote, Source and Min salary filters (all but Min
+                              salary also narrow the AI bucket counts and what Apply acts on)
   ApplyControls.tsx           "Apply with Claude" button + Submit toggle, mounted in the Results
                               tab's bucket bar next to Re-scan (batch lifecycle: useApplyBatch)
   UrlApplyPanel.tsx           the Apply tab: paste posting URLs, pick resume / how many at a time /
@@ -409,8 +412,8 @@ components/
   ApplyBatchView.tsx          what both of the above render for a batch: the status line (every
                               job filling right now, with Claude's last action) and the Details list
   CompanyLinkControls.tsx     "Find company links" button + live progress, in the Results tab's bucket bar
-  JobRow.tsx                  one row: title link, company, location, posted, salary (+ source label), Match, actions,
-                              application status badge
+  JobRow.tsx                  one row: title link, company, location, Remote, posted, salary (+ source label), Match,
+                              actions, application status badge
   SortableHeader.tsx          clickable <th>, shared by the job table
   RunsPanel.tsx               "Runs" tab: a static table of past runs (newest first) for
                               side-by-side comparison - counters, sources, status, AI scan stats
@@ -420,6 +423,8 @@ components/
   CompanyGroupRow.tsx         collapsed summary row for a company with 2+ jobs (Group by company)
 utils/
   sort.ts                     sortJobsBy() — mirrors JobSortOrder.java, plus per-column sort + filterByMinSalary()
+                              + filterBySearch() (the Company / Location boxes, case-insensitive substring)
+                              + filterByRemote(); missing values sort last in both directions
   group.ts                    groupByCompany() — buckets an ALREADY-SORTED list, preserving order
                               between and within groups, so the active sort keeps working untouched
   format.ts                   relative/absolute time, byte-size formatting
@@ -467,6 +472,8 @@ One SQLite file, `data/jobdash.db`, WAL mode. Schema lives in
 
 ```
 job_listing        the results. See JobListingRepository above for the upsert rule.
+                     remote/remote_note: RemoteClassifier's 0/1 (NULL = not decided yet) and the
+                     posting's words that decided it (V17)
                      apply_kind: LinkedIn's own Easy Apply (onsite) vs offsite marker, informational
                      only (V15). apply_match_note: why a row has the apply_url it has (the ↗ link's
                      tooltip) - "pasted URL", or a note left by the removed LinkedIn link step (V15)
@@ -517,7 +524,7 @@ Test packages mirror `main/java` exactly — if you're looking for tests of
   file names for what each fixture represents (the two 26-byte files are the real end-of-results
   sentinel, not corrupt captures).
 
-Current count: **555 tests**. Run `./mvnw test`. Salary tests follow the same rules — the
+Current count: **568 tests**. Run `./mvnw test`. Salary tests follow the same rules — the
 Adzuna / h1bapi sources are driven through `StubHttpClient`, `SalaryRateLimiter` through
 `FakeClock`/`FakeSleeper`, and `LcaImportServiceTest` generates a tiny `.xlsx` in memory.
 

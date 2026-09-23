@@ -40,8 +40,39 @@ export function filterByMinSalary(jobs: JobResponse[], min: number | null): JobR
   return jobs.filter((j) => j.salaryMax == null || j.salaryMax >= min);
 }
 
+/**
+ * The Results tab's Company and Location boxes: a case-insensitive substring match on each. A
+ * blank box matches everything; with both filled, a job must match both. Order is preserved.
+ */
+export function filterBySearch(jobs: JobResponse[], company: string, location: string): JobResponse[] {
+  const companyQuery = company.trim().toLowerCase();
+  const locationQuery = location.trim().toLowerCase();
+  if (companyQuery === "" && locationQuery === "") return jobs;
+  return jobs.filter(
+    (j) =>
+      j.company.toLowerCase().includes(companyQuery) &&
+      (j.location ?? "").toLowerCase().includes(locationQuery),
+  );
+}
+
+/** The Remote dropdown: every row, remote only, not remote only, or rows not decided yet. */
+export type RemoteFilter = "all" | "yes" | "no" | "unknown";
+
+export function filterByRemote(jobs: JobResponse[], filter: RemoteFilter): JobResponse[] {
+  if (filter === "all") return jobs;
+  return jobs.filter((j) => (filter === "unknown" ? j.remote == null : j.remote === (filter === "yes")));
+}
+
 /** Any table column the user can click to sort by. "default" is the salary-bucket view above. */
-export type SortColumn = "default" | "title" | "company" | "location" | "postedAt" | "salary" | "match";
+export type SortColumn =
+  | "default"
+  | "title"
+  | "company"
+  | "location"
+  | "remote"
+  | "postedAt"
+  | "salary"
+  | "match";
 export type SortDirection = "asc" | "desc";
 
 export interface SortState {
@@ -94,6 +125,9 @@ function columnCompare(column: SortColumn, a: JobResponse, b: JobResponse): numb
       return compareStrings(a.company, b.company);
     case "location":
       return compareStrings(a.location ?? "", b.location ?? "");
+    case "remote":
+      // Yes above No; undecided rows last either way, like a missing salary.
+      return compareNullableNumber(a.remote == null ? null : Number(a.remote), b.remote == null ? null : Number(b.remote));
     case "postedAt":
       return compareNullableTime(a.postedAt, b.postedAt);
     case "salary":
@@ -105,12 +139,34 @@ function columnCompare(column: SortColumn, a: JobResponse, b: JobResponse): numb
   }
 }
 
+/** Whether a row has no value in a sortable column - such rows sort last in both directions. */
+function isMissing(column: SortColumn, job: JobResponse): boolean {
+  switch (column) {
+    case "postedAt":
+      return job.postedAt == null;
+    case "salary":
+      return job.salaryMax == null;
+    case "match":
+      return matchConfidence(job) == null;
+    case "remote":
+      return job.remote == null;
+    default:
+      return false;
+  }
+}
+
 export function sortJobsBy(jobs: JobResponse[], sort: SortState): JobResponse[] {
   if (sort.column === "default") {
     return sortJobs(jobs);
   }
   const sign = sort.direction === "asc" ? 1 : -1;
-  return [...jobs].sort((a, b) => sign * columnCompare(sort.column, a, b));
+  // Missing values are settled before the sign is applied: flipping the whole comparison would
+  // flip them to the top too, so the first (descending) click on Salary led with every unknown.
+  return [...jobs].sort((a, b) => {
+    const aMissing = isMissing(sort.column, a);
+    if (aMissing !== isMissing(sort.column, b)) return aMissing ? 1 : -1;
+    return sign * columnCompare(sort.column, a, b);
+  });
 }
 
 /** Click behaviour shared by every sortable header: first click sorts, second click reverses. */

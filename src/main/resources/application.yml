@@ -127,6 +127,11 @@ ai:
   # this can be large - 73 strings fitted comfortably in one call. Bigger batch = fewer
   # invocations = lower cost, since the ~25k-token per-invocation overhead dwarfs the payload.
   location-batch-size: 200
+  # Jobs per remote/on-site call (source/location/RemoteClassifier). Each carries only the
+  # description excerpts around workplace words (~2.5k chars at most), not the whole description,
+  # so this can be several times batch-size. A posting that never mentions remote work is decided
+  # "not remote" without a call at all.
+  remote-batch-size: 40
 
 # "Apply with Claude": drives the local `claude` CLI with the Claude-in-Chrome extension to fill
 # (and optionally submit) job application forms. See apply/ApplyOrchestrator.

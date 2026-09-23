@@ -52,7 +52,7 @@ class ResumeMatchServiceTest extends AbstractStoreTest {
     }
 
     private AiProperties props(int batchSize, int concurrency, boolean usOnly) {
-        return new AiProperties(true, "unused", "sonnet", batchSize, concurrency, Duration.ofSeconds(10), 6000, usOnly, 200);
+        return new AiProperties(true, "unused", "sonnet", batchSize, concurrency, Duration.ofSeconds(10), 6000, usOnly, 200, 40);
     }
 
     private ResumeMatchService service(AiProperties properties, ClaudeCliClient cli) {
@@ -96,7 +96,7 @@ class ResumeMatchServiceTest extends AbstractStoreTest {
         private final Function<List<String>, ClaudeCliResult> responder;
 
         FakeCliClient(Function<List<String>, ClaudeCliResult> responder) {
-            super(new AiProperties(true, "unused", "sonnet", 9, 3, Duration.ofSeconds(10), 6000, false, 200),
+            super(new AiProperties(true, "unused", "sonnet", 9, 3, Duration.ofSeconds(10), 6000, false, 200, 40),
                     JsonMapper.builder().build());
             this.responder = responder;
         }

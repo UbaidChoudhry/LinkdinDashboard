@@ -211,6 +211,7 @@ h3 {
 }
 
 .field-row input[type="text"],
+.field-row input[type="search"],
 .field-row input[type="number"] {
   padding: 8px 10px;
   border: 1px solid var(--border);
@@ -551,6 +552,32 @@ td {
 }
 
 .match-badge.none {
+  opacity: 0.65;
+}
+
+/* ---- Remote column: RemoteClassifier's verdict, the deciding words on hover ------------------
+   Same pill as .match-badge. Yes is the green of a confident match; No stays quiet, since most
+   jobs are not remote and a column of red would read as an error. */
+.col-remote {
+  white-space: nowrap;
+}
+
+.remote-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: help;
+}
+
+.remote-badge.yes {
+  border-color: rgba(22, 163, 74, 0.5);
+  color: #16a34a;
+}
+
+.remote-badge.no {
   opacity: 0.65;
 }
 
@@ -970,6 +997,15 @@ th.sortable.active .sort-button {
 }
 
 .table-controls .source-filter-row label {
+  margin-top: 6px;
+}
+
+/* Results-tab Company / Location search: same box again, label underneath like Source's. */
+.search-filter-row {
+  width: 150px;
+}
+
+.table-controls .search-filter-row label {
   margin-top: 6px;
 }
 

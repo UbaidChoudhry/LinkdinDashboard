@@ -123,7 +123,7 @@ class ApplyOrchestratorTest extends AbstractStoreTest {
         private final Function<String, CliJsonResult> responder;
 
         FakeCliClient(Function<String, CliJsonResult> responder) {
-            super(new AiProperties(true, "unused", "sonnet", 9, 3, Duration.ofSeconds(10), 6000, false, 200),
+            super(new AiProperties(true, "unused", "sonnet", 9, 3, Duration.ofSeconds(10), 6000, false, 200, 40),
                     JsonMapper.builder().build());
             this.responder = responder;
         }
@@ -839,6 +839,6 @@ class ApplyOrchestratorTest extends AbstractStoreTest {
                 Instant.parse("2026-08-27T00:00:00Z"), Instant.parse("2026-08-27T00:00:00Z"),
                 Instant.parse("2026-08-27T00:00:00Z"), 1L, jobUrl, null,
                 FilterVerdict.PASS, 1, null, (UserStatus) null, null, null, null, applyUrl, null,
-                "desc", "hash", null, null, null, null, false, null, null, null, null);
+                "desc", "hash", null, null, null, null, false, null, null, null, null, null, null);
     }
 }

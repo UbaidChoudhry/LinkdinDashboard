@@ -66,6 +66,14 @@ export interface JobResponse {
    */
   locationUs?: boolean | null;
   locationConfident?: boolean | null;
+  /**
+   * Whether the job can be done fully remotely, read from its own description by
+   * source/location/RemoteClassifier - the only way to know for LinkedIn, whose cards never say.
+   * Null means "not decided yet" (no description yet, or not reached), NOT "on-site".
+   * `remoteNote` is the posting's words that decided it.
+   */
+  remote?: boolean | null;
+  remoteNote?: string | null;
   /** Status of the most recent Apply with Claude attempt on this job, if any. */
   applicationStatus?: ApplicationStatus | null;
   /** The model's notes on that attempt (summary / unanswered questions / error). */
@@ -284,7 +292,7 @@ export interface ResumeResponse {
 /** Which bucket the AI scan put a job in. Null when the job has not been scanned. */
 export type MatchBucket = "recommended" | "not_recommended";
 
-/** Summary of one AI scan. Mirrors ai/ResumeMatchService.ScanResult. */
+/** Summary of one AI scan. Mirrors web/dto/MatchScanResponse. */
 export interface ScanResultResponse {
   scanned: number;
   recommended: number;
@@ -293,6 +301,9 @@ export interface ScanResultResponse {
   failedBatches: number;
   totalCostUsd: number;
   errorMessage: string | null;
+  /** Rows the remote pass that runs before the scan decided, and how many of those are remote. */
+  remoteDecided: number;
+  remoteFound: number;
 }
 
 // ---------------------------------------------------------------------------

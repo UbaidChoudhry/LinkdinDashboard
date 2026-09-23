@@ -71,6 +71,20 @@ Public:  https://www.linkedin.com/jobs/view/{jobId}                        (link
   parameter except `f_TPR` is inert until individually proven otherwise. **This is why all
   filtering is local** — it is not a preference.
 
+- **There is no way to ask the guest endpoint for remote jobs** (probed 2026-09-24). `f_WT=2`
+  (remote) returned the same 10 job IDs as the unfaceted query, with `location=United States` and
+  with `geoId=103644278`. `location=Remote` is not a US-remote search either: it returned a
+  worldwide mix (Dubai, Singapore, London, Pune) with 2/10 IDs in common with the US query.
+  Cards don't mark remote work either. The location is always a city or metro, and across the
+  first 1,160 LinkedIn rows none was a bare `"United States"` or contained "remote". The detail
+  fragment's criteria are seniority, employment type, function and industries, with no workplace
+  type. So a LinkedIn remote job is only recognisable from its description prose (27 of 524
+  descriptions said so plainly). The **location classifier is not what hides them**:
+  `location_verdict` keeps every US-remote string (`"Remote - US"`, `"Florida - Remote"`, ...)
+  and hides only foreign ones (`"Remote - Canada"`, `"Remote, Poland"`). The ATS boards do label
+  remote jobs, but most of the ones collected so far lose to the default title exclude words
+  (Senior/Staff/Principal). §15 is the answer: Claude reads remote-or-not out of the description.
+
 - **A no-match keyword returns a firehose, not zero results.** Querying
   `zzzqqxnonexistentjobtitle999` returned 200 OK with 10 well-formed cards for *Cake Decorator*,
   *Domino's Production Associate*, and Japanese-language factory jobs. **A non-empty response is
@@ -1706,3 +1720,67 @@ Things those runs established:
 jobs is the test of the hit rate and the cost estimate; read `logs/apply.log`'s `company links`
 lines. The description goes into the prompt truncated to 1,500 characters (`DESCRIPTION_CHARS`),
 which is what the probes used.
+
+---
+
+## 15. Remote or not: a Remote column for every job, LinkedIn included (2026-09-24)
+
+**Why it exists.** LinkedIn's guest endpoint cannot say whether a job is remote (§2, "no way to ask
+the guest endpoint for remote jobs"): cards carry a city, the remote facet is ignored, and the
+detail fragment has no workplace type. The posting's own prose is the only source. So
+`source/location/RemoteClassifier` reads it, and the answer lands in `job_listing.remote` (0/1/NULL)
+plus `remote_note`, the words that decided it (V17). The Results table shows it as a sortable
+Remote column (hover a Yes/No for the note), and a Remote dropdown (Any / Remote / Not remote /
+Undecided) narrows the list the same way Source and the Company/Location search do, so bucket counts
+and Apply with Claude follow it. It covers every source, not just LinkedIn, because a filter that
+said "Remote" and skipped the boards' own "Remote - US" rows would mislead.
+
+**How it decides, and what it costs.**
+1. Rows in scope: `filter_verdict = 'pass'`, a non-blank description, `remote` NULL, not confidently
+   non-US (`findRemoteUndecided`), across all runs and triage states.
+2. **No CLI call** for a row whose description and location never use remote-work vocabulary
+   (`REMOTE_WORDS`: remote, work from home/anywhere, WFH, telecommute, home-based). A posting cannot
+   say a role is remote without one of those, so it is stamped "not remote" with the note "The
+   posting never mentions remote work." The pattern is deliberately broad ("remote sensing" hits it
+   too): a false hit costs a batch slot, a miss would mark a remote job "No" unchecked.
+3. The rest go to Claude in batches of `ai.remote-batch-size` (40). Each job carries its title,
+   company, location and only the **excerpts** of its description within 250 characters of a
+   workplace word (remote, hybrid, on-site, in office, days a week, relocate, ...), merged and capped
+   at 2,500 characters, not the whole description. Hybrid, "remote" in an unrelated sense, remote
+   only occasionally, and a generic company policy that doesn't designate this role are all "No";
+   a region-restricted remote role ("remote within the US") is "Yes".
+
+Measured on the first backfill (run 32's database, 2026-09-24): 555 rows undecided, **435 settled
+with no call**, 120 sent to Claude in 3 calls, **30 remote** (26 of them LinkedIn), **$0.70**, 2m10s.
+The notes read right on a spot check: "Hybrid role (3 days/week in office)" → No, "remote sensor
+payloads - unrelated sense" → No, "fully remote for a candidate based in the United States" → Yes.
+
+**When it runs.** A run phase (4b in `RunOrchestrator`) after the detail fetch and location
+classification and before the scan, in `executeRun` and `executeResume`, unless cancelled. It needs
+no resume, so it runs even when the scan is skipped. It publishes **no** in-flight status of its
+own: the panel keeps showing the previous phase for the few seconds (a normal run's handful of new
+candidates) to couple of minutes (a big backfill) it takes, so `runStatus.ts` and
+`RunController.IN_FLIGHT_STATUSES` did not change. The Results tab's **Re-scan** also runs it first
+(`MatchController.scan`); that is how rows collected before the feature got their answer without a
+new run, and its note says "Remote decided for N jobs (M remote)".
+
+**A row is decided once.** A CLI failure or timeout leaves that batch NULL, so the next run or
+Re-scan tries again; an answered row is never re-sent. To re-judge one: `update job_listing set
+remote = null, remote_note = null where job_id = ?`, then Re-scan. A LinkedIn row whose detail
+fetch never happened (or was `gone`) has no description and stays undecided ("—", with a tooltip
+saying why).
+
+**Why columns on `job_listing` and not a side table** like §14's `company_link_match`: remote-ness
+is a fact about the posting (one answer per job, no resume involved, never a list of candidates), it
+is read on every row the UI shows, and the filter needs it on the row. The price was six positional
+`new JobListing(...)` calls in tests, each given two trailing nulls.
+
+**Also fixed while here:** `sortJobsBy` applied the direction sign to its "missing values last"
+rule, so a descending sort (the first click on Salary, Match, Posted - and now Remote) put every
+unknown on top, contradicting the comparators' own comments. Missing values now sort last in both
+directions.
+
+**Known, not fixed: the job table was already wider than a 1440-1728px window** before this column
+(measured in headless Chrome: 350px of horizontal scroll at 1440, 177px at 1728). The Location
+column is uncapped and some Workday/Greenhouse strings are long (350px); the budget comment above
+`.col-title` ("fits from ~1340px") predates them. The Remote column adds 86px to that.

@@ -46,7 +46,7 @@ class LocationClassifierTest extends AbstractStoreTest {
         private final Function<List<String>, String> responder;
 
         FakeCli(Function<List<String>, String> responder) {
-            super(new AiProperties(true, "unused", "sonnet", 9, 3, Duration.ofSeconds(10), 6000, true, 200),
+            super(new AiProperties(true, "unused", "sonnet", 9, 3, Duration.ofSeconds(10), 6000, true, 200, 40),
                     JsonMapper.builder().build());
             this.responder = responder;
         }
@@ -86,7 +86,7 @@ class LocationClassifierTest extends AbstractStoreTest {
 
     private LocationClassifier classifier(ClaudeCliClient cli) {
         return new LocationClassifier(jobListingRepository, locationVerdictRepository, cli,
-                new AiProperties(true, "unused", "sonnet", 9, 3, Duration.ofSeconds(10), 6000, true, 200),
+                new AiProperties(true, "unused", "sonnet", 9, 3, Duration.ofSeconds(10), 6000, true, 200, 40),
                 JsonMapper.builder().build(), CLOCK);
     }
 
@@ -195,7 +195,7 @@ class LocationClassifierTest extends AbstractStoreTest {
         long job = insertJob(runId, "JR1", "US - Austin, TX");
 
         ClaudeCliClient failing = new ClaudeCliClient(
-                new AiProperties(true, "unused", "sonnet", 9, 3, Duration.ofSeconds(1), 6000, true, 200),
+                new AiProperties(true, "unused", "sonnet", 9, 3, Duration.ofSeconds(1), 6000, true, 200, 40),
                 JsonMapper.builder().build()) {
             @Override
             public CliJsonResult runStructured(String prompt, String jsonSchema) {

@@ -74,6 +74,31 @@ function MatchCell({ job }: { job: JobResponse }) {
   );
 }
 
+/**
+ * The Remote column: Claude's read of the posting's own description (source/location/RemoteClassifier).
+ * The tooltip is the posting's words that decided it, so a surprising answer can be checked at a glance.
+ */
+function RemoteCell({ job }: { job: JobResponse }) {
+  if (job.remote == null) {
+    const why =
+      job.detailStatus === "gone"
+        ? "Can't tell - LinkedIn removed the posting before its description was read."
+        : job.source === "linkedin" && job.detailStatus !== "ok"
+          ? "Not decided yet - the description hasn't been fetched."
+          : "Not decided yet - the next run or Re-scan will decide it.";
+    return (
+      <span className="muted" title={why}>
+        —
+      </span>
+    );
+  }
+  return (
+    <span className={job.remote ? "remote-badge yes" : "remote-badge no"} title={job.remoteNote ?? undefined}>
+      {job.remote ? "Yes" : "No"}
+    </span>
+  );
+}
+
 /** Human-readable label for the `salarySource` recorded by the backend enrichment step. */
 function salarySourceLabel(source: string | null | undefined): string | null {
   switch (source) {
@@ -200,6 +225,9 @@ export function JobRow({ job, tab, onChanged, onError, grouped = false, selected
             ⚠ uncertain
           </span>
         )}
+      </td>
+      <td className="col-remote">
+        <RemoteCell job={job} />
       </td>
       <td title={absoluteTime(job.postedAt)}>{relativeTime(job.postedAt)}</td>
       <td className="col-salary" title={salaryCellTitle}>

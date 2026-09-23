@@ -4,6 +4,7 @@ import com.ubaid.jobdash.ai.ResumeMatchService;
 import com.ubaid.jobdash.apply.CompanyLinkFinder;
 import com.ubaid.jobdash.apply.CompanyLinkProperties;
 import com.ubaid.jobdash.source.location.LocationClassifier;
+import com.ubaid.jobdash.source.location.RemoteClassifier;
 import com.ubaid.jobdash.ai.ScanProgressListener;
 import com.ubaid.jobdash.domain.Resume;
 import com.ubaid.jobdash.domain.SweepRun;
@@ -65,6 +66,8 @@ class RunOrchestratorTest {
     @Mock
     private LocationClassifier locationClassifier;
     @Mock
+    private RemoteClassifier remoteClassifier;
+    @Mock
     private CompanyLinkFinder companyLinkFinder;
 
     private RunOrchestrator orchestrator;
@@ -79,8 +82,8 @@ class RunOrchestratorTest {
         clock = Clock.fixed(NOW, ZoneOffset.UTC);
         registry = new RunProgressRegistry();
         orchestrator = new RunOrchestrator(sweepService, atsSweepService, detailFetchService, sweepRunRepository,
-                resumeRepository, resumeMatchService, locationClassifier, companyLinkFinder, linkProperties(true),
-                registry, clock);
+                resumeRepository, resumeMatchService, locationClassifier, remoteClassifier, companyLinkFinder,
+                linkProperties(true), registry, clock);
     }
 
     @Test
@@ -306,6 +309,50 @@ class RunOrchestratorTest {
         verify(sweepRunRepository, timeout(2000)).finish(eq(RUN_ID), any(), eq("ok"));
     }
 
+    /** Remote-or-not reads the descriptions the detail phase just fetched, and precedes the scan. */
+    @Test
+    void aLinkedInRunDecidesRemoteAfterFetchingDetailsAndBeforeScanning() {
+        when(sweepService.createRun(SWEEP_REQUEST, "linkedin", 3L)).thenReturn(RUN_ID);
+        when(sweepService.collect(eq(RUN_ID), eq(SWEEP_REQUEST))).thenReturn("ok");
+        when(detailFetchService.fetchForRun(eq(RUN_ID), any())).thenReturn("ok");
+
+        orchestrator.startRun(SWEEP_REQUEST, List.of("linkedin"), 3L, false);
+
+        InOrder order = inOrder(detailFetchService, remoteClassifier, resumeMatchService);
+        order.verify(detailFetchService, timeout(2000)).fetchForRun(eq(RUN_ID), any());
+        order.verify(remoteClassifier, timeout(2000)).classifyPending(any());
+        order.verify(resumeMatchService, timeout(2000))
+                .scan(eq(RUN_ID), eq(3L), any(BooleanSupplier.class), any(ScanProgressListener.class));
+    }
+
+    /** Unlike the scan it needs no resume, and blowing up must not fail the run. */
+    @Test
+    void remoteClassificationRunsWithoutAResumeAndAThrowStillLeavesTheRunOk() {
+        lenient().when(sweepRunRepository.create(any(), any(), any(), anyInt(), anyBoolean(), any(), any(), any()))
+                .thenReturn(RUN_ID);
+        when(atsSweepService.run(eq(RUN_ID), any(), any())).thenReturn("ok");
+        when(resumeRepository.findDefault()).thenReturn(Optional.empty());
+        when(remoteClassifier.classifyPending(any())).thenThrow(new RuntimeException("boom"));
+
+        orchestrator.startRun(SWEEP_REQUEST, List.of("lever"), null, false);
+
+        verify(sweepRunRepository, timeout(2000)).finish(eq(RUN_ID), any(), eq("ok"));
+        verify(remoteClassifier).classifyPending(any());
+    }
+
+    @Test
+    void resumingARunDecidesRemoteForTheDescriptionsItFetched() {
+        when(sweepRunRepository.findById(RUN_ID)).thenReturn(Optional.of(finishedRun("blocked", "linkedin", 3L)));
+        when(sweepRunRepository.reopen(RUN_ID, "fetching_details")).thenReturn(1);
+        when(detailFetchService.fetchForRun(eq(RUN_ID), any())).thenReturn("ok");
+
+        orchestrator.resumeRun(RUN_ID);
+
+        InOrder order = inOrder(detailFetchService, remoteClassifier);
+        order.verify(detailFetchService, timeout(2000)).fetchForRun(eq(RUN_ID), any());
+        order.verify(remoteClassifier, timeout(2000)).classifyPending(any());
+    }
+
     // ---- resume: the Retry behind a run LinkedIn's cooldown cut short --------------------
 
     private static SweepRun finishedRun(String status, String sources, Long resumeId) {
@@ -443,8 +490,8 @@ class RunOrchestratorTest {
     @Test
     void companyLinksAreSkippedWhenDisabled() {
         RunOrchestrator disabledOrchestrator = new RunOrchestrator(sweepService, atsSweepService, detailFetchService,
-                sweepRunRepository, resumeRepository, resumeMatchService, locationClassifier, companyLinkFinder,
-                linkProperties(false), registry, clock);
+                sweepRunRepository, resumeRepository, resumeMatchService, locationClassifier, remoteClassifier,
+                companyLinkFinder, linkProperties(false), registry, clock);
         when(sweepService.createRun(SWEEP_REQUEST, "linkedin", 3L)).thenReturn(RUN_ID);
         when(sweepService.collect(eq(RUN_ID), eq(SWEEP_REQUEST))).thenReturn("ok");
         when(detailFetchService.fetchForRun(eq(RUN_ID), any())).thenReturn("ok");

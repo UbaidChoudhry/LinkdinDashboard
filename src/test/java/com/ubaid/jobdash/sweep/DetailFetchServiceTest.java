@@ -98,7 +98,7 @@ class DetailFetchServiceTest {
         return new JobListing(jobId, String.valueOf(4000000000L + jobId), "linkedin", "Engineer " + jobId, "Acme",
                 "New York, NY", T0, T0, T0, RUN_ID, "https://www.linkedin.com/jobs/view/" + jobId, null,
                 FilterVerdict.PASS, 1, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, false, null, null, null, null);
+                null, null, null, null, false, null, null, null, null, null, null);
     }
 
     @Test

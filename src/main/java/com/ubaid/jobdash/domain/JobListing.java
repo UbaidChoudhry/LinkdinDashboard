@@ -39,6 +39,8 @@ public record JobListing(
         Boolean locationUs,
         Boolean locationConfident,
         String applyKind,
-        String applyMatchNote
+        String applyMatchNote,
+        Boolean remote,
+        String remoteNote
 ) {
 }

@@ -54,7 +54,7 @@ class ApplyUrlResolverTest {
                 Instant.parse("2026-08-27T00:00:00Z"), Instant.parse("2026-08-27T00:00:00Z"),
                 Instant.parse("2026-08-27T00:00:00Z"), 1L, jobUrl, "https://company.com",
                 FilterVerdict.PASS, 1, null, (UserStatus) null, null, null, null, applyUrl, applyDomain,
-                "desc", "hash", null, null, null, null, false, null, null, null, null);
+                "desc", "hash", null, null, null, null, false, null, null, null, null, null, null);
     }
 
     @Test

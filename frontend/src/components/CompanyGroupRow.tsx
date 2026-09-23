@@ -29,6 +29,7 @@ export function CompanyGroupRow({ group, expanded, onToggle, selectedCount, onTo
   const topSalary = groupTopSalary(group);
   const newest = groupNewestPostedAt(group);
   const locations = groupLocations(group);
+  const remoteCount = group.jobs.filter((j) => j.remote === true).length;
   const allSelected = selectedCount === count;
   const someSelected = selectedCount > 0 && !allSelected;
   const checkboxRef = useRef<HTMLInputElement>(null);
@@ -73,6 +74,7 @@ export function CompanyGroupRow({ group, expanded, onToggle, selectedCount, onTo
             ? locations[0]
             : `${locations.length} locations`}
       </td>
+      <td className="col-remote">{remoteCount > 0 ? `${remoteCount} remote` : ""}</td>
       <td title={absoluteTime(newest)}>{relativeTime(newest)}</td>
       <td className="col-salary">{topSalary == null ? "–" : `up to ${formatUsd(topSalary)}`}</td>
       <td className="col-match" />

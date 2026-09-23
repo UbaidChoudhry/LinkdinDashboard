@@ -19,6 +19,7 @@ public record AiProperties(
         Duration timeout,
         int maxDescriptionChars,
         boolean usOnly,
-        int locationBatchSize
+        int locationBatchSize,
+        int remoteBatchSize
 ) {
 }

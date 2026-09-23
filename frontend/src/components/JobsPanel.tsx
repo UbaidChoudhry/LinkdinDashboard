@@ -2,7 +2,16 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import type { KeyboardEvent } from "react";
 import { ApiError, bulkDeleteJobs, bulkSetJobStatus, listJobs, scanMatches } from "../api/client";
 import { SOURCE_LABELS, type JobResponse, type JobSourceName, type JobTab, type RunResponse } from "../types/api";
-import { DEFAULT_SORT, filterByMinSalary, nextSortState, sortJobsBy, type SortState } from "../utils/sort";
+import {
+  DEFAULT_SORT,
+  filterByMinSalary,
+  filterByRemote,
+  filterBySearch,
+  nextSortState,
+  sortJobsBy,
+  type RemoteFilter,
+  type SortState,
+} from "../utils/sort";
 import { groupByCompany, type CompanyGroup } from "../utils/group";
 import { isRunInFlight } from "../utils/runStatus";
 import { ApplyControls } from "./ApplyControls";
@@ -74,6 +83,12 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
   // "all", or one job source. Narrows everything below it - the AI buckets and their counts, the
   // table, and which jobs Apply with Claude would act on.
   const [sourceFilter, setSourceFilter] = useState<string>("all");
+  // Free-text Company / Location search, blank = off. Narrows the same things the source filter
+  // does, so what Apply with Claude acts on is always what's on screen.
+  const [companySearch, setCompanySearch] = useState("");
+  const [locationSearch, setLocationSearch] = useState("");
+  // The Remote dropdown - narrows the same things again.
+  const [remoteFilter, setRemoteFilter] = useState<RemoteFilter>("all");
   // Which AI bucket to show. "all" keeps every row, including rows that were never scanned
   // (a row with no description - e.g. a LinkedIn row whose detail fetch hasn't happened yet).
   type Bucket = "all" | "recommended" | "not_recommended" | "not_scanned";
@@ -117,6 +132,9 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
     setExpandedGroups(new Set());
     setBucket("all");
     setSourceFilter("all");
+    setCompanySearch("");
+    setLocationSearch("");
+    setRemoteFilter("all");
     setSelectedIds(new Set());
     setDeleteConfirming(false);
   }, [activeTab]);
@@ -135,36 +153,60 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
     [jobs, sourceFilter],
   );
 
+  // sourceJobs still decides whether the bucket bar is shown at all, so typing a search that
+  // happens to match no scanned job doesn't make the bar (and the layout under it) jump away.
+  const searchedJobs = useMemo(
+    () => (sourceJobs ? filterBySearch(sourceJobs, companySearch, locationSearch) : sourceJobs),
+    [sourceJobs, companySearch, locationSearch],
+  );
+  const narrowedJobs = useMemo(
+    () => (searchedJobs ? filterByRemote(searchedJobs, remoteFilter) : searchedJobs),
+    [searchedJobs, remoteFilter],
+  );
+  // The Remote dropdown's counts: what each choice would leave, given the source and search.
+  const remoteCounts = useMemo(() => {
+    const list = searchedJobs ?? [];
+    return {
+      yes: list.filter((j) => j.remote === true).length,
+      no: list.filter((j) => j.remote === false).length,
+      unknown: list.filter((j) => j.remote == null).length,
+    };
+  }, [searchedJobs]);
+  const searchActive = companySearch.trim() !== "" || locationSearch.trim() !== "";
+  const narrowActive = searchActive || remoteFilter !== "all";
+
   // Null when the toggle is off - the typed value stays in the box, it just isn't applied.
   const effectiveMinSalary = minSalaryOn ? minSalary : null;
 
   const sortedJobs = useMemo(() => {
-    if (!sourceJobs) return sourceJobs;
+    if (!narrowedJobs) return narrowedJobs;
     const byBucket =
       bucket === "all"
-        ? sourceJobs
-        : sourceJobs.filter((j) => {
+        ? narrowedJobs
+        : narrowedJobs.filter((j) => {
             if (bucket === "recommended") return j.aiRecommended === true;
             if (bucket === "not_recommended") return j.aiRecommended === false;
             return j.aiRecommended == null;
           });
     return filterByMinSalary(sortJobsBy(byBucket, sort), effectiveMinSalary);
-  }, [sourceJobs, sort, effectiveMinSalary, bucket]);
+  }, [narrowedJobs, sort, effectiveMinSalary, bucket]);
 
   // Counts ignore the selected bucket, so the bucket tabs keep showing totals while one is
-  // selected - but they follow the source filter, since that narrows what the buckets split.
+  // selected - but they follow the source, search and remote filters, since those narrow what the
+  // buckets split.
   const bucketCounts = useMemo(() => {
-    const recommended = sourceJobs?.filter((j) => j.aiRecommended === true).length ?? 0;
-    const notRecommended = sourceJobs?.filter((j) => j.aiRecommended === false).length ?? 0;
-    const unscanned = sourceJobs?.filter((j) => j.aiRecommended == null).length ?? 0;
+    const recommended = narrowedJobs?.filter((j) => j.aiRecommended === true).length ?? 0;
+    const notRecommended = narrowedJobs?.filter((j) => j.aiRecommended === false).length ?? 0;
+    const unscanned = narrowedJobs?.filter((j) => j.aiRecommended == null).length ?? 0;
     return { recommended, notRecommended, unscanned };
-  }, [sourceJobs]);
+  }, [narrowedJobs]);
+  const showBucketBar = sourceJobs?.some((j) => j.aiRecommended != null) ?? false;
 
   // Apply with Claude only ever acts on the Untriaged tab's recommended, non-LinkedIn rows -
   // LinkedIn postings are listed as "apply manually" instead of being sent to the CLI.
   const recommendedJobs = useMemo(
-    () => (activeTab === "search" ? sourceJobs?.filter((j) => j.aiRecommended === true) ?? [] : []),
-    [activeTab, sourceJobs],
+    () => (activeTab === "search" ? narrowedJobs?.filter((j) => j.aiRecommended === true) ?? [] : []),
+    [activeTab, narrowedJobs],
   );
   const eligibleJobIds = useMemo(
     () =>
@@ -194,6 +236,9 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
           `Nothing new to scan: ${unreadable} LinkedIn job${unreadable === 1 ? "" : "s"} shown here ` +
           "have no description yet (the run's description fetch was blocked or cut short), and the AI " +
           "cannot score a job without one. Use Retry on the run panel in the Search tab to fetch them and re-scan.";
+      }
+      if (result.remoteDecided > 0) {
+        note += ` Remote decided for ${result.remoteDecided} job${result.remoteDecided === 1 ? "" : "s"} (${result.remoteFound} remote).`;
       }
       setScanNote(note);
       await load();
@@ -362,6 +407,17 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
     return `$${Math.round(n).toLocaleString()}`;
   }
 
+  function noSearchMatchHint(): string {
+    const terms: string[] = [];
+    if (companySearch.trim()) terms.push(`company "${companySearch.trim()}"`);
+    if (locationSearch.trim()) terms.push(`location "${locationSearch.trim()}"`);
+    if (remoteFilter === "yes") terms.push("Remote");
+    if (remoteFilter === "no") terms.push("Not remote");
+    if (remoteFilter === "unknown") terms.push("Remote not decided yet");
+    const salary = effectiveMinSalary != null ? ` at or above ${formatUsd(effectiveMinSalary)}` : "";
+    return `No jobs here match ${terms.join(" and ")}${salary}.`;
+  }
+
   function emptyReason(): string {
     if (activeTab === "search") {
       if (!latestRun) {
@@ -405,7 +461,7 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
 
       {/* The AI buckets. Shown only when something has actually been scanned, so a LinkedIn-only
           workflow (which can never be scanned) never sees a control that would do nothing. */}
-      {(bucketCounts.recommended > 0 || bucketCounts.notRecommended > 0) && (
+      {showBucketBar && (
         <div className="bucket-bar" role="tablist" aria-label="AI match buckets">
           <button
             type="button"
@@ -414,7 +470,7 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
             className={bucket === "all" ? "bucket-tab active" : "bucket-tab"}
             onClick={() => setBucket("all")}
           >
-            All <span className="bucket-count">{sourceJobs?.length ?? 0}</span>
+            All <span className="bucket-count">{narrowedJobs?.length ?? 0}</span>
           </button>
           <button
             type="button"
@@ -434,7 +490,8 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
           >
             Not recommended <span className="bucket-count">{bucketCounts.notRecommended}</span>
           </button>
-          {bucketCounts.unscanned > 0 && (
+          {/* Kept while selected even at 0, or a search that empties it would strand you in it. */}
+          {(bucketCounts.unscanned > 0 || bucket === "not_scanned") && (
             <button
               type="button"
               role="tab"
@@ -458,6 +515,44 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
       {/* One horizontal toolbar rather than three stacked rows - the vertical space it saves
           goes to the table, which is what the tab is actually for. */}
       <div className="table-controls">
+        <div className="field-row search-filter-row">
+          <input
+            id="jp-company-search"
+            type="search"
+            autoComplete="off"
+            placeholder="Any company"
+            value={companySearch}
+            onChange={(e) => setCompanySearch(e.target.value)}
+          />
+          <label htmlFor="jp-company-search">Company</label>
+        </div>
+
+        <div className="field-row search-filter-row">
+          <input
+            id="jp-location-search"
+            type="search"
+            autoComplete="off"
+            placeholder="Any location"
+            value={locationSearch}
+            onChange={(e) => setLocationSearch(e.target.value)}
+          />
+          <label htmlFor="jp-location-search">Location</label>
+        </div>
+
+        <div className="field-row source-filter-row">
+          <select
+            id="jp-remote"
+            value={remoteFilter}
+            onChange={(e) => setRemoteFilter(e.target.value as RemoteFilter)}
+          >
+            <option value="all">Any ({searchedJobs?.length ?? 0})</option>
+            <option value="yes">Remote ({remoteCounts.yes})</option>
+            <option value="no">Not remote ({remoteCounts.no})</option>
+            <option value="unknown">Undecided ({remoteCounts.unknown})</option>
+          </select>
+          <label htmlFor="jp-remote">Remote</label>
+        </div>
+
         <div className="field-row source-filter-row">
           <select id="jp-source" value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)}>
             <option value="all">All sources ({jobs?.length ?? 0})</option>
@@ -530,6 +625,9 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
               : "Click a column to change sort, or click it again to reverse."}{" "}
             The min-salary box never hides jobs whose salary is unknown. Salaries from LCA disclosure
             data show the employer entity they were matched to; a leading ≈ marks an approximate match.
+            Remote is read from each posting's description by Claude (LinkedIn listings never say);
+            hover a Yes/No for the words that decided it. "—" means not decided yet: the job has no
+            description yet, or no run or Re-scan has reached it.
           </InfoTip>
         </div>
       </div>
@@ -603,6 +701,14 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
         sortedJobs !== null &&
         sortedJobs.length === 0 &&
         !error &&
+        narrowActive && <p className="hint">{noSearchMatchHint()}</p>}
+
+      {jobs !== null &&
+        jobs.length > 0 &&
+        sortedJobs !== null &&
+        sortedJobs.length === 0 &&
+        !error &&
+        !narrowActive &&
         effectiveMinSalary != null && (
           <p className="hint">
             No jobs at or above {formatUsd(effectiveMinSalary)}. Lower the minimum, or switch it off.
@@ -627,6 +733,7 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
                 <SortableHeader column="title" label="Title" sort={sort} onSort={handleSort} />
                 <SortableHeader column="company" label="Company" sort={sort} onSort={handleSort} />
                 <SortableHeader column="location" label="Location" sort={sort} onSort={handleSort} />
+                <SortableHeader column="remote" label="Remote" sort={sort} onSort={handleSort} />
                 <SortableHeader column="postedAt" label="Posted" sort={sort} onSort={handleSort} />
                 <SortableHeader column="salary" label="Salary" sort={sort} onSort={handleSort} />
                 <SortableHeader column="match" label="Match" sort={sort} onSort={handleSort} />

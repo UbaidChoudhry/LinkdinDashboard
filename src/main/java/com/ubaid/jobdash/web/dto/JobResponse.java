@@ -19,6 +19,10 @@ import java.time.Instant;
  * location string. Both null means "not classified yet" - which is not the same as "not in the
  * US". {@code locationConfident == false} means Claude answered but the string genuinely does not
  * say where the job is; the UI flags those rather than hiding them.
+ *
+ * <p>{@code remote} is {@code source.location.RemoteClassifier}'s answer to "can this be done fully
+ * remotely?", {@code remoteNote} the posting's words that decided it. Null means "not decided yet"
+ * (no description, or the CLI has not reached it), which is not the same as "on-site".
  */
 public record JobResponse(
         long jobId,
@@ -54,7 +58,9 @@ public record JobResponse(
         String companyLinkUrl,
         Integer companyLinkConfidence,
         java.util.List<String> companyLinkMatchedOn,
-        String companyLinkNote
+        String companyLinkNote,
+        Boolean remote,
+        String remoteNote
 ) {
 
     /** Builds a response with no AI match context - {@code aiRecommended}/{@code aiReason} are null. */
@@ -118,7 +124,9 @@ public record JobResponse(
                 companyLink == null ? null : companyLink.url(),
                 companyLink == null ? null : companyLink.confidence(),
                 companyLink == null ? null : companyLink.matchedOn(),
-                companyLink == null ? null : companyLink.note()
+                companyLink == null ? null : companyLink.note(),
+                job.remote(),
+                job.remoteNote()
         );
     }
 }

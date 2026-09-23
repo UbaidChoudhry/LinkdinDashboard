@@ -44,7 +44,7 @@ class MixedSourceLocationClassificationTest extends AbstractStoreTest {
 
     private LocationClassifier classifier(ClaudeCliClient cli) {
         return new LocationClassifier(jobListingRepository, locationVerdictRepository, cli,
-                new AiProperties(true, "unused", "sonnet", 9, 3, Duration.ofSeconds(10), 6000, true, 200),
+                new AiProperties(true, "unused", "sonnet", 9, 3, Duration.ofSeconds(10), 6000, true, 200, 40),
                 JsonMapper.builder().build(), CLOCK);
     }
 
@@ -124,7 +124,7 @@ class MixedSourceLocationClassificationTest extends AbstractStoreTest {
         private final java.util.function.Function<List<String>, String> responder;
 
         FakeCli(java.util.function.Function<List<String>, String> responder) {
-            super(new AiProperties(true, "unused", "sonnet", 9, 3, Duration.ofSeconds(10), 6000, true, 200),
+            super(new AiProperties(true, "unused", "sonnet", 9, 3, Duration.ofSeconds(10), 6000, true, 200, 40),
                     JsonMapper.builder().build());
             this.responder = responder;
         }

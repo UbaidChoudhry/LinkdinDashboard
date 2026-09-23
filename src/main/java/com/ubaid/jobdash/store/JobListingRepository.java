@@ -398,6 +398,33 @@ public class JobListingRepository {
                 .update();
     }
 
+    /**
+     * Rows whose remote/on-site question is still open: passing the filter, carrying a description,
+     * {@code remote} still NULL - across all runs and whatever the user's triage status, so rows
+     * collected before the feature existed are picked up too. Confidently non-US rows are skipped;
+     * they are never shown, so deciding them would be wasted work.
+     */
+    public List<JobListing> findRemoteUndecided() {
+        return client.sql("""
+                        select * from job_listing
+                        where filter_verdict = 'pass' and remote is null
+                          and description is not null and trim(description) != ''
+                          and not (coalesce(location_us, 1) = 0 and coalesce(location_confident, 0) = 1)
+                        order by posted_at desc
+                        """)
+                .query(JobListingRepository::mapRow)
+                .list();
+    }
+
+    /** Stamps one job's remote verdict and the words that decided it. */
+    public int applyRemote(long jobId, boolean remote, String note) {
+        return client.sql("update job_listing set remote = :remote, remote_note = :note where job_id = :id")
+                .param("remote", remote ? 1 : 0)
+                .param("note", note)
+                .param("id", jobId)
+                .update();
+    }
+
     /** Rows that have never been evaluated by the filter engine yet (freshly inserted); never a {@code pasted} row, see above. */
     public List<JobListing> findWithoutVerdict() {
         return client.sql("select * from job_listing where filter_verdict is null and source <> 'pasted'")
@@ -655,7 +682,10 @@ public class JobListingRepository {
                 nullableBool(rs, "location_us"),
                 nullableBool(rs, "location_confident"),
                 rs.getString("apply_kind"),
-                rs.getString("apply_match_note")
+                rs.getString("apply_match_note"),
+                // Tri-state again: NULL is "not decided yet", not "on-site".
+                nullableBool(rs, "remote"),
+                rs.getString("remote_note")
         );
     }
 }

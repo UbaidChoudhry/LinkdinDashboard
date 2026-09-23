@@ -4,6 +4,7 @@ import com.ubaid.jobdash.ai.ResumeMatchService;
 import com.ubaid.jobdash.apply.CompanyLinkFinder;
 import com.ubaid.jobdash.apply.CompanyLinkProperties;
 import com.ubaid.jobdash.source.location.LocationClassifier;
+import com.ubaid.jobdash.source.location.RemoteClassifier;
 import com.ubaid.jobdash.domain.Resume;
 import com.ubaid.jobdash.domain.SweepRun;
 import com.ubaid.jobdash.store.ResumeRepository;
@@ -24,6 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   2. ATS collection        AtsSweepService.run           (if any board is selected)
  *   3. LinkedIn descriptions DetailFetchService.fetchForRun (if 1 ran and ended "ok")
  *   4. Location judgement    LocationClassifier            (if 2 ran and ended "ok", and usOnly)
+ *   4b. Remote or not        RemoteClassifier              (unless cancelled; every undecided row, any run)
  *   5. AI resume scan        ResumeMatchService.scan       (unless cancelled)
  *   6. Company links         CompanyLinkFinder.find        (if 5 ran and apply.company-links is enabled)
  * </pre>
@@ -45,6 +47,7 @@ public class RunOrchestrator {
     private final ResumeRepository resumeRepository;
     private final ResumeMatchService resumeMatchService;
     private final LocationClassifier locationClassifier;
+    private final RemoteClassifier remoteClassifier;
     private final CompanyLinkFinder companyLinkFinder;
     private final CompanyLinkProperties companyLinkProperties;
     private final RunProgressRegistry progressRegistry;
@@ -54,7 +57,7 @@ public class RunOrchestrator {
                             DetailFetchService detailFetchService,
                             SweepRunRepository sweepRunRepository, ResumeRepository resumeRepository,
                             ResumeMatchService resumeMatchService, LocationClassifier locationClassifier,
-                            CompanyLinkFinder companyLinkFinder, CompanyLinkProperties companyLinkProperties,
+                            RemoteClassifier remoteClassifier, CompanyLinkFinder companyLinkFinder, CompanyLinkProperties companyLinkProperties,
                             RunProgressRegistry progressRegistry, Clock clock) {
         this.sweepService = sweepService;
         this.atsSweepService = atsSweepService;
@@ -63,6 +66,7 @@ public class RunOrchestrator {
         this.resumeRepository = resumeRepository;
         this.resumeMatchService = resumeMatchService;
         this.locationClassifier = locationClassifier;
+        this.remoteClassifier = remoteClassifier;
         this.companyLinkFinder = companyLinkFinder;
         this.companyLinkProperties = companyLinkProperties;
         this.progressRegistry = progressRegistry;
@@ -148,6 +152,9 @@ public class RunOrchestrator {
             if (withLinkedIn && !cancelledNow(cancelFlag)) {
                 detailStatus = fetchDetailsSafely(runId, cancelFlag);
             }
+            if (!cancelledNow(cancelFlag)) {
+                classifyRemoteSafely(runId, cancelFlag);
+            }
             Long effectiveResumeId = null;
             if (!cancelledNow(cancelFlag)) {
                 effectiveResumeId = runResumeScanIfPossible(runId, sources, resumeId, cancelFlag);
@@ -198,6 +205,11 @@ public class RunOrchestrator {
             }
             if ("ok".equals(atsStatus) && !cancelledNow(cancelFlag)) {
                 classifyLocations(runId, usOnly, cancelFlag);
+            }
+            // After the detail fetch, whose descriptions are what this reads, and before the scan.
+            // Needs no resume, so it runs even when the scan will be skipped.
+            if (!cancelledNow(cancelFlag)) {
+                classifyRemoteSafely(runId, cancelFlag);
             }
             // Scan whatever now carries a description, even if a phase stopped early: a budget
             // refusal partway through the detail phase still leaves real descriptions to read,
@@ -274,6 +286,20 @@ public class RunOrchestrator {
         } catch (Exception e) {
             log.warn("location classification for run {} threw unexpectedly "
                     + "(LocationClassifier should never throw): {}", runId, e.toString());
+        }
+    }
+
+    /**
+     * Decides remote-or-not for every row still undecided, from this run or any earlier one - the
+     * only way a LinkedIn row ever gets an answer (HANDOFF.md §15). {@link RemoteClassifier} never
+     * throws; the wrapper is the same belt-and-braces as {@link #classifyLocations}.
+     */
+    private void classifyRemoteSafely(long runId, AtomicBoolean cancelFlag) {
+        try {
+            remoteClassifier.classifyPending(() -> cancelledNow(cancelFlag));
+        } catch (Exception e) {
+            log.warn("remote classification for run {} threw unexpectedly "
+                    + "(RemoteClassifier should never throw): {}", runId, e.toString());
         }
     }
 

@@ -3,6 +3,7 @@ package com.ubaid.jobdash.web;
 import com.ubaid.jobdash.ai.ResumeMatchService;
 import com.ubaid.jobdash.domain.JobListing;
 import com.ubaid.jobdash.domain.SweepRun;
+import com.ubaid.jobdash.source.location.RemoteClassifier;
 import com.ubaid.jobdash.store.AiMatchRepository;
 import com.ubaid.jobdash.store.JobListingRepository;
 import com.ubaid.jobdash.store.ResumeRepository;
@@ -37,15 +38,17 @@ public class MatchController {
     private final SweepRunRepository sweepRunRepository;
     private final JobListingRepository jobListingRepository;
     private final AiMatchRepository aiMatchRepository;
+    private final RemoteClassifier remoteClassifier;
 
     public MatchController(ResumeMatchService resumeMatchService, ResumeRepository resumeRepository,
                             SweepRunRepository sweepRunRepository, JobListingRepository jobListingRepository,
-                            AiMatchRepository aiMatchRepository) {
+                            AiMatchRepository aiMatchRepository, RemoteClassifier remoteClassifier) {
         this.resumeMatchService = resumeMatchService;
         this.resumeRepository = resumeRepository;
         this.sweepRunRepository = sweepRunRepository;
         this.jobListingRepository = jobListingRepository;
         this.aiMatchRepository = aiMatchRepository;
+        this.remoteClassifier = remoteClassifier;
     }
 
     @PostMapping("/api/matches/scan")
@@ -53,13 +56,17 @@ public class MatchController {
         MatchScanRequest request = body == null ? new MatchScanRequest(null, null, null) : body;
         long resumeId = resolveResumeId(request.resumeId());
 
+        // Re-scan is also how rows collected before the Remote column existed get their answer
+        // without waiting for the next run. Cheap when there is nothing left to decide.
+        RemoteClassifier.ClassifyResult remote = remoteClassifier.classifyPending(() -> false);
+
         ResumeMatchService.ScanResult result;
         if (request.jobIds() != null && !request.jobIds().isEmpty()) {
             result = resumeMatchService.rescan(request.jobIds(), resumeId, () -> false);
         } else {
             result = resumeMatchService.scan(resolveRunId(request.runId()), resumeId, () -> false);
         }
-        return MatchScanResponse.of(result);
+        return MatchScanResponse.of(result, remote);
     }
 
     @GetMapping("/api/matches")

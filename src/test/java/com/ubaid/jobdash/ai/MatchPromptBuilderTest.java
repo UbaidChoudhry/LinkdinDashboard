@@ -10,7 +10,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class MatchPromptBuilderTest {
 
-    private final AiProperties props = new AiProperties(true, "claude", "sonnet", 9, 3, Duration.ofMinutes(5), 50, false, 200);
+    private final AiProperties props = new AiProperties(true, "claude", "sonnet", 9, 3, Duration.ofMinutes(5), 50, false, 200, 40);
 
     private final MatchPromptBuilder builder = new MatchPromptBuilder(props, JsonMapper.builder().build());
 

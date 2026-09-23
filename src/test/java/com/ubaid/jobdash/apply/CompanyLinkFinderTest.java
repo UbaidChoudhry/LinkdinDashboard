@@ -261,7 +261,7 @@ class CompanyLinkFinderTest extends AbstractStoreTest {
         private final List<List<String>> args = new ArrayList<>();
 
         FakeCli(Function<String, CliJsonResult> responder) {
-            super(new AiProperties(true, "unused", "sonnet", 9, 3, Duration.ofSeconds(10), 6000, false, 200),
+            super(new AiProperties(true, "unused", "sonnet", 9, 3, Duration.ofSeconds(10), 6000, false, 200, 40),
                     JsonMapper.builder().build());
             this.responder = responder;
         }

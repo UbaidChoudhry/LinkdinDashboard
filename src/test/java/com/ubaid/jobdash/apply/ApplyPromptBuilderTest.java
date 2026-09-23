@@ -26,7 +26,7 @@ class ApplyPromptBuilderTest {
                 Instant.parse("2026-08-27T00:00:00Z"), Instant.parse("2026-08-27T00:00:00Z"),
                 Instant.parse("2026-08-27T00:00:00Z"), 1L, "https://acme.com/jobs/1", "https://acme.com",
                 FilterVerdict.PASS, 1, null, (UserStatus) null, null, null, null, null, null,
-                description, "hash", null, null, null, null, false, null, null, null, null);
+                description, "hash", null, null, null, null, false, null, null, null, null, null, null);
     }
 
     private Resume resume() {
@@ -163,7 +163,7 @@ class ApplyPromptBuilderTest {
                 null, null, Instant.parse("2026-09-23T00:00:00Z"), Instant.parse("2026-09-23T00:00:00Z"), 0L,
                 "https://jobs.lever.co/acme/1", null, null, null, null, (UserStatus) null, null, null, null,
                 "https://jobs.lever.co/acme/1", "lever", null, null, null, null, null, null, false, null, null,
-                null, null);
+                null, null, null, null);
 
         String prompt = builder.build(pasted, resume(), Path.of("/data/resumes/1.pdf"), profile(), false, 4000);
 
@@ -182,7 +182,7 @@ class ApplyPromptBuilderTest {
                 Instant.parse("2026-09-23T00:00:00Z"), 31L, "https://www.linkedin.com/jobs/view/4462098122", null,
                 FilterVerdict.PASS, 1, null, (UserStatus) null, null, null, "ok",
                 "https://www.amazon.jobs/en/jobs/10523955/sde", "amazon.jobs", "<p>Build things.</p>", "hash",
-                null, null, null, null, false, null, null, null, null);
+                null, null, null, null, false, null, null, null, null, null, null);
 
         String matched = builder.build(linkedin, resume(), Path.of("/data/resumes/1.pdf"), profile(), false, 4000,
                 linkedin.applyUrl(), Optional.empty(), List.of(), List.of());
