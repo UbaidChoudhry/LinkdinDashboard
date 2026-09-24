@@ -443,15 +443,15 @@ td {
   that the eye loses the row.
 */
 /*
-  The three vw factors below (28 + 12 + 13 = 53% of the viewport) are a budget, not a guess.
-  The other columns - Location, Posted, the salary figure, the two action buttons, cell padding -
-  cost roughly 540px that does not scale, and the page chrome another ~90px. So the table fits
-  without a horizontal scrollbar whenever  V - 90 >= 540 + 0.53V, i.e. from about 1340px of
-  viewport upward. Raising these percentages shows more of each title but reintroduces
-  side-scrolling on narrower windows; 65% only fitted above ~1800px.
+  The vw caps are a budget, not a guess: Title 25vw, Company 12vw, Location 10vw (.col-location)
+  and the LCA employer under the salary 9vw. Measured in headless Chrome on 2026-09-24 with the
+  Remote column in: no horizontal scroll from ~1600px of viewport up (0px at 1728 and 1898),
+  113px at 1440. Match, Posted, Remote, Actions and cell padding cost ~760px that does not scale.
+  Raising a cap shows more text but brings the side-scrolling back; before these caps an uncapped
+  Location (350px) and a 28vw Title put the table 173px past a 1898px window.
 */
 .col-title {
-  max-width: clamp(300px, 28vw, 760px);
+  max-width: clamp(300px, 25vw, 760px);
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -600,7 +600,7 @@ td {
 /* Matched LCA employer legal entity, shown under the salary figure. */
 .lca-employer {
   display: block;
-  max-width: clamp(180px, 13vw, 280px);
+  max-width: clamp(140px, 9vw, 200px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

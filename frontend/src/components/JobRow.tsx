@@ -226,8 +226,8 @@ export function JobRow({ job, tab, onChanged, onError, grouped = false, selected
           </span>
         )}
       </td>
-      <td className="col-remote">
-        <RemoteCell job={job} />
+      <td className="col-match">
+        <MatchCell job={job} />
       </td>
       <td title={absoluteTime(job.postedAt)}>{relativeTime(job.postedAt)}</td>
       <td className="col-salary" title={salaryCellTitle}>
@@ -242,8 +242,8 @@ export function JobRow({ job, tab, onChanged, onError, grouped = false, selected
           sourceLabel && <span className="salary-source"> {sourceLabel}</span>
         )}
       </td>
-      <td className="col-match">
-        <MatchCell job={job} />
+      <td className="col-remote">
+        <RemoteCell job={job} />
       </td>
       <td className="col-actions">
         {tab === "search" && (

@@ -1780,7 +1780,10 @@ rule, so a descending sort (the first click on Salary, Match, Posted - and now R
 unknown on top, contradicting the comparators' own comments. Missing values now sort last in both
 directions.
 
-**Known, not fixed: the job table was already wider than a 1440-1728px window** before this column
-(measured in headless Chrome: 350px of horizontal scroll at 1440, 177px at 1728). The Location
-column is uncapped and some Workday/Greenhouse strings are long (350px); the budget comment above
-`.col-title` ("fits from ~1340px") predates them. The Remote column adds 86px to that.
+**The job table was already wider than a 1440-1728px window** before this column (350px of
+horizontal scroll at 1440, 177px at 1728, measured in headless Chrome), and the Remote column pushed
+it past the user's ~1900px monitor. Fixed the same day: Location is capped at 10vw with an ellipsis
+(`.col-location`, full text on hover), the salary source label moved under the figure, the LCA
+employer label is capped at 9vw and Title at 25vw (was 28vw). No sideways scroll now from ~1600px
+up; 113px remains at 1440. Remote was also moved to sit after Salary, and Match after Location, at
+the user's request.

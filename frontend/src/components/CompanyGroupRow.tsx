@@ -74,10 +74,10 @@ export function CompanyGroupRow({ group, expanded, onToggle, selectedCount, onTo
             ? locations[0]
             : `${locations.length} locations`}
       </td>
-      <td className="col-remote">{remoteCount > 0 ? `${remoteCount} remote` : ""}</td>
+      <td className="col-match" />
       <td title={absoluteTime(newest)}>{relativeTime(newest)}</td>
       <td className="col-salary">{topSalary == null ? "–" : `up to ${formatUsd(topSalary)}`}</td>
-      <td className="col-match" />
+      <td className="col-remote">{remoteCount > 0 ? `${remoteCount} remote` : ""}</td>
       <td className="col-actions" />
     </tr>
   );

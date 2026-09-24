@@ -66,7 +66,8 @@ function caretAfterDigits(formatted: string, digitCount: number): number {
 
 export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelProps) {
   const [activeTab, setActiveTab] = useState<JobTab>("search");
-  const [includePreviousRuns, setIncludePreviousRuns] = useState(false);
+  // On by default: the Untriaged list is a backlog to work through, not just the latest run's finds.
+  const [includePreviousRuns, setIncludePreviousRuns] = useState(true);
   const [jobs, setJobs] = useState<JobResponse[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -733,10 +734,10 @@ export function JobsPanel({ refreshToken, latestRun, onCountChange }: JobsPanelP
                 <SortableHeader column="title" label="Title" sort={sort} onSort={handleSort} />
                 <SortableHeader column="company" label="Company" sort={sort} onSort={handleSort} />
                 <SortableHeader column="location" label="Location" sort={sort} onSort={handleSort} />
-                <SortableHeader column="remote" label="Remote" sort={sort} onSort={handleSort} />
+                <SortableHeader column="match" label="Match" sort={sort} onSort={handleSort} />
                 <SortableHeader column="postedAt" label="Posted" sort={sort} onSort={handleSort} />
                 <SortableHeader column="salary" label="Salary" sort={sort} onSort={handleSort} />
-                <SortableHeader column="match" label="Match" sort={sort} onSort={handleSort} />
+                <SortableHeader column="remote" label="Remote" sort={sort} onSort={handleSort} />
                 <PlainHeader label="Actions" />
               </tr>
             </thead>

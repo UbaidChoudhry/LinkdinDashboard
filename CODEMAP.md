@@ -148,8 +148,9 @@ RunOrchestrator → AtsSweepService.run(runId, request)      [sweep/AtsSweepServ
 
 ```
 User opens a tab / loads the page
-  → GET /api/jobs?tab=search&includePreviousRuns=false     [JobController]
-      "search"          → rows from the CURRENT run only, filter_verdict='pass', user_status=null
+  → GET /api/jobs?tab=search&includePreviousRuns=true      [JobController]
+      "search"          → filter_verdict='pass', user_status=null, across all runs; the UI's
+                          "Include previous runs" box is on by default, off = the CURRENT run only
       "applied"         → rows with user_status='applied', ACROSS ALL RUNS
       "not_interested"  → rows with user_status='not_interested', ACROSS ALL RUNS
       sorted by JobSortOrder.DEFAULT (salary desc if present, else posted_at desc)
@@ -412,7 +413,7 @@ components/
   ApplyBatchView.tsx          what both of the above render for a batch: the status line (every
                               job filling right now, with Claude's last action) and the Details list
   CompanyLinkControls.tsx     "Find company links" button + live progress, in the Results tab's bucket bar
-  JobRow.tsx                  one row: title link, company, location, Remote, posted, salary (+ source label), Match,
+  JobRow.tsx                  one row: title link, company, location, Match, posted, salary (+ source label), Remote,
                               actions, application status badge
   SortableHeader.tsx          clickable <th>, shared by the job table
   RunsPanel.tsx               "Runs" tab: a static table of past runs (newest first) for
