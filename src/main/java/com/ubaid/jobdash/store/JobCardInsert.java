@@ -16,7 +16,7 @@ import java.time.Instant;
  * returns one. LinkedIn's guest search cards carry none, so it is always {@code null} there.
  *
  * <p>This is intentionally distinct from any card type the parser task (running in parallel)
- * defines under {@code com.ubaid.jobdash.source.linkedin} — this package must not depend on
+ * defines under {@code com.ubaid.jobdash.source.search} — this package must not depend on
  * that one. Callers map their own parsed representation into this record before calling
  * {@link JobListingRepository#upsertAll}.
  */

@@ -177,7 +177,7 @@ Also read-only, same shape: `GET /api/filters/words`, `GET /api/filters/companie
 `Timestamps` (the one place `Instant` ↔ ISO-8601 text conversion happens; SQLite has no native
 datetime type).
 
-### `source/linkedin/` — turning HTML into data
+### `source/search/` — turning HTML into data
 `CardParser.parse(html) -> List<JobCard>` — jsoup selectors over a search-results page. This is
 the **only place LinkedIn's HTML structure is understood**. If LinkedIn changes their markup,
 this is what breaks, and `CardParserTest` (run against saved fixtures, no network) is what tells
@@ -214,7 +214,7 @@ parameters ever change). `SweepRunRequest` / `SweepProgress` are the input/outpu
 calls `salary.SalaryEnrichmentService.enrichRun(...)` inline (see below).
 
 `DetailFetchService` is phase 2 of Flow A: it drains the `job_detail_queue` for the run through
-`PacedHttpClient.fetchDetail` and `source/linkedin/DetailParser`, applying the three-outcome rule
+`PacedHttpClient.fetchDetail` and `source/search/DetailParser`, applying the three-outcome rule
 (ok / gone / leave queued). `RunOrchestrator` is what strings collect → details → scan together on
 one virtual thread and owns the run's terminal status; `SweepService.run()` (collect-and-finish in
 one call) survives for the tests that drive the loop synchronously.
@@ -247,7 +247,7 @@ must switch exhaustively. Implementations **never throw** — same discipline as
 
 | Package | Job |
 |---|---|
-| `source/linkedin/` | the original HTML card parser (unchanged) |
+| `source/search/` | the original HTML card parser (unchanged) |
 | `source/greenhouse/` | one request returns the whole board; `content` is entity-escaped HTML |
 | `source/lever/` | one request returns the whole board; ids are UUIDs, `createdAt` is epoch ms. **HTTP 200 + `[]` is a live board with no jobs, NOT a dead slug** |
 | `source/workday/` | two-phase: a server-side-filtered search page, then one detail request per job for the description and real date; the run's hours window is enforced on that date (and the prose `postedOn` skips obviously stale jobs before a detail request). `WorkdaySiteResolver` discovers the site id from the tenant's `robots.txt` |

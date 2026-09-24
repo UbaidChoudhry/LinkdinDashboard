@@ -1,17 +1,16 @@
-# jobdash
+# Search Dashboard
 
-A local, single-user dashboard for finding software engineering jobs — from LinkedIn, and from
-company job boards (Greenhouse, Lever, Workday).
+A local, single-user dashboard for finding software engineering jobs — from company job boards
+(Greenhouse, Lever, Workday) and from a broad keyword search across employers.
 
 You trigger a run, it collects postings, stores them in a local SQLite file, filters out the
 noise (seniority keywords, blocked companies), and gives you a table where you can click through
 to the real posting and mark each one **Applied** or **Not interested**.
 
-When the jobs come from an ATS board — which, unlike LinkedIn, gives you the full job
-description — the last step of a run hands each description and your resume to the **Claude
-CLI**, which sorts them into **Recommended match** and **Not recommended**, with a one-sentence
-reason for each. That uses your existing Claude subscription; there is no API key and no API
-credit spend.
+When the jobs come from an ATS board — which gives you the full job description — the last step
+of a run hands each description and your resume to the **Claude CLI**, which sorts them into
+**Recommended match** and **Not recommended**, with a one-sentence reason for each. That uses
+your existing Claude subscription; there is no API key and no API credit spend.
 
 It runs entirely on your machine. There is no server to deploy, no account to create, and no
 credentials anywhere in the system.
@@ -25,7 +24,7 @@ credentials anywhere in the system.
 | **Greenhouse** | per company, 1 request for the whole board | yes | ✅ |
 | **Lever** | per company, 1 request for the whole board | yes | ✅ |
 | **Workday** | per company, server-side keyword search + 1 request per job | yes | ✅ |
-| **LinkedIn** | broad search across all companies | **no** | ❌ |
+| **Search** | broad keyword search across all companies | fetched separately | ❌ |
 
 **Results are restricted to the United States by default.** Company boards are worldwide — on a
 real sample, 64% of collected postings were foreign — so the run form has a **United States only**
@@ -38,13 +37,13 @@ roughly one extra call per run. Where a string genuinely doesn't say where the j
 is **kept and marked `⚠ uncertain`** rather than dropped — and if the CLI is unavailable, postings
 stay visible and are re-checked on the next run.
 
-**Any mix of sources is one run.** LinkedIn is collected first under its own paced budget, then
-the boards under theirs, then the run reads each new LinkedIn posting's public detail page for
-its description (LinkedIn's search cards carry none; one paced request per job, capped per run -
-see [Rate limiting](#rate-limiting)), and finally everything collected is AI-scanned together.
+**Any mix of sources is one run.** The search source is collected first under its own paced
+budget, then the boards under theirs, then the run reads each new search result's public detail
+page for its description (search result cards carry none; one paced request per job - see
+[Rate limiting](#rate-limiting)), and finally everything collected is AI-scanned together.
 
-ATS boards are **per company** — there is no global search across them — so jobdash keeps a
-catalog of companies and only visits the ones you enable. It ships with **42 companies verified
+ATS boards are **per company** — there is no global search across them — so the dashboard keeps
+a catalog of companies and only visits the ones you enable. It ships with **42 companies verified
 live**, and you can add more by hand or import thousands at once (see
 [Job sources](#job-sources)).
 
@@ -52,19 +51,14 @@ live**, and you can add more by hand or import thousands at once (see
 
 ## How it gets the data
 
-LinkedIn has **no public jobs API**. Every product marketed as one is a scraper or a resold
-dataset; the largest such vendor was sued by LinkedIn in January 2025 and shut down under a
-permanent injunction.
+The ATS boards are public, documented JSON endpoints. The search source is a public,
+server-rendered results page — the same HTML any anonymous visitor gets. Two rules follow from
+that, and they are not negotiable:
 
-This project uses LinkedIn's **anonymous guest endpoints** — the same server-rendered HTML a
-logged-out visitor gets. Two rules follow from that, and they are not negotiable:
-
-1. **Never authenticate.** No `li_at` cookie, no stored session, no headless browser with
-   credentials. Cookie replay from a server IP is the clearest automation signal LinkedIn
-   flags, and it escalates a recoverable IP throttle into an account restriction. Your real
-   account is needed for actually applying to jobs and must not be exposed.
-2. **Stay inside the request budget.** Roughly 200–300 requests/day from one residential IP,
-   paced 6–12 seconds apart. Sustained rate matters far more than the daily total. This is
+1. **Never authenticate.** No cookies, no stored session, no headless browser with credentials.
+   Nothing in this project signs in anywhere.
+2. **Stay inside the request budget.** Roughly 200–300 search requests/day from one residential
+   IP, paced 6–12 seconds apart. Sustained rate matters far more than the daily total. This is
    enforced in code (see [Rate limiting](#rate-limiting)), not left to discipline.
 
 A full US-wide sweep is about **50-100 search requests and ~15 minutes of wall clock**, plus one
@@ -126,7 +120,7 @@ cd frontend && npm run build        # tsc -b && vite build - type errors fail th
 cd frontend && npm run lint
 ```
 
-**No test makes a live LinkedIn request.** Parser tests run against saved HTML fixtures in
+**No test makes a live network request.** Parser tests run against saved HTML fixtures in
 `src/test/resources/fixtures/`; the rate limiter and circuit breaker use an injected fake clock
 so they assert scheduling without sleeping.
 
@@ -134,19 +128,19 @@ so they assert scheduling without sleeping.
 
 ## Using the dashboard
 
-The dashboard has eight top-level tabs — **Search**, **Results**, **Apply**, **Sources**,
-**Resumes**, **Filters**, **Runs**, **Data**. Switching
-between them keeps each panel's state (the results table's sort, min-salary filter and sub-tab
-all survive), and a run in progress shows a live pill in the header from any tab.
+The main tabs are **Search**, **Results**, **Sources**, **Resumes**, **Filters**, **Runs** and
+**Data**. Switching between them keeps each panel's state (the results table's sort, min-salary
+filter and sub-tab all survive), and a run in progress shows a live pill in the header from any
+tab.
 
 **Start a run** (Search tab). First pick your **sources** from the dropdown — any mix of
-Greenhouse, Lever and Workday, or LinkedIn on its own. Then keywords (default "Software
+Greenhouse, Lever and Workday, or the search source on its own. Then keywords (default "Software
 Engineer"), a time window in hours (default 24), and a location (default "United States").
 For an ATS run you also pick which **resume** the AI scan compares against.
 
-The LinkedIn-only controls (test mode, page cap, shard by metro) appear only when LinkedIn is
-the selected source — they are LinkedIn pagination concepts and have no ATS equivalent. Enable
-**test mode** to cap a LinkedIn run at 3 pages while you're experimenting; a full run is 100
+The search-only controls (test mode, page cap, shard by metro) appear only when the search
+source is selected — they are pagination concepts and have no ATS equivalent. Enable
+**test mode** to cap a search run at 3 pages while you're experimenting; a full run is 100
 requests, a test run is 3.
 
 **Watch it live.** Progress streams over SSE: pages fetched, requests made, cards seen, new jobs.
@@ -163,9 +157,8 @@ were still on the Search tab watching it.
 | **Not interested** | Everything you dismissed, **across all runs** |
 
 **AI match buckets.** Once a run has been scanned, the Untriaged list gains **All /
-Recommended match / Not recommended** buckets with counts, plus a **Re-scan** button and an
-**Apply with Claude** button (see [Applying with Claude](#applying-with-claude)). Each row
-carries its one-sentence reason under the title. Rows that were never scanned — every LinkedIn
+Recommended match / Not recommended** buckets with counts, plus a **Re-scan** button. Each row
+carries its one-sentence reason under the title. Rows that were never scanned — every search
 row, and anything the scan skipped — stay visible under **All** and are counted separately as
 "not scanned", never silently dropped.
 
@@ -175,8 +168,8 @@ shouldn't vanish because this morning's run replaced the view.
 Click any column header to sort by it; click again to reverse.
 
 **Filter by source.** The **Source** dropdown beside Min salary narrows the list to one
-source — LinkedIn, Greenhouse, Lever, Workday — with a count for each. The AI buckets, their
-counts, and what **Apply with Claude** acts on all follow it.
+source — Search, Greenhouse, Lever, Workday — with a count for each. The AI buckets and their
+counts follow it.
 
 **Group by company.** A checkbox that collapses each company with more than one posting into a
 single collapsed row (job count, distinct-location count, newest posting, top salary) that you
@@ -214,15 +207,15 @@ Three independent layers, all enforced in the sweep loop:
 | Inter-request pacing | 6–12s jitter through a single global gate, measured from the **end** of the previous response |
 | Per-run cap | 500 requests |
 | Rolling 24h budget | 1000 requests, counted from the `request_log` table so a restart can't reset it |
-| Detail phase | one request per passing LinkedIn job, every one of them, newest first; `sweep.detail.max-per-run` can cap it (0 = no cap) |
+| Detail phase | one request per passing search job, every one of them, newest first; `sweep.detail.max-per-run` can cap it (0 = no cap) |
 
 A request is a request: a search page and a job-detail fetch each cost one unit of every layer
 above, because both hit the same host from the same IP. There is no separate "detail budget".
 
-Plus a **circuit breaker**: HTTP 429 or 999 (LinkedIn's proprietary block code) opens it
-immediately; a soft failure opens it after 2 consecutive. Cooldown starts at 30 minutes and
-doubles per consecutive trip, capped at 60. Half-open admits exactly one probe, never a burst.
-Breaker state is persisted, so restarting while blocked doesn't resume hammering.
+Plus a **circuit breaker**: an HTTP 429 or a proprietary block status opens it immediately; a
+soft failure opens it after 2 consecutive. Cooldown starts at 30 minutes and doubles per
+consecutive trip, capped at 60. Half-open admits exactly one probe, never a burst. Breaker state
+is persisted, so restarting while blocked doesn't resume hammering.
 
 **Clearing job data never deletes `request_log`.** That would let the Clear button double as a
 way to reset the daily budget, defeating the mechanism it exists to enforce.
@@ -257,8 +250,8 @@ sweep:
 ```
 
 All four shard strings are empirically verified to return relevant results. Sharding is opt-in
-per run and multiplies request cost — a US-wide search saturates LinkedIn's 1000-result cap, so
-sharding is how you see past it, but four shards is up to four times the requests.
+per run and multiplies request cost — a US-wide search saturates the search source's 1000-result
+cap, so sharding is how you see past it, but four shards is up to four times the requests.
 
 The same file has a `salary:` block (cache TTL, 3-year staleness cutoff, per-source pacing and
 daily caps, API keys). API keys come from the environment (`.env`, sourced by `run.sh`) — see
@@ -272,7 +265,7 @@ ats:
   workday:
     max-details-per-run: 120   # Workday costs 1 extra request PER JOB for the description
   dead-slug-threshold: 2       # consecutive 404s before a board is retired
-  daily-cap:                   # counted in external_request_log, separate from LinkedIn's budget
+  daily-cap:                   # counted in external_request_log, separate from the search budget
     greenhouse: 2000
     lever: 2000
     workday: 3000
@@ -284,32 +277,18 @@ ai:
   concurrency: 3               # simultaneous `claude` processes
   max-description-chars: 6000
   us-only: true                # re-check location before scanning, as well as at collection
-
-apply:
-  enabled: true
-  model: sonnet
-  timeout: 10m                  # per job
-  max-turns: 150                # browser actions per job; a full Greenhouse form needs ~100
-  max-budget-usd: 4.0           # per job
-  idle-timeout: 3m              # no browser action for this long = stuck, job killed
-  max-description-chars: 4000
-  concurrency: 3                # applications filled at once; a request may ask for 1-5
-  company-links:                # find LinkedIn jobs on the employer's own site (web search only)
-    batch-size: 4               # jobs per claude call
-    concurrency: 3              # calls at once
-    min-confidence: 70          # a weaker match is shown in the Match column but never applied to
 ```
 
 **`batch-size` is the cost lever that matters.** The cost shown in the UI is whatever the Claude
-CLI reports for each invocation — jobdash sums it, it does not compute it. Every invocation carries
-~24k tokens of fixed overhead no matter how small the payload, so a 2-job call ($0.10 measured) and
-a 9-job call ($0.13 measured) cost almost the same. Scanning 27 jobs in 3 batches cost $0.40; one
-job per call would have been about $2.70 for identical work. Raising `batch-size` lowers cost and
-coarsens progress reporting; lowering it does the reverse.
+CLI reports for each invocation — the dashboard sums it, it does not compute it. Every invocation
+carries ~24k tokens of fixed overhead no matter how small the payload, so a 2-job call ($0.10
+measured) and a 9-job call ($0.13 measured) cost almost the same. Scanning 27 jobs in 3 batches
+cost $0.40; one job per call would have been about $2.70 for identical work. Raising `batch-size`
+lowers cost and coarsens progress reporting; lowering it does the reverse.
 
 **The ATS daily caps are not a scarce quota** the way the salary APIs' are — these are public,
 documented JSON endpoints. The caps exist to bound a runaway loop, and they are counted
-separately from LinkedIn's 300/day budget. Never conflate the two.
+separately from the search source's 300/day budget. Never conflate the two.
 
 ---
 
@@ -328,7 +307,7 @@ The **Sources** tab is the company catalog. A run only ever visits companies tha
 ```
 
 The expected JSON shape is `{"ats": {"greenhouse": ["airbnb", ...], "lever": [...], "workday":
-["nvidia.wd5.myworkdayjobs.com", ...]}}`. Only the three platforms jobdash implements are read,
+["nvidia.wd5.myworkdayjobs.com", ...]}}`. Only the three platforms implemented here are read,
 so the same file keeps working as more are added.
 
 **Imported companies arrive disabled.** The public catalog holds over 15,000 companies for those
@@ -366,7 +345,7 @@ Upload a resume in the **Resumes** tab — PDF, `.txt` or `.md`. A PDF must cont
 text; an image-only scan is rejected with a message saying so. You can keep several and pick
 which one a run scans against; one is the default.
 
-The scan runs automatically as the last step of any non-LinkedIn run, and the **Re-scan** button
+The scan runs automatically as the last step of any ATS run, and the **Re-scan** button
 in the Results tab re-runs it (after switching resumes, say). Results are cached per
 (job, resume), so re-scanning already-scored jobs costs nothing.
 
@@ -395,172 +374,18 @@ lives somewhere unusual.
 
 ---
 
-## Applying with Claude
-
-Once a run has scored jobs into the **Recommended match** bucket (Results tab, Untriaged sub-tab),
-the **Apply with Claude** button next to Re-scan drives an actual browser through each one: it
-opens the posting, finds the apply form, fills it from your resume and applicant profile, attaches
-the resume file, and either stops at the review step or submits — your call, via the **Submit
-applications** checkbox next to the button, **default off**.
-
-**With Submit off** (the default), Claude fills the form, attaches the resume, and leaves the tab
-open on the review step without touching the final Submit/Send button. The job's row gets a
-**Needs review** badge and a one-line summary — read it, open the tab Claude left open, check the
-answers, and submit yourself. This is deliberate: the model is told never to invent
-work-authorization, sponsorship, salary or EEO answers, so anything it couldn't answer from your
-resume or profile is left blank and listed in the row's notes for you to fill in by hand.
-
-**With Submit on**, a successful application clicks through the confirmation page too and the job
-moves straight to **Applied**.
-
-**Apply to specific postings (the Apply tab).** Paste job posting URLs, one per line — a
-Greenhouse or Lever posting, a Workday job, a company's own careers page — pick a resume, how many
-to run at a time, and the Submit toggle, and click **Apply with Claude**. Each URL is applied to
-exactly like a recommended job: Greenhouse and Lever links are opened as their standalone form, a
-careers page that embeds one is read for it first, and anything else Claude navigates itself.
-Claude also reads the job title and company off the page, and they replace the URL-based
-placeholder on the tab's list. Pasted jobs never show up in the Results triage lists; one Claude
-submits moves to **Applied** like any other. Pasting a URL again reuses the same job.
-
-**Several at once.** A batch — from either tab — fills up to `apply.concurrency` (3)
-applications at the same time, each its own Claude session in its own Chrome tab group, so you'll
-see that many tab groups working side by side. The progress line lists every job in flight with
-Claude's last action. Two jobs on the **same Workday company** always run one after the other,
-since they'd share one signed-in session. Cost per application is unchanged; a batch just
-finishes sooner.
-
-**The applicant profile.** A resume answers "what have you done," not "are you authorized to work
-here" or "what's your salary expectation" — those need a real answer, and Claude is never allowed
-to guess one. Fill in the **applicant profile** form at the bottom of the **Resumes** tab once
-(name, contact info, links, work authorization, sponsorship, salary expectation) and every
-application draws on it.
-
-**Questions & answers.** Under the profile is a table of question → answer. Any question an
-application asks that neither the profile nor the resume answers is added there as **Pending**
-(with the company that asked and how often), the application still finishes as Needs review with
-its tab open, and the batch moves on. Answer a pending question once and every later application
-uses that answer verbatim. Remote-work preference, messaging opt-ins and the voluntary EEO
-questions are the usual first entries.
-
-**End-of-run report.** When a batch finishes, the Results tab shows how many new questions need
-answers and a **Show run report** button: every job's outcome and cost, which tabs were left open
-for you, the resume-in-terminal command per job, and the list of new questions. The same report
-is written to `logs/apply/batch-<id>-report.md`.
-
-**LinkedIn jobs: Claude finds the same job on the employer's own site.** LinkedIn's logged-out job
-pages don't say where the Apply button goes, and nothing in jobdash signs in to LinkedIn. Instead,
-at the end of every run (and when you click **Find company links** on the Results tab), each
-recommended LinkedIn job with no link is looked up on the employer's own careers site or job board
-with a web search — never by opening LinkedIn — comparing the title, location, description,
-requisition id and posting date. The **Match** column shows the result:
-
-| Match | Meaning |
-|---|---|
-| **95%** (green, 80+), **72%** (amber, 60-79), **45%** (red) | the posting it found, and how sure it is it's the same job; click to open it, hover for what agreed |
-| dashed border | below 70% — shown so you can check it, but Apply with Claude won't use it (paste it into the **Apply** tab if it's right) |
-| **none** | searched, no posting found on the employer's site |
-| **exact** | a link read straight off LinkedIn before that was removed |
-| — | not searched yet |
-
-A match of 70% or more becomes the job's **↗ Apply on …** link, and **Apply with Claude** applies
-there — first checking the page really is the same job, and stopping if it isn't. Expect **about
-$0.20 per job** searched (each job is searched once). Easy Apply jobs are searched too: the
-employer often posts them on its own site as well. You can still open any LinkedIn posting yourself
-and paste its link into the **Apply** tab. (Until 2026-09-23 links were read out of a Chrome signed
-in to a throwaway LinkedIn account; LinkedIn banned that account and that step was removed.)
-
-**Workday postings need a sign-in, and Claude signs in through Bitwarden** — your password never
-passes through Claude. One-time setup:
-
-1. The [Bitwarden](https://bitwarden.com/) Chrome extension, signed in, with its inline menu **on**:
-   Bitwarden → Settings → Autofill → **Show autofill suggestions on form fields**. As of
-   2026-09-23 it was off on this machine: clicking a Workday email field showed no Bitwarden menu
-   at all.
-2. A login saved for each Workday company you apply to, with that company's Workday site as its
-   website (for example `dowjones.wd1.myworkdayjobs.com`). Workday accounts are per company.
-3. The vault **unlocked** while a batch runs.
-
-On the sign-in page Claude clicks the email field, picks that company's login from Bitwarden's
-menu (by its name or website, never a second guess, since a wrong password can lock the Workday
-account), lets Bitwarden fill both fields, and signs in. It never creates an account and never
-types a password. When it can't sign in, the job ends `failed` with a note saying why: vault
-locked, no login for that company, the Bitwarden menu never appeared, or Workday's own error. This
-path has not yet been watched working end to end — check the first Workday job's log.
-
-**Where Claude is sent.** Greenhouse and Lever both serve the application form as a standalone
-page (Greenhouse's `embed/job_app` URL, Lever's `/apply`), so Claude opens that directly instead
-of the company's own careers page - several companies (Stripe, for one) embed the form in a
-cross-origin iframe there, which the browser extension cannot see into. **Workday postings need a
-candidate account** on each company's Workday tenant, which Claude signs in to through Bitwarden
-(above) and will never create — sign up there yourself first.
-
-**Prerequisites**, one-time:
-
-- Google Chrome (or another Chromium browser — Edge, Brave, etc.)
-- The [Claude in Chrome extension](https://chromewebstore.google.com/detail/claude/fcoeoabgfenejglbffodgkkbkcdhcgfn)
-  (≥1.0.36) installed
-- Claude Code signed in via `/login` — an API key or setup-token disables Chrome integration
-- Run `claude --chrome` once, interactively, from this repo's directory to accept the one-time
-  permission dialog, **then restart Chrome** — it only reads its native-messaging host list at
-  startup, so the extension won't connect until you do
-- `./run.sh` checks for this and warns if it isn't done yet; everything else works without it
-
-Claude drives your **real** Chrome window, opening tabs you can watch — nothing runs headless or
-out of sight.
-
-**Speed.** A full Greenhouse form is about 50 browser actions and 4 minutes: text fields go in
-one batched call, and the time is the custom dropdowns (school, degree, country, yes/no), each
-of which is a model turn or two. `apply.effort` (default `medium`) is the lever if you want it
-faster at some risk to judgment.
-
-**Cost.** Each application is its own `claude -p --chrome` invocation, so expect roughly
-**$1–$3 per application** depending on how many form fields and browser actions it takes (a full
-Greenhouse form with education and EEO questions is 80–120 browser actions). Keep the laptop
-awake: the batch runs `caffeinate -i` itself, but a closed lid still sleeps the machine and pauses
-the job until it wakes.
-The batch view shows a running total from the CLI's own reported cost.
-
-**Watching it, and unsticking it.** While a batch runs, the tab that started it (Results or Apply)
-shows every job in progress and, under each, the last thing Claude did (`Claude: tool …navigate {"url": …}`), plus a
-Cancel button. A **Details** toggle lists every job in the batch with its notes, a **View log** link
-that opens the full per-job transcript, and a **Resume in terminal** command. Three levels of
-detail, from a terminal:
-
-```bash
-tail -f logs/apply.log                         # one line per browser action, every job
-less logs/apply/batch-<batch>-job-<jobId>.log   # the full transcript of one application
-claude --resume <sessionId> --chrome            # continue that exact Claude session and ask it
-```
-
-The third is the one to reach for when Claude gets stuck: each application runs in its own Claude
-session, the session id is kept on the job (copy the command from Details), and resuming it puts
-you in an interactive conversation with the same context — ask what blocked it, or tell it what to
-do next. The tabs it used are closed once the session ends, but it can reopen them.
-
-A job that produces no browser action for `apply.idle-timeout` (3 minutes) is killed and marked
-**Apply failed** with a "Stuck:" note — the usual cause is a native macOS file-picker dialog, which
-freezes the page, and the prompt now tells Claude never to click the button that opens one.
-
-`logs/apply.log` never contains your resume text, your applicant profile, or the prompt — only job
-titles, browser actions, outcomes and timings. The per-job transcripts under `logs/apply/` **do**
-contain the values Claude typed into form fields, because that is exactly what you need to see when
-debugging one; `logs/` is gitignored.
-
----
-
 ## What's not built yet
 
 Deliberately out of scope for this version, with the seams left in place:
 
-- **Showing descriptions in the UI** — LinkedIn descriptions are fetched (since 2026-09-09) and
-  read by the AI scan, but no tab displays the text itself yet; `JobResponse` doesn't carry it.
-- **Relay/spam detection** — `description_hash` is now populated for fetched LinkedIn rows, so the
-  duplicate-body signal HANDOFF.md §5 describes is finally computable. Nothing reads it yet.
+- **Showing descriptions in the UI** — search-result descriptions are fetched and read by the AI
+  scan, but no tab displays the text itself yet; `JobResponse` doesn't carry it.
+- **Relay/spam detection** — `description_hash` is populated for fetched rows, so the
+  duplicate-body signal is computable. Nothing reads it yet; only the company-volume report
+  exists today.
 - **More ATS platforms** — the catalog file already lists 25 (Ashby, Workable, SmartRecruiters,
   Recruitee, …); three are implemented. Adding a fourth means one `JobSource` implementation —
   see the "Add a NEW ATS platform" row in [CODEMAP.md](CODEMAP.md).
-- **Relay/spam detection** — the duplicate-description signal is now possible for ATS rows but
-  isn't wired up; only the company-volume report exists today.
 - **Scheduling** — runs are manual only.
 
 See [HANDOFF.md](HANDOFF.md) for why each of these was cut and what it would take to add them,

@@ -1,4 +1,4 @@
-package com.ubaid.jobdash.source.linkedin;
+package com.ubaid.jobdash.source.search;
 
 import org.junit.jupiter.api.Test;
 

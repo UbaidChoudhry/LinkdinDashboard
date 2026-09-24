@@ -1,7 +1,7 @@
 package com.ubaid.jobdash.http;
 
-import com.ubaid.jobdash.source.linkedin.CardParser;
-import com.ubaid.jobdash.source.linkedin.JobCard;
+import com.ubaid.jobdash.source.search.CardParser;
+import com.ubaid.jobdash.source.search.JobCard;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;

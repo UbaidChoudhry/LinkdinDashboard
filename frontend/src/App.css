@@ -581,9 +581,20 @@ td {
   opacity: 0.65;
 }
 
+/* Under the figure rather than beside it, like the LCA employer below: side by side it made the
+   Salary column ~100px wider, and rows are already two lines tall from the AI reason. */
 .salary-source {
+  display: block;
   color: var(--text);
   font-size: 11px;
+}
+
+/* Some board locations run to a whole list ("Remote, Canada; Remote, United Kingdom; ..."), and
+   uncapped the longest one set the column to 350px. Full text is in the cell's title. */
+.col-location {
+  max-width: clamp(140px, 10vw, 260px);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Matched LCA employer legal entity, shown under the salary figure. */

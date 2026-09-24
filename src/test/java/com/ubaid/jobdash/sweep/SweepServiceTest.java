@@ -12,7 +12,7 @@ import com.ubaid.jobdash.http.support.InMemoryRequestBudgetStore;
 import com.ubaid.jobdash.http.support.StubHttpResponse;
 import com.ubaid.jobdash.filter.FilterEngine;
 import com.ubaid.jobdash.salary.SalaryEnrichmentService;
-import com.ubaid.jobdash.source.linkedin.CardParser;
+import com.ubaid.jobdash.source.search.CardParser;
 import com.ubaid.jobdash.store.JobCardInsert;
 import com.ubaid.jobdash.store.JobListingRepository;
 import com.ubaid.jobdash.store.SweepRunRepository;

@@ -67,7 +67,7 @@ export function CompanyGroupRow({ group, expanded, onToggle, selectedCount, onTo
       <td className="col-company group-company" title={group.company}>
         {group.company}
       </td>
-      <td>
+      <td className="col-location">
         {locations.length === 0
           ? "–"
           : locations.length === 1

@@ -1,7 +1,7 @@
 package com.ubaid.jobdash.http;
 
-import com.ubaid.jobdash.source.linkedin.CardParser;
-import com.ubaid.jobdash.source.linkedin.DetailParser;
+import com.ubaid.jobdash.source.search.CardParser;
+import com.ubaid.jobdash.source.search.DetailParser;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 

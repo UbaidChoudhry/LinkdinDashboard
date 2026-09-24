@@ -1,9 +1,9 @@
 package com.ubaid.jobdash.http;
 
-import com.ubaid.jobdash.source.linkedin.CardParser;
-import com.ubaid.jobdash.source.linkedin.DetailParser;
-import com.ubaid.jobdash.source.linkedin.JobCard;
-import com.ubaid.jobdash.source.linkedin.JobDetail;
+import com.ubaid.jobdash.source.search.CardParser;
+import com.ubaid.jobdash.source.search.DetailParser;
+import com.ubaid.jobdash.source.search.JobCard;
+import com.ubaid.jobdash.source.search.JobDetail;
 
 import java.io.IOException;
 import java.net.URI;

@@ -1,4 +1,4 @@
-package com.ubaid.jobdash.source.linkedin;
+package com.ubaid.jobdash.source.search;
 
 /**
  * What the LinkedIn guest job-detail fragment ({@code /jobs-guest/jobs/api/jobPosting/{id}})

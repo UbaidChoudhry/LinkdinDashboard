@@ -6,7 +6,7 @@ import com.ubaid.jobdash.http.support.InMemoryCircuitStateStore;
 import com.ubaid.jobdash.http.support.InMemoryRequestBudgetStore;
 import com.ubaid.jobdash.http.support.StubHttpClient;
 import com.ubaid.jobdash.http.support.StubHttpResponse;
-import com.ubaid.jobdash.source.linkedin.CardParser;
+import com.ubaid.jobdash.source.search.CardParser;
 import org.junit.jupiter.api.Test;
 
 import java.net.URI;

@@ -1508,7 +1508,7 @@ resolver that accepts needing one, on a burner account. See below.
 ### The apply-kind marker, free from the same fragment
 
 The fragment does carry one useful, free signal: whether the LinkedIn posting itself is Easy
-Apply. `source.linkedin.DetailParser.applyKindOf` reads it two ways - `onsite` when an Apply
+Apply. `source.search.DetailParser.applyKindOf` reads it two ways - `onsite` when an Apply
 button's `data-tracking-control-name` equals `public_jobs_apply-link-onsite`; `offsite` when any
 `div.contextual-sign-in-modal`'s `data-impression-id` starts with
 `public_jobs_apply-link-offsite` (matched as a prefix, not an exact modal - unrelated sign-in
