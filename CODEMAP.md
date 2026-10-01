@@ -12,7 +12,7 @@ frontend/  React + TypeScript dashboard (Vite dev server, :5173)
 src/       Spring Boot backend (Java 21, :8080)
              ├─ main/java/com/ubaid/jobdash/   application code, by package (below)
              ├─ main/resources/                application.yml, Flyway migrations
-             └─ test/                          mirrors main/java/, 568 tests
+             └─ test/                          mirrors main/java/, 570 tests
 data/      the SQLite database file (gitignored, created on first boot)
 ```
 
@@ -525,7 +525,7 @@ Test packages mirror `main/java` exactly — if you're looking for tests of
   file names for what each fixture represents (the two 26-byte files are the real end-of-results
   sentinel, not corrupt captures).
 
-Current count: **568 tests**. Run `./mvnw test`. Salary tests follow the same rules — the
+Current count: **570 tests**. Run `./mvnw test`. Salary tests follow the same rules — the
 Adzuna / h1bapi sources are driven through `StubHttpClient`, `SalaryRateLimiter` through
 `FakeClock`/`FakeSleeper`, and `LcaImportServiceTest` generates a tiny `.xlsx` in memory.
 
@@ -538,7 +538,7 @@ Adzuna / h1bapi sources are driven through `StubHttpClient`, `SalaryRateLimiter`
 | Change what counts as a "senior" title to exclude | `V2__seed.sql` (defaults) or the Filters tab in the UI (runtime) — either way, matching logic is in `filter/FilterRuleSet.java` |
 | Add a new field to the job table | `V1__init.sql`-style new migration → `domain/JobListing.java` → `store/JobListingRepository.java` mapping → `web/dto/JobResponse.java` → `frontend/src/types/api.ts` |
 | Understand why a run stopped early | `sweep/SweepService.java`, the `switch` on `ResponseOutcome` in `runShard()` — cross-reference with `sweep_run.status` in the DB |
-| Finish a run LinkedIn's cooldown cut short | `POST /api/runs/{id}/resume` → `RunOrchestrator.resumeRun`: detail fetch for the rows the run never read, then the scan; never re-searches. `GET /api/runs/cooldown` feeds the countdown in `RunProgress.tsx`'s `RetryPanel`. HANDOFF.md §10 |
+| Finish a run LinkedIn's cooldown cut short | `POST /api/runs/{id}/resume` → `RunOrchestrator.resumeRun`: detail fetch for the rows the run never read, then the scan; never re-searches. `GET /api/runs/cooldown` feeds the countdown in `RunProgress.tsx`'s `RetryPanel`; Retry during a cooldown ends it early (`CircuitBreaker.endCooldownEarly`, one probe request). HANDOFF.md §10 |
 | Add a new REST endpoint | a method on the matching `web/*Controller.java`, backed by a repository method in `store/` |
 | Change LinkedIn query parameters | `sweep/SweepQueryBuilder.java` only |
 | Change how many job descriptions a LinkedIn run fetches | all of them by default. `application.yml` → `sweep.detail.max-per-run` (0 = no cap) and `sweep.budget.*`, which it draws on. Turning the phase off entirely: `sweep.detail.enabled: false` |

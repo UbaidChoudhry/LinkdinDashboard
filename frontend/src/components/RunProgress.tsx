@@ -128,9 +128,10 @@ export function RunProgress({ run, streamError, onCancelled, onResumed }: RunPro
 }
 
 /**
- * The "Retry" a stopped LinkedIn run was missing. A cooldown is not something the user can
- * clear, so the only useful thing to show is a countdown - and then a button that does the one
- * thing a fresh run would not: finish THIS run's jobs. Resuming fetches the descriptions the run
+ * The "Retry" a stopped LinkedIn run was missing: a button that does the one thing a fresh run
+ * would not - finish THIS run's jobs. It is never disabled by the cooldown: retrying during one
+ * ends it early, and the first LinkedIn request becomes the breaker's single test (HANDOFF.md §10),
+ * so a still-blocked LinkedIn costs one request and a longer cooldown, not a burst. Resuming fetches the descriptions the run
  * collected but never read and re-runs the AI scan; it does not repeat the search.
  */
 function RetryPanel({
@@ -190,7 +191,7 @@ function RetryPanel({
       onResumed(runId);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to resume run.");
-      // A 503 here means the cooldown is still on server-side; refresh the countdown right away.
+      // The breaker may have re-tripped server-side meanwhile; refresh the countdown right away.
       if (watchCooldown) {
         getCooldown()
           .then((c) => {
@@ -207,7 +208,7 @@ function RetryPanel({
   const label = resuming
     ? "Resuming..."
     : waiting
-      ? `Retry available in ${formatCountdown(remaining)}`
+      ? `Retry now (cooldown ${formatCountdown(remaining)} left)`
       : unfetched > 0
         ? `Retry: fetch ${unfetched} description${unfetched === 1 ? "" : "s"} and re-scan`
         : "Retry: re-run the AI scan";
@@ -223,7 +224,9 @@ function RetryPanel({
         {waiting && <> LinkedIn cooldown ends at {formatClock(cooldown?.until ?? null)}.</>}{" "}
         <InfoTip label="About retry">
           Retry reads the missing descriptions from LinkedIn and re-runs the AI scan over this
-          run's jobs; it never repeats the search.
+          run's jobs; it never repeats the search. During the cooldown it ends the wait early: one
+          test request goes to LinkedIn first, and if LinkedIn is still blocking, the cooldown
+          starts again, longer (up to an hour).
         </InfoTip>
       </p>
       {error && (
@@ -231,7 +234,7 @@ function RetryPanel({
           {error}
         </p>
       )}
-      <button type="button" onClick={handleResume} disabled={resuming || waiting} className="retry-button">
+      <button type="button" onClick={handleResume} disabled={resuming} className="retry-button">
         {label}
       </button>
     </div>

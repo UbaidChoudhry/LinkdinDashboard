@@ -908,6 +908,17 @@ points at Retry.
 Tests: `RunOrchestratorTest` (resume order, blocked-again, ATS-only, in-flight refusal) and
 `JobDashApiTest` (cooldown endpoint, resume 404/409/503, unfetched count only on finished runs).
 
+**Changed 2026-09-25: Retry is never greyed out by the cooldown.** The user wanted to retry when
+they chose. A resume during a cooldown is no longer a 503; `RunController.resumeRun` calls
+`CircuitBreaker.endCooldownEarly()`, which leaves the breaker OPEN with `openUntil = now`, so the
+detail phase's first request becomes the ordinary single half-open probe. Success closes the
+breaker and the phase carries on; a still-blocked LinkedIn costs that one request and re-opens the
+breaker with the doubled cooldown (trip count kept, capped at `sweep.breaker.max-open-duration`),
+and the run ends `blocked` again, still retryable. The countdown still shows, as "Retry now
+(cooldown m:ss left)". Starting a NEW run during a cooldown is still refused with 503 - only Retry
+was asked for. Tests: `CircuitBreakerTest` (early end admits one probe, a failed probe backs off;
+no-op with no cooldown), `JobDashApiTest.resumeRunDuringTheLinkedInCooldownEndsItEarlyInsteadOfRefusing`.
+
 ---
 
 ## 11. Posting-stated salary, extracted during the AI scan (added 2026-09-10)

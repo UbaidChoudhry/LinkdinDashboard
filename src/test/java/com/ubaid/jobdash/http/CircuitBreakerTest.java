@@ -190,6 +190,41 @@ class CircuitBreakerTest {
         assertEquals(CircuitBreaker.Admission.ADMITTED, breaker.tryAcquire());
     }
 
+    /**
+     * The run panel's Retry during a cooldown: the wait is skipped, but the next request is still
+     * only the single probe, and a failed probe backs off exactly as if the cooldown had run out.
+     */
+    @Test
+    void endingTheCooldownEarlyAdmitsOneProbeAndAFailedProbeStillBacksOff() {
+        FakeClock clock = new FakeClock(Instant.parse("2026-01-01T00:00:00Z"));
+        InMemoryCircuitStateStore store = new InMemoryCircuitStateStore();
+        CircuitBreaker breaker = newBreaker(clock, store);
+        breaker.tryAcquire();
+        breaker.recordFailure(CircuitBreaker.FailureKind.HARD);
+        clock.advance(Duration.ofMinutes(2));
+        assertEquals(CircuitBreaker.Admission.REFUSED, breaker.tryAcquire(), "still cooling down");
+
+        assertTrue(breaker.endCooldownEarly());
+
+        assertEquals(CircuitBreaker.Admission.ADMITTED, breaker.tryAcquire(), "the probe");
+        assertEquals(CircuitBreaker.Admission.REFUSED, breaker.tryAcquire(), "only one probe");
+        breaker.recordFailure(CircuitBreaker.FailureKind.HARD);
+        CircuitSnapshot snap = store.load();
+        assertEquals(CircuitState.OPEN, snap.state());
+        assertEquals(2, snap.consecutiveTrips());
+        assertEquals(MAX_OPEN_DURATION, Duration.between(snap.openedAt(), snap.openUntil()));
+    }
+
+    @Test
+    void endingTheCooldownEarlyIsANoOpWhenThereIsNoCooldown() {
+        FakeClock clock = new FakeClock(Instant.parse("2026-01-01T00:00:00Z"));
+        InMemoryCircuitStateStore store = new InMemoryCircuitStateStore();
+        CircuitBreaker breaker = newBreaker(clock, store);
+
+        assertTrue(!breaker.endCooldownEarly());
+        assertEquals(CircuitState.CLOSED, store.load().state());
+    }
+
     @Test
     void probeFailureReopensWithDoubledCooldownAndReleasesProbeSlot() {
         FakeClock clock = new FakeClock(Instant.parse("2026-01-01T00:00:00Z"));

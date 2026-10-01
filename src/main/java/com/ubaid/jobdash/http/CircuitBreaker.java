@@ -90,6 +90,32 @@ public final class CircuitBreaker {
     }
 
     /**
+     * Ends an OPEN cooldown now, at the user's request (the run panel's Retry). The breaker stays
+     * OPEN with its cooldown marked as lapsed, so the next {@link #tryAcquire()} becomes the single
+     * HALF_OPEN probe exactly as it would have when the cooldown ran out: one request to LinkedIn,
+     * then CLOSED if it succeeds, or OPEN again with the doubled cooldown if it is still blocked.
+     * The trip count is kept, so skipping the wait never shortens the next cooldown. No-op in any
+     * other state.
+     *
+     * @return true if a cooldown was actually cut short
+     */
+    public boolean endCooldownEarly() {
+        lock.lock();
+        try {
+            CircuitSnapshot snap = store.load();
+            Instant now = clock.instant();
+            if (snap.state() != CircuitState.OPEN || snap.openUntil() == null || !now.isBefore(snap.openUntil())) {
+                return false;
+            }
+            store.save(new CircuitSnapshot(CircuitState.OPEN, snap.consecutiveTrips(), snap.softFailureCount(),
+                    snap.openedAt(), now));
+            return true;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
      * Reports a successful request. Always resets the soft-failure counter to zero. If this
      * was the outstanding half-open probe, fully closes the breaker and resets the consecutive
      * trip count (so the next trip's cooldown starts back at {@code openDuration}).

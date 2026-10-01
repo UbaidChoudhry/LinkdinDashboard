@@ -1,6 +1,7 @@
 package com.ubaid.jobdash.web;
 
 import com.ubaid.jobdash.domain.SweepRun;
+import com.ubaid.jobdash.http.CircuitBreaker;
 import com.ubaid.jobdash.http.CircuitSnapshot;
 import com.ubaid.jobdash.http.CircuitState;
 import com.ubaid.jobdash.http.CircuitStateStore;
@@ -14,6 +15,8 @@ import com.ubaid.jobdash.web.dto.CooldownResponse;
 import com.ubaid.jobdash.web.dto.CreateRunRequest;
 import com.ubaid.jobdash.web.dto.RunIdResponse;
 import com.ubaid.jobdash.web.dto.RunResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -52,6 +55,8 @@ public class RunController {
     /** Generous emitter timeout so a slow/long run's stream is never dropped early. */
     private static final long SSE_TIMEOUT_MS = Duration.ofMinutes(30).toMillis();
     private static final List<String> VALID_SOURCES = List.of("linkedin", "greenhouse", "lever", "workday");
+    private static final Logger log = LoggerFactory.getLogger(RunController.class);
+
     /** Statuses a run passes through before reaching a terminal one. Mirror of the frontend's IN_FLIGHT_STATUSES. */
     private static final List<String> IN_FLIGHT_STATUSES =
             List.of("running", "fetching_details", "scanning", "finding_links");
@@ -61,17 +66,20 @@ public class RunController {
     private final SweepRunRepository sweepRunRepository;
     private final JobListingRepository jobListingRepository;
     private final CircuitStateStore circuitStateStore;
+    private final CircuitBreaker circuitBreaker;
     private final Clock clock;
     private final ScheduledExecutorService sseScheduler;
 
     public RunController(RunOrchestrator runOrchestrator, RunProgressRegistry runProgressRegistry,
                           SweepRunRepository sweepRunRepository, JobListingRepository jobListingRepository,
-                          CircuitStateStore circuitStateStore, Clock clock, ScheduledExecutorService sseScheduler) {
+                          CircuitStateStore circuitStateStore, CircuitBreaker circuitBreaker, Clock clock,
+                          ScheduledExecutorService sseScheduler) {
         this.runOrchestrator = runOrchestrator;
         this.runProgressRegistry = runProgressRegistry;
         this.sweepRunRepository = sweepRunRepository;
         this.jobListingRepository = jobListingRepository;
         this.circuitStateStore = circuitStateStore;
+        this.circuitBreaker = circuitBreaker;
         this.clock = clock;
         this.sseScheduler = sseScheduler;
     }
@@ -164,8 +172,13 @@ public class RunController {
     /**
      * Re-opens a finished run for the phases a LinkedIn cooldown, cap or budget cut short:
      * fetching the descriptions of the rows it collected but never read, then the AI scan. The
-     * search itself is not repeated. Same guards as starting a run - one run at a time, and no
-     * LinkedIn traffic while the breaker is open - because it spends the same budget.
+     * search itself is not repeated. One run at a time, like starting a run.
+     * <p>
+     * Unlike starting a run, a LinkedIn cooldown does not refuse it: the user can retry whenever
+     * they choose. Retrying during a cooldown ends it early ({@link CircuitBreaker#endCooldownEarly}),
+     * which turns the phase's first request into the breaker's single half-open probe - so if
+     * LinkedIn is still blocking, it costs one request and the breaker re-opens with a longer
+     * cooldown; the run ends "blocked" again and stays retryable.
      */
     @PostMapping("/api/runs/{id}/resume")
     public ResponseEntity<RunIdResponse> resumeRun(@PathVariable long id) {
@@ -176,8 +189,8 @@ public class RunController {
                     : "Run " + running.id() + " is already in progress. Wait for it to finish or cancel it "
                             + "before resuming run " + id + ".");
         });
-        if (run.sources() == null || run.sources().contains("linkedin")) {
-            checkCircuitNotOpen();
+        if ((run.sources() == null || run.sources().contains("linkedin")) && circuitBreaker.endCooldownEarly()) {
+            log.info("run {}: Retry during the LinkedIn cooldown - ending it early; the next request is the probe", id);
         }
         runOrchestrator.resumeRun(id);
         return ResponseEntity.accepted().body(new RunIdResponse(id));

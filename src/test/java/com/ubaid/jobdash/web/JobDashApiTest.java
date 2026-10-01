@@ -376,21 +376,26 @@ class JobDashApiTest {
                 .andExpect(jsonPath("$.message", containsString("Run " + other + " is already in progress")));
     }
 
-    /** The whole point of Retry is the cooldown - so while it is on, a resume is refused exactly like a new run. */
+    /**
+     * Retry is the user's call at any time: during a cooldown it is accepted and ends the cooldown
+     * early, leaving the breaker OPEN-but-lapsed so its next request is the single half-open probe.
+     * The trip count is kept, so a still-blocked probe re-opens with the longer cooldown.
+     */
     @Test
-    void resumeRunReturns503WhileTheLinkedInCooldownIsOn() throws Exception {
+    void resumeRunDuringTheLinkedInCooldownEndsItEarlyInsteadOfRefusing() throws Exception {
         long blocked = createRunRow(Instant.now().minusSeconds(600));
         sweepRunRepository.finish(blocked, Instant.now().minusSeconds(60), "blocked");
         Instant now = clock.instant();
         circuitStateStore.save(new CircuitSnapshot(CircuitState.OPEN, 1, 0, now, now.plusSeconds(600)));
 
         mockMvc.perform(post("/api/runs/" + blocked + "/resume"))
-                .andExpect(status().isServiceUnavailable())
-                .andExpect(jsonPath("$.message", containsString("cooldown")));
-        // Refused before anything was touched: the row is still finished and still "blocked".
-        mockMvc.perform(get("/api/runs/" + blocked))
-                .andExpect(jsonPath("$.status").value("blocked"))
-                .andExpect(jsonPath("$.finishedAt").isNotEmpty());
+                .andExpect(status().isAccepted());
+
+        CircuitSnapshot after = circuitStateStore.load();
+        assertThat(after.consecutiveTrips()).isEqualTo(1);
+        assertThat(after.openUntil()).isBeforeOrEqualTo(clock.instant());
+        mockMvc.perform(get("/api/runs/cooldown"))
+                .andExpect(jsonPath("$.active").value(false));
     }
 
     /** A finished run reports how many LinkedIn rows the detail phase never reached, so the UI can size Retry. */
