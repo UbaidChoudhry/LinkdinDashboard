@@ -198,4 +198,88 @@ class RateLimiterTest {
         RateLimiter afterRestart = newLimiter(clock, new FakeSleeper(clock), sharedStore, 150, 3);
         assertInstanceOf(RateLimiter.Decision.BlockedByDailyBudget.class, afterRestart.checkBudget());
     }
+
+    // --- Slowdown after a block ------------------------------------------
+
+    private RateLimiter newSlowingLimiter(FakeClock clock, InMemoryRequestBudgetStore store) {
+        return new RateLimiter(clock, new FakeSleeper(clock), store, MIN_DELAY, MAX_DELAY, 500, 1000,
+                Duration.ofHours(12), 4);
+    }
+
+    private static void recordBlock(InMemoryRequestBudgetStore store, Instant at) {
+        store.record(new RequestRecord(at, "https://example.com", 429, 0, ResponseOutcome.BLOCKED));
+    }
+
+    @Test
+    void delayDoublesForEachRecentBlockUpToTheCap() {
+        FakeClock clock = new FakeClock(Instant.parse("2026-01-01T12:00:00Z"));
+        InMemoryRequestBudgetStore store = new InMemoryRequestBudgetStore();
+        RateLimiter limiter = newSlowingLimiter(clock, store);
+
+        assertEquals(1, limiter.slowdown());
+        recordBlock(store, clock.instant());
+        assertEquals(2, limiter.slowdown());
+        recordBlock(store, clock.instant());
+        assertEquals(4, limiter.slowdown());
+        recordBlock(store, clock.instant());
+        assertEquals(4, limiter.slowdown(), "capped at maxSlowdown");
+    }
+
+    @Test
+    void slowedPacingWaitsAMultipleOfTheConfiguredBounds() throws InterruptedException {
+        FakeClock clock = new FakeClock(Instant.parse("2026-01-01T12:00:00Z"));
+        FakeSleeper sleeper = new FakeSleeper(clock);
+        InMemoryRequestBudgetStore store = new InMemoryRequestBudgetStore();
+        RateLimiter limiter = new RateLimiter(clock, sleeper, store, MIN_DELAY, MAX_DELAY, 500, 1000,
+                Duration.ofHours(12), 4);
+        recordBlock(store, clock.instant());
+        recordBlock(store, clock.instant());
+
+        for (int i = 0; i < 50; i++) {
+            limiter.acquirePacing().close();
+        }
+
+        assertEquals(49, sleeper.sleepCount());
+        for (Duration d : sleeper.sleeps()) {
+            assertTrue(d.compareTo(MIN_DELAY.multipliedBy(4)) >= 0, "delay " + d + " below 4x min");
+            assertTrue(d.compareTo(MAX_DELAY.multipliedBy(4)) <= 0, "delay " + d + " above 4x max");
+        }
+    }
+
+    @Test
+    void slowdownFadesOnceBlocksAgeOutOfTheWindow() {
+        FakeClock clock = new FakeClock(Instant.parse("2026-01-01T12:00:00Z"));
+        InMemoryRequestBudgetStore store = new InMemoryRequestBudgetStore();
+        RateLimiter limiter = newSlowingLimiter(clock, store);
+        recordBlock(store, clock.instant());
+        assertEquals(2, limiter.slowdown());
+
+        clock.advance(Duration.ofHours(12).plusSeconds(1));
+
+        assertEquals(1, limiter.slowdown());
+    }
+
+    @Test
+    void transportFailuresAndOtherOutcomesDoNotSlowPacing() {
+        FakeClock clock = new FakeClock(Instant.parse("2026-01-01T12:00:00Z"));
+        InMemoryRequestBudgetStore store = new InMemoryRequestBudgetStore();
+        RateLimiter limiter = newSlowingLimiter(clock, store);
+
+        store.record(new RequestRecord(clock.instant(), "https://example.com", -1, 0, ResponseOutcome.BLOCKED));
+        store.record(new RequestRecord(clock.instant(), "https://example.com", 404, 0, ResponseOutcome.GONE));
+        store.record(new RequestRecord(clock.instant(), "https://example.com", 200, 0, ResponseOutcome.OK));
+
+        assertEquals(1, limiter.slowdown());
+    }
+
+    @Test
+    void maxSlowdownOfOneTurnsTheSlowdownOff() {
+        FakeClock clock = new FakeClock(Instant.parse("2026-01-01T12:00:00Z"));
+        InMemoryRequestBudgetStore store = new InMemoryRequestBudgetStore();
+        RateLimiter limiter = new RateLimiter(clock, new FakeSleeper(clock), store, MIN_DELAY, MAX_DELAY, 500, 1000,
+                Duration.ofHours(12), 1);
+        recordBlock(store, clock.instant());
+
+        assertEquals(1, limiter.slowdown());
+    }
 }

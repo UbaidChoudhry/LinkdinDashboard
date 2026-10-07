@@ -114,7 +114,7 @@ class SweepServiceTest {
 
         SweepShardsProperties shardsProperties = new SweepShardsProperties(null);
         SweepProperties sweepProperties = new SweepProperties(
-                new SweepProperties.Pacing(Duration.ofSeconds(6), Duration.ofSeconds(12)),
+                new SweepProperties.Pacing(Duration.ofSeconds(6), Duration.ofSeconds(12), Duration.ZERO, 1),
                 new SweepProperties.Budget(150, 300, testModePageCap),
                 new SweepProperties.Breaker(Duration.ofMinutes(30), Duration.ofMinutes(60), 2),
                 new SweepProperties.Detail(true, 60));

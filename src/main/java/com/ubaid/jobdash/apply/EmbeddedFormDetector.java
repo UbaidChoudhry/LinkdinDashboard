@@ -43,7 +43,7 @@ public class EmbeddedFormDetector {
     private static final int MAX_BODY_BYTES = 2 * 1024 * 1024;
     private static final String USER_AGENT =
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
-                    + "Chrome/124.0.0.0 Safari/537.36";
+                    + "Chrome/154.0.0.0 Safari/537.36";
 
     /** A complete Greenhouse standalone-form URL, with the {@code &} possibly HTML-escaped. */
     private static final Pattern GREENHOUSE_JOB_APP = Pattern.compile(

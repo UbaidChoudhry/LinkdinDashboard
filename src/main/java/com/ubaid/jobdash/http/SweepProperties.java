@@ -15,8 +15,13 @@ import java.time.Duration;
 @ConfigurationProperties(prefix = "sweep")
 public record SweepProperties(Pacing pacing, Budget budget, Breaker breaker, @DefaultValue Detail detail) {
 
-    /** Layer A — inter-request pacing bounds. Delay is uniform random in [minDelay, maxDelay]. */
-    public record Pacing(Duration minDelay, Duration maxDelay) {
+    /**
+     * Layer A — inter-request pacing bounds. Delay is uniform random in [minDelay, maxDelay],
+     * doubled for each LinkedIn block within {@code slowdownWindow}, up to {@code maxSlowdown}
+     * times ({@code 1} turns the slowdown off).
+     */
+    public record Pacing(Duration minDelay, Duration maxDelay,
+                         @DefaultValue("12h") Duration slowdownWindow, @DefaultValue("4") int maxSlowdown) {
     }
 
     /** Layer B/C — per-run cap and rolling 24h budget. */

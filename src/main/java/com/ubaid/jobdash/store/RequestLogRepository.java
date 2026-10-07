@@ -40,4 +40,20 @@ public class RequestLogRepository {
                 .query(Long.class)
                 .single();
     }
+
+    /**
+     * Number of requests logged at or after {@code since} that got an HTTP response classified
+     * {@code blocked}. Transport failures are logged as blocked too, but with no status code, so
+     * they are left out.
+     */
+    public long countBlockedSince(Instant since) {
+        return client.sql("""
+                        select count(*) from request_log
+                        where requested_at >= :since and outcome = :outcome and status_code is not null
+                        """)
+                .param("since", Timestamps.toText(since))
+                .param("outcome", "blocked")
+                .query(Long.class)
+                .single();
+    }
 }

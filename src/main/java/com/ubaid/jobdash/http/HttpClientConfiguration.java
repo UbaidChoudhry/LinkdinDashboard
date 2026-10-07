@@ -62,7 +62,8 @@ public class HttpClientConfiguration {
         SweepProperties.Pacing pacing = properties.pacing();
         SweepProperties.Budget budget = properties.budget();
         return new RateLimiter(clock, sleeper, requestBudgetStore,
-                pacing.minDelay(), pacing.maxDelay(), budget.perRun(), budget.perRollingDay());
+                pacing.minDelay(), pacing.maxDelay(), budget.perRun(), budget.perRollingDay(),
+                pacing.slowdownWindow(), pacing.maxSlowdown());
     }
 
     /**

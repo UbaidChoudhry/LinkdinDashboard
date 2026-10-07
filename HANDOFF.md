@@ -919,6 +919,23 @@ and the run ends `blocked` again, still retryable. The countdown still shows, as
 was asked for. Tests: `CircuitBreakerTest` (early end admits one probe, a failed probe backs off;
 no-op with no cooldown), `JobDashApiTest.resumeRunDuringTheLinkedInCooldownEndsItEarlyInsteadOfRefusing`.
 
+### Slowing down after a block (added 2026-10-07)
+
+Real-use failure: the pacing was doing exactly what it was configured to do (7-11s gaps), but
+LinkedIn had grown less tolerant. In September 400+ requests per sitting went through cleanly; on
+2026-10-07 run 36 got 180 through before a 429 on a detail fetch, and then each retry at full
+speed got **15, 22, then 5** requests through before the next 429, with retries 6 minutes and
+3 hours apart. Once LinkedIn flags the IP it stays touchy for hours, and coming back at the old
+pace only re-trips it.
+
+`RateLimiter.slowdown()` now stretches the layer-A delay: x2 for every block within
+`sweep.pacing.slowdown-window` (12h), capped at `sweep.pacing.max-slowdown` (4, i.e. 24-48s).
+The block count comes from `request_log` (`RequestBudgetStore.countBlockedSince`: outcome
+`blocked` **with** a status code, so transport errors don't count), so it survives a restart and
+fades on its own as blocks age out. Nothing is capped: the run does the same work, just slower.
+`max-slowdown: 1` turns it off. Tests: `RateLimiterTest` (doubling + cap, 4x bounds, fade-out,
+transport errors ignored, off switch), `RequestLogRepositoryTest.countBlockedSinceCountsOnlyBlocksLinkedInActuallySent`.
+
 ---
 
 ## 11. Posting-stated salary, extracted during the AI scan (added 2026-09-10)

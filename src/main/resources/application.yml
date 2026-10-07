@@ -18,6 +18,13 @@ sweep:
   pacing:
     min-delay: 6s
     max-delay: 12s
+    # After LinkedIn blocks us (429/999), the delay above doubles for every block within this
+    # window, up to max-slowdown times (so 24-48s at most). Retrying at full speed after a block
+    # does not work: on 2026-10-07 retries got 15, 22, then 5 requests through before the next
+    # 429. Read from request_log, so it survives restarts and fades as blocks age out.
+    # max-slowdown: 1 turns it off.
+    slowdown-window: 12h
+    max-slowdown: 4
   # One request = one search page OR one job-detail fetch; both count here, because both hit
   # the same host from the same IP. Sized 2026-09-09 so one sweep can fetch a description for
   # EVERY passing job it finds (a 24h US sweep: ~50 search pages + ~330 details), plus a second

@@ -23,4 +23,18 @@ class RequestLogRepositoryTest extends AbstractStoreTest {
         assertThat(requestLogRepository.countSince(base.minus(3, ChronoUnit.HOURS))).isEqualTo(5);
         assertThat(requestLogRepository.countSince(base.plus(3, ChronoUnit.HOURS))).isEqualTo(0);
     }
+
+    @Test
+    void countBlockedSinceCountsOnlyBlocksLinkedInActuallySent() {
+        Instant base = Instant.parse("2026-08-28T12:00:00Z");
+
+        requestLogRepository.append(null, base.minus(1, ChronoUnit.HOURS), "https://x/1", 429, "blocked", null, 5);
+        requestLogRepository.append(null, base, "https://x/2", 429, "blocked", null, 5);
+        requestLogRepository.append(null, base, "https://x/3", null, "blocked", null, 5);
+        requestLogRepository.append(null, base, "https://x/4", 200, "ok", 100, 5);
+        requestLogRepository.append(null, base.plus(1, ChronoUnit.HOURS), "https://x/5", 999, "blocked", null, 5);
+
+        assertThat(requestLogRepository.countBlockedSince(base)).isEqualTo(2);
+        assertThat(requestLogRepository.countBlockedSince(base.minus(2, ChronoUnit.HOURS))).isEqualTo(3);
+    }
 }

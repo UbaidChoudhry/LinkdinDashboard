@@ -81,7 +81,7 @@ class DetailFetchServiceTest {
         PacedHttpClient pacedHttpClient = new PacedHttpClient(http, rateLimiter, breaker, budgetStore,
                 new ResponseOutcomeDetector(), new CardParser(), detailParser, clock);
         SweepProperties properties = new SweepProperties(
-                new SweepProperties.Pacing(Duration.ofSeconds(6), Duration.ofSeconds(12)),
+                new SweepProperties.Pacing(Duration.ofSeconds(6), Duration.ofSeconds(12), Duration.ZERO, 1),
                 new SweepProperties.Budget(perRunCap, 300, 3),
                 new SweepProperties.Breaker(Duration.ofMinutes(30), Duration.ofMinutes(60), 2),
                 new SweepProperties.Detail(enabled, maxPerRun));

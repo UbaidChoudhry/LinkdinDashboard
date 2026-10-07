@@ -14,7 +14,9 @@ import java.util.concurrent.locks.ReentrantLock;
  *     single-permit gate. Every outbound request serializes through it, and the delay
  *     before the next request is measured from the <em>end</em> of the previous one
  *     (recorded when the returned {@link PacingPermit} is closed) — not from when it
- *     started, so a slow response can never shorten the following gap.</li>
+ *     started, so a slow response can never shorten the following gap. After LinkedIn blocks
+ *     us the delay stretches: it doubles for every block in the last {@code slowdownWindow},
+ *     up to {@code maxSlowdown} times the normal delay (see {@link #slowdown()}).</li>
  *     <li><b>Layer B — per-run cap</b> ({@link #checkBudget()}): a simple in-memory
  *     counter reset per run via {@link #resetRunCount()}. Exceeding it is a clean stop
  *     signal, not an error.</li>
@@ -33,16 +35,30 @@ public final class RateLimiter {
     private final Duration maxDelay;
     private final int perRunCap;
     private final int perRollingDayCap;
+    private final Duration slowdownWindow;
+    private final int maxSlowdown;
 
     private final ReentrantLock pacingGate = new ReentrantLock();
     private volatile Instant lastResponseEnd;
     private final AtomicInteger runCount = new AtomicInteger(0);
 
+    /** A limiter that never slows down after a block. */
     public RateLimiter(Clock clock, Sleeper sleeper, RequestBudgetStore budgetStore,
                         Duration minDelay, Duration maxDelay, int perRunCap, int perRollingDayCap) {
+        this(clock, sleeper, budgetStore, minDelay, maxDelay, perRunCap, perRollingDayCap, Duration.ZERO, 1);
+    }
+
+    public RateLimiter(Clock clock, Sleeper sleeper, RequestBudgetStore budgetStore,
+                        Duration minDelay, Duration maxDelay, int perRunCap, int perRollingDayCap,
+                        Duration slowdownWindow, int maxSlowdown) {
         if (minDelay.isNegative() || maxDelay.compareTo(minDelay) < 0) {
             throw new IllegalArgumentException("require 0 <= minDelay <= maxDelay");
         }
+        if (slowdownWindow.isNegative() || maxSlowdown < 1) {
+            throw new IllegalArgumentException("require slowdownWindow >= 0 and maxSlowdown >= 1");
+        }
+        this.slowdownWindow = slowdownWindow;
+        this.maxSlowdown = maxSlowdown;
         this.clock = clock;
         this.sleeper = sleeper;
         this.budgetStore = budgetStore;
@@ -103,7 +119,7 @@ public final class RateLimiter {
             Instant last = lastResponseEnd;
             long waitedMs = 0;
             if (last != null) {
-                Duration delay = randomDelay();
+                Duration delay = randomDelay().multipliedBy(slowdown());
                 Instant target = last.plus(delay);
                 if (target.isAfter(now)) {
                     Duration toWait = Duration.between(now, target);
@@ -119,6 +135,24 @@ public final class RateLimiter {
             pacingGate.unlock();
             throw e;
         }
+    }
+
+    /**
+     * How many times the normal delay to wait: 2^(blocks LinkedIn sent within the last
+     * {@code slowdownWindow}), capped at {@code maxSlowdown}. Once LinkedIn has flagged this IP
+     * it stays touchy for hours: on 2026-10-07 a run went 180 requests before its first 429, then
+     * each retry at full speed got 15, 22, then 5 through. Read from the request log, so it
+     * survives a restart and winds back down by itself as blocks age out of the window.
+     */
+    int slowdown() {
+        if (maxSlowdown <= 1 || slowdownWindow.isZero()) {
+            return 1;
+        }
+        int blocks = budgetStore.countBlockedSince(clock.instant().minus(slowdownWindow));
+        if (blocks >= 31) {
+            return maxSlowdown;
+        }
+        return (int) Math.min(maxSlowdown, 1L << blocks);
     }
 
     private Duration randomDelay() {

@@ -14,4 +14,11 @@ public interface RequestBudgetStore {
 
     /** Counts requests recorded at or after {@code since}. */
     int countSince(Instant since);
+
+    /**
+     * Counts requests at or after {@code since} that LinkedIn answered with a block (an HTTP
+     * response classified {@link ResponseOutcome#BLOCKED}). Transport failures are excluded - a
+     * dropped connection says nothing about how LinkedIn regards this IP.
+     */
+    int countBlockedSince(Instant since);
 }

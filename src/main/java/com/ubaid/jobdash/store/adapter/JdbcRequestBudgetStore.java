@@ -42,4 +42,10 @@ public class JdbcRequestBudgetStore implements RequestBudgetStore {
         long count = requestLogRepository.countSince(since);
         return count > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) count;
     }
+
+    @Override
+    public int countBlockedSince(Instant since) {
+        long count = requestLogRepository.countBlockedSince(since);
+        return count > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) count;
+    }
 }
