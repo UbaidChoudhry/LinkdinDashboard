@@ -99,6 +99,45 @@ function RemoteCell({ job }: { job: JobResponse }) {
   );
 }
 
+/**
+ * Copies the posting link (the same URL the title opens). Sits before the title rather than after
+ * it: a long title fills the whole cell, and anything after it would be clipped off.
+ */
+function CopyLinkButton({ url, onError }: { url: string; onError: (message: string) => void }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      onError("Could not copy the link - the browser refused clipboard access.");
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      className={copied ? "copy-link-button copied" : "copy-link-button"}
+      onClick={handleCopy}
+      title={copied ? "Copied" : "Copy link"}
+      aria-label={copied ? "Link copied" : "Copy link"}
+    >
+      {copied ? (
+        <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+          <path d="M3 8.5l3 3 7-7" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+          <rect x="5" y="5" width="9" height="9" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+          <path d="M11 3.5V3a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
 /** Human-readable label for the `salarySource` recorded by the backend enrichment step. */
 function salarySourceLabel(source: string | null | undefined): string | null {
   switch (source) {
@@ -166,6 +205,7 @@ export function JobRow({ job, tab, onChanged, onError, grouped = false, selected
         />
       </td>
       <td className="col-title" title={job.title}>
+        <CopyLinkButton url={job.jobUrl} onError={onError} />
         <a href={job.jobUrl} target="_blank" rel="noopener noreferrer">
           {job.title}
         </a>

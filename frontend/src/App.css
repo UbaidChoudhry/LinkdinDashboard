@@ -482,6 +482,37 @@ td {
   text-decoration: underline;
 }
 
+/* Small icon button in front of the title. Overrides the global button padding/size so it fits
+   a table row, and the title link next to it gives up the button width so its ellipsis survives. */
+.copy-link-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  margin-right: 4px;
+  border-color: var(--border);
+  background: transparent;
+  color: var(--text);
+  vertical-align: middle;
+}
+
+.copy-link-button:hover {
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.copy-link-button.copied {
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.col-title .copy-link-button + a {
+  max-width: calc(100% - 24px);
+}
+
 /*
   Do NOT put `display: flex` on this cell. A <td> that becomes a flex container drops out of the
   table layout algorithm: it stops stretching to the row height and stops aligning with the other
